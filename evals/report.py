@@ -2,7 +2,7 @@
 
     uv run python -m evals.report RUN_ID... [--base RUN_ID]
 
-A run id names a folder under data/evals (or give the folder's path). Review metrics show when the run has
+A run id names a folder under ${DATA_DIR:-data}/evals (or give the folder's path). Review metrics show when the run has
 been reviewed (evals.review merge).
 """
 
@@ -117,7 +117,7 @@ def report(runs: list[Path], base: Path | None = None) -> str:
 def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("runs", nargs="+", help="run ids (folders under data/evals) or run folders")
+    parser.add_argument("runs", nargs="+", help="run ids (folders under ${DATA_DIR:-data}/evals) or run folders")
     parser.add_argument("--base", help="run to pair the others against, item by item")
     args = parser.parse_args(argv)
     try:

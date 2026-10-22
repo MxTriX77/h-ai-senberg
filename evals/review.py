@@ -15,18 +15,15 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import statistics
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from evals.run import _pct, key_of, read_logs, run_dir, run_items
+from evals.run import REVIEW_COUNTS, key_of, read_logs, run_dir, run_items, write_summary
 
 LISTS = ("defects_found", "defects_missed", "omissions", "must_not_violated", "new_errors")
-COUNTS = ("unsupported_additions", "unsupported_as_verified", "final_vs_analysis")
 
 
 def _prompt(messages: list[dict[str, str]]) -> str:
@@ -76,7 +73,7 @@ def check_reviews(reviews: Any, keys: dict[str, dict[str, Any]]) -> list[str]:
         for field in LISTS:
             if not isinstance(rv.get(field, []), list):
                 problems.append(f"{blind}: {field} must be a list")
-        for field in COUNTS:
+        for field in REVIEW_COUNTS:
             v = rv.get(field, 0)
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
                 problems.append(f"{blind}: {field} must be a whole number >= 0, got {v!r}")
@@ -96,24 +93,6 @@ def check_reviews(reviews: Any, keys: dict[str, dict[str, Any]]) -> list[str]:
     return problems
 
 
-def review_summary(rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
-    """Review metrics of (review, key) pairs."""
-    planted = sum(len(k.get("defects") or []) for _, k in rows)
-    expected = [(r.get("verdicts", {}).get(item), str(v["verdict"])) for r, k in rows
-                for item, v in (k.get("verdicts") or {}).items()]
-    right = sum(str(got).strip().lower() == want.strip().lower() for got, want in expected if got is not None)
-    return {
-        "reviewed": len(rows),
-        "mean_score": round(statistics.mean(r["score"] for r, _ in rows), 2) if rows else None,
-        "defects_found_pct": _pct(sum(len(r.get("defects_found", [])) for r, _ in rows), planted),
-        "verdict_pct": _pct(right, len(expected)),
-        "omissions": sum(len(r.get("omissions", [])) for r, _ in rows),
-        **{field: sum(r.get(field, 0) for r, _ in rows) for field in COUNTS},
-        "must_not_violations": sum(len(r.get("must_not_violated", [])) for r, _ in rows),
-        "new_errors": dict(Counter(e["tag"] for r, _ in rows for e in r.get("new_errors", []))),
-    }
-
-
 def merge(folder: Path) -> list[Path]:
     """Validate folder/reviews.yaml and merge it into every run of the pack; returns the run folders."""
     mapping = json.loads((folder / "mapping.json").read_text(encoding="utf-8"))
@@ -127,15 +106,7 @@ def merge(folder: Path) -> list[Path]:
     for name, path in runs.items():
         mine = {answers[rv["blind_id"]]["item"]: rv for rv in reviews if answers[rv["blind_id"]]["run"] == name}
         (path / "reviews.json").write_text(json.dumps(mine, ensure_ascii=False, indent=2), encoding="utf-8")
-        sets = {r["id"]: r["set"] for r in read_logs(path)}
-        rows = [(rv, key_of(items[name][iid]), sets[iid]) for iid, rv in mine.items()]
-        summary_path = path / "summary.json"
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        summary["review"] = {
-            "all": review_summary([(rv, k) for rv, k, _ in rows]),
-            "sets": {s: review_summary([(rv, k) for rv, k, x in rows if x == s]) for s in sorted({x for *_, x in rows})},
-        }
-        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_summary(path, json.loads((path / "manifest.json").read_text(encoding="utf-8"))["mode"])
     return list(runs.values())
 
 
@@ -144,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pack", help="write pack.md and mapping.json for a blind reviewer")
-    p.add_argument("--runs", nargs="+", required=True, help="run ids (folders under data/evals) or run folders")
+    p.add_argument("--runs", nargs="+", required=True, help="run ids (folders under ${DATA_DIR:-data}/evals) or run folders")
     p.add_argument("--out", type=Path, required=True, help="pack folder")
     p.add_argument("--seed", type=int, help="shuffle seed (default: random; kept in mapping.json)")
     m = sub.add_parser("merge", help="validate DIR/reviews.yaml and merge it into the runs")

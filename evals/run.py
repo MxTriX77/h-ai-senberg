@@ -8,8 +8,9 @@ Sets: S1 fact questions (evals/questions.yaml), S2 multi-step reasoning problems
 their labelled answer lines; held-out problems run only with --holdout) and authored items (S3-S6, U) from batch
 folders (--authored, README "Evals"). --mode switches pipeline components off in-process (evals/modes.yaml).
 The backend, store and settings come from the config and environment, exactly as for the chat (`API_BASE_URL`,
-`DATA_DIR`, `MODEL_PROFILE`, ...). A run is a folder data/evals/<run-id>/: manifest.json, one log per item in
-items/ (written when the item is done, so an interrupted run resumes with the same --run-id) and summary.json.
+`DATA_DIR`, `MODEL_PROFILE`, ...). A run is a folder ${DATA_DIR:-data}/evals/<run-id>/: manifest.json, one log
+per item in items/ (written when the item is done, so an interrupted run resumes with the same --run-id) and
+summary.json.
 """
 
 from __future__ import annotations
@@ -32,27 +33,30 @@ from typing import Any
 
 import httpx
 import yaml
+from dotenv import load_dotenv
 
 from haisenberg.agent import DRAFT_MARK, Agent
 from haisenberg.config import PROFILE_ENV, Config, ConfigError, load_config
 from haisenberg.l1.text import to_hill
 from haisenberg.llm import LLMClient, UpstreamError
 from haisenberg.tools import Knowledge
-from haisenberg.verifier import read_formulas, read_numbers
+from haisenberg.verifier import Number, read_formulas, read_numbers
 
 QUESTIONS = Path(__file__).resolve().parent / "questions.yaml"
 PROBLEMS = Path(__file__).resolve().parent / "reasoning.yaml"
 MODES = Path(__file__).resolve().parent / "modes.yaml"
 ROOT = Path(__file__).resolve().parents[1]
-RUNS = ROOT / "data" / "evals"
 KINDS = ("number", "formula", "text")
 PART_KINDS = ("number", "text", "verdict", "ids")
 SETS = ("facts", "reasoning", "all")
 AUTHORED_SETS = ("S3", "S4", "S5", "S6", "U")
 SPLITS = ("dev", "holdout", "monitor")
 OUTCOMES = ("supported", "unverified", "corrected", "removed")
+REVIEW_COUNTS = ("unsupported_additions", "unsupported_as_verified", "final_vs_analysis")
 NVIDIA_SMI = ["nvidia-smi", "--query-gpu=name,power.limit,power.draw,memory.total", "--format=csv,noheader"]
-_LINE = re.compile(r"^[\s>*_`#+-]*(A\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.I | re.M)
+_LOOKALIKE = "АВСЕНКМОРТХавсенкмортх"  # Cyrillic letters a model may write in a label instead of the Latin ones
+_LATIN = str.maketrans(_LOOKALIKE, "ABCEHKMOPTXabcehkmoptx")
+_LINE = re.compile(rf"^[\s>*_`#+-]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.M)
 # Protocol artefacts: text the pipeline writes for itself that must not reach the final answer. The patterns follow
 # the code that writes it: [S#] ids (verifier._CITES), the draft marker (agent.DRAFT_MARK), the trace headings of
 # Verifier.verify and Verifier._consistency, the summary line and outcome labels of verifier.render and the
@@ -195,8 +199,14 @@ def is_correct(answer: str, gold: dict[str, Any]) -> bool:
 
 
 def answer_lines(answer: str) -> dict[str, str]:
-    """Label (A1, A2, ...) -> the text of the last line that starts with that label and a colon."""
-    return {m.group(1).upper(): m.group(2).strip() for m in _LINE.finditer(answer_text(answer))}
+    """Label (A1, A2, ...) -> the text of the last line that starts with that label and a colon (a Cyrillic
+    look-alike letter in the label, such as А, reads as the Latin one)."""
+    return {m.group(1).translate(_LATIN).upper(): m.group(2).strip() for m in _LINE.finditer(answer_text(answer))}
+
+
+def _figures(n: Number) -> int:
+    """Significant figures the number is written with (0.024: 2; 3: 1; 1,900: 4)."""
+    return math.floor(math.log10(abs(n.value))) - round(math.log10(2 * n.half)) + 1 if n.value else 0
 
 
 def part_correct(part: dict[str, Any], line: str | None, lang: str = "en") -> bool:
@@ -209,8 +219,12 @@ def part_correct(part: dict[str, Any], line: str | None, lang: str = "en") -> bo
         numbers = read_numbers(re.sub(comma, r"\1.\2", line))
         value = float(part["number"])
         tol = part["abs_tol"] if "abs_tol" in part else part["rel_tol"] * abs(value)
-        # Within tolerance, or the key rounded to the answer's own precision (0.0237 written as 0.024).
-        return bool(numbers) and abs(numbers[0].value - value) <= max(tol, numbers[0].half) + 1e-12 * abs(value)
+        if not numbers:
+            return False
+        n, eps = numbers[0], 1e-12 * abs(value)
+        # Within tolerance, or the key rounded to the answer's own precision when that has 2+ significant
+        # figures (0.0237 written as 0.024; 2.61 written as 3 stays wrong).
+        return abs(n.value - value) <= tol + eps or (_figures(n) >= 2 and abs(n.value - value) <= n.half + eps)
     if "text" in part:
         return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", line, re.I) for w in part["text"])
     if "verdict" in part:
@@ -320,13 +334,42 @@ def gpu_info() -> list[dict[str, str]] | None:
     return [dict(zip(fields, (v.strip() for v in line.split(",")))) for line in out.splitlines() if line.strip()]
 
 
+def wsl_path(path: str) -> str:
+    """A Windows path (C:/x, also with backslashes) as WSL sees it (/mnt/c/x); other paths unchanged."""
+    m = re.match(r"([A-Za-z]):[/\\](.*)", path)
+    return f"/mnt/{m.group(1).lower()}/{m.group(2).replace(chr(92), '/')}" if m else path
+
+
 def _git(root: Path) -> dict[str, Any] | None:
+    """Commit and dirty flag. Line endings are compared as Windows git checks them out (core.autocrlf), so a
+    Windows checkout read from WSL does not look all modified. A worktree made by Windows git has a
+    `gitdir: C:/...` file that Linux git cannot follow: then git runs with that gitdir converted to /mnt/c/..."""
+    git = ["git", "-c", "core.autocrlf=true", "--no-optional-locks"]
+    for attempt in range(2):
+        try:
+            if attempt:
+                gitdir = (root / ".git").read_text(encoding="utf-8").strip().removeprefix("gitdir:").strip()
+                git += [f"--git-dir={wsl_path(gitdir)}", f"--work-tree={root}"]
+            sha = subprocess.run([*git, "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
+            status = subprocess.run([*git, "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True)
+            return {"sha": sha.stdout.strip(), "dirty": bool(status.stdout.strip())}
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return None
+
+
+def served_model(cfg: Config) -> Path:
+    """The model file the backend serves: llama-server's /props `model_path` when it answers (best effort),
+    else the configured path (MODEL_PATH), else the copy scripts/wsl/run.sh uses ($MODELS_DIR/<name>)."""
+    base = re.sub(r"/v1$", "", cfg.model_backend.api_base.rstrip("/"))
     try:
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return {"sha": sha.stdout.strip(), "dirty": bool(status.stdout.strip())}
+        if path := httpx.get(f"{base}/props", timeout=2).json().get("model_path"):
+            return Path(path)
+    except (httpx.HTTPError, ValueError, AttributeError):
+        pass
+    configured = cfg.llama_server.model_path
+    copy = Path(os.environ.get("MODELS_DIR") or Path.home() / ".local/share/h-ai-senberg/models") / configured.name
+    return copy if not configured.is_file() and copy.is_file() else configured
 
 
 def _rel(path: Path) -> str:
@@ -339,7 +382,7 @@ def _rel(path: Path) -> str:
 
 def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path) -> dict[str, Any]:
     """What a run depends on: code, config after the mode, model file, store, eval files, GPU, sampling."""
-    store, backend = cfg.retrieval.layer1_encyclopedia_db, cfg.model_backend
+    store, backend, model = cfg.retrieval.layer1_encyclopedia_db, cfg.model_backend, served_model(cfg)
     st = store.stat() if store.is_file() else None
     return {
         "run_id": run_id,
@@ -350,7 +393,7 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "model_id": backend.model_id,
         "backend": backend.api_base,
         "config_sha256": hashlib.sha256(cfg.model_dump_json().encode()).hexdigest(),
-        "model_file": {"path": str(cfg.llama_server.model_path), "sha256": file_sha256(cfg.llama_server.model_path, cache)},
+        "model_file": {"path": str(model), "sha256": file_sha256(model, cache)},
         "store": {"path": str(store), "size": st and st.st_size,
                   "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")},
         "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
@@ -376,9 +419,15 @@ def open_run(folder: Path, man: dict[str, Any]) -> None:
     path.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def runs_dir() -> Path:
+    """Where runs live: the evals folder of the data folder, ${DATA_DIR:-data} (relative to the repository)."""
+    load_dotenv(ROOT / ".env", override=False)
+    return ROOT / (os.environ.get("DATA_DIR") or "data") / "evals"
+
+
 def run_dir(run: str) -> Path:
-    """A run folder: the path itself when it is a folder, else data/evals/<run>."""
-    return Path(run) if Path(run).is_dir() else RUNS / run
+    """A run folder: the path itself when it is a folder, else <data>/evals/<run>."""
+    return Path(run) if Path(run).is_dir() else runs_dir() / run
 
 
 def read_logs(folder: Path) -> list[dict[str, Any]]:
@@ -492,11 +541,38 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+def review_summary(rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
+    """Review metrics of (review, key) pairs."""
+    planted = sum(len(k.get("defects") or []) for _, k in rows)
+    expected = [(r.get("verdicts", {}).get(item), str(v["verdict"])) for r, k in rows
+                for item, v in (k.get("verdicts") or {}).items()]
+    right = sum(str(got).strip().lower() == want.strip().lower() for got, want in expected if got is not None)
+    return {
+        "reviewed": len(rows),
+        "mean_score": round(statistics.mean(r["score"] for r, _ in rows), 2) if rows else None,
+        "defects_found_pct": _pct(sum(len(r.get("defects_found", [])) for r, _ in rows), planted),
+        "verdict_pct": _pct(right, len(expected)),
+        "omissions": sum(len(r.get("omissions", [])) for r, _ in rows),
+        **{field: sum(r.get(field, 0) for r, _ in rows) for field in REVIEW_COUNTS},
+        "must_not_violations": sum(len(r.get("must_not_violated", [])) for r, _ in rows),
+        "new_errors": dict(Counter(e["tag"] for r, _ in rows for e in r.get("new_errors", []))),
+    }
+
+
 def write_summary(folder: Path, mode: str) -> dict[str, Any]:
-    """summary.json of every item log in the run folder: all items and each set."""
+    """summary.json of every item log in the run folder: all items and each set, and the review metrics when
+    the run has reviews.json (evals.review merge)."""
     logs = read_logs(folder)
+    set_of = {r["id"]: r["set"] for r in logs}
+    sets = sorted(set(set_of.values()))
     summary = {"run_id": folder.name, "mode": mode, "all": summarize(logs),
-               "sets": {s: summarize([r for r in logs if r["set"] == s]) for s in sorted({r["set"] for r in logs})}}
+               "sets": {s: summarize([r for r in logs if r["set"] == s]) for s in sets}}
+    if (path := folder / "reviews.json").is_file():
+        reviews, items = json.loads(path.read_text(encoding="utf-8")), run_items(folder)
+        rows = [(rv, key_of(items[iid]), set_of[iid]) for iid, rv in reviews.items() if iid in set_of]
+        summary["review"] = {"all": review_summary([(rv, k) for rv, k, _ in rows]),
+                             "sets": {s: review_summary([(rv, k) for rv, k, x in rows if x == s])
+                                      for s in sorted({x for *_, x in rows})}}
     (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 
@@ -543,8 +619,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split", choices=SPLITS, help="authored items of this split only")
     parser.add_argument("--sets", help="comma-separated sets to keep, e.g. S3,S4 (S1 facts, S2 reasoning)")
     parser.add_argument("--mode", choices=sorted(modes), help="pipeline mode (evals/modes.yaml); default: as configured")
-    parser.add_argument("--run-id", help="run folder under data/evals (default <yyyymmdd-hhmm>-<mode>); an existing"
-                                         " run is resumed: items with a log are skipped")
+    parser.add_argument("--run-id", help="run folder under ${DATA_DIR:-data}/evals (default <yyyymmdd-hhmm>-<mode>);"
+                                         " an existing run is resumed: items with a log are skipped")
     parser.add_argument("--retry-errors", action="store_true", help="when resuming, run the items that failed again")
     parser.add_argument("--ids", help="comma-separated item ids")
     parser.add_argument("--limit", type=int, help="run N items, taken in turn from each group")
@@ -564,10 +640,10 @@ def main(argv: list[str] | None = None) -> int:
         if dupes := sorted(i for i, n in Counter(q["id"] for q in chosen).items() if n > 1):
             raise ValueError(f"duplicate item ids {dupes}")
         run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{mode}"
-        folder = RUNS / run_id
+        folder = runs_dir() / run_id
         files = sorted({q["file"] for q in chosen})
         open_run(folder, manifest(cfg, run_id, mode, files, sys.argv[1:] if argv is None else argv,
-                                  RUNS / ".sha-cache.json"))
+                                  runs_dir() / ".sha-cache.json"))
     except (ConfigError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

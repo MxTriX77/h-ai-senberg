@@ -3,7 +3,12 @@ blind review. Synthetic items only, the fake upstream, no GPU."""
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -22,6 +27,10 @@ from evals.run import (
     load_modes,
     manifest,
     open_run,
+    run_dir,
+    runs_dir,
+    served_model,
+    wsl_path,
     read_logs,
     run_eval,
     run_one,
@@ -228,6 +237,7 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     store.write_bytes(b"store")
     cfg.llama_server.model_path, cfg.retrieval.layer1_encyclopedia_db = model, store
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
+    monkeypatch.setattr(httpx, "get", no_backend)
     monkeypatch.setenv("MODEL_PROFILE", "p1")
     man = manifest(cfg, "r1", "A", [QUESTIONS], ["--mode", "A"], cache)
     assert man["model_file"]["sha256"] == hashlib.sha256(b"weights").hexdigest() and man["gpu"] is None
@@ -246,6 +256,83 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     before = man["config_sha256"]
     apply_mode(cfg, load_modes()["B"])
     assert manifest(cfg, "r1", "B", [], [], cache)["config_sha256"] != before
+
+
+def no_backend(url, timeout):
+    raise httpx.ConnectError("refused")
+
+
+def test_gpu_is_a_json_list(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "NVIDIA_SMI", [sys.executable, "-c", "print('GPU X, 80.00 W, 10.50 W, 6141 MiB')"])
+    monkeypatch.setattr(httpx, "get", no_backend)
+    open_run(tmp_path / "r", manifest(cfg, "r", "A", [], [], tmp_path / "cache.json"))
+    written = json.loads((tmp_path / "r" / "manifest.json").read_text(encoding="utf-8"))
+    assert written["gpu"] == [{"name": "GPU X", "power_limit": "80.00 W", "power_draw": "10.50 W", "memory_total": "6141 MiB"}]
+
+
+def test_served_model(cfg, tmp_path, monkeypatch):
+    asked = []
+
+    def props(url, timeout):
+        asked.append(url)
+        return httpx.Response(200, json={"model_path": "/wsl/models/m.gguf"})
+
+    monkeypatch.setattr(httpx, "get", props)
+    cfg.model_backend.api_base = "http://gpu-box:1234/v1/"
+    assert served_model(cfg) == Path("/wsl/models/m.gguf") and asked == ["http://gpu-box:1234/props"]
+    monkeypatch.setattr(httpx, "get", no_backend)  # no llama-server: the configured file, else the WSL copy
+    cfg.llama_server.model_path = tmp_path / "models" / "m.gguf"
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path / "copies"))
+    assert served_model(cfg) == tmp_path / "models" / "m.gguf"  # neither exists: the configured path
+    (tmp_path / "copies").mkdir()
+    (tmp_path / "copies" / "m.gguf").write_bytes(b"w")
+    assert served_model(cfg) == tmp_path / "copies" / "m.gguf"
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "m.gguf").write_bytes(b"w")
+    assert served_model(cfg) == tmp_path / "models" / "m.gguf"
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(200, json={"model_path": ""}))  # the app's /props
+    assert served_model(cfg) == tmp_path / "models" / "m.gguf"
+
+
+def git(*args, cwd):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+                          cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_git_state_and_windows_worktree(tmp_path, monkeypatch):
+    repo, tree = tmp_path / "repo", tmp_path / "tree"
+    repo.mkdir()
+    git("init", "-q", cwd=repo)
+    (repo / "a.txt").write_bytes(b"a\r\n")  # checked out by Windows git (core.autocrlf): CRLF on disk, LF stored
+    git("-c", "core.autocrlf=true", "add", "a.txt", cwd=repo)
+    git("commit", "-q", "-m", "c", cwd=repo)
+    sha = git("rev-parse", "HEAD", cwd=repo)
+    os.utime(repo / "a.txt", (1e9, 1e9))  # read from WSL: the index's stat data no longer match, git rereads files
+    assert git("-c", "core.autocrlf=false", "--no-optional-locks", "status", "--porcelain", cwd=repo)  # plain: modified
+    assert run._git(repo) == {"sha": sha, "dirty": False}
+    (repo / "a.txt").write_bytes(b"bb\r\n")
+    assert run._git(repo)["dirty"] is True
+    # a worktree made by Windows git: its .git file names C:/..., which git here cannot follow
+    tree.mkdir()
+    (tree / "a.txt").write_bytes(b"a\r\n")
+    (tree / ".git").write_text("gitdir: C:/dev/repo/.git\n", encoding="utf-8")
+    converted = []
+    monkeypatch.setattr(run, "wsl_path", lambda p: converted.append(p) or str(repo / ".git"))
+    assert run._git(tree) == {"sha": sha, "dirty": False} and converted == ["C:/dev/repo/.git"]
+    assert run._git(tmp_path / "nothing") is None
+
+
+def test_wsl_path():
+    assert wsl_path("C:/.dev/h-ai-senberg/.git/worktrees/-hai-wt-eng") == "/mnt/c/.dev/h-ai-senberg/.git/worktrees/-hai-wt-eng"
+    assert wsl_path("D:\\x\\y") == "/mnt/d/x/y" and wsl_path("/home/u/.git") == "/home/u/.git"
+
+
+def test_runs_live_in_the_data_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    assert runs_dir() == tmp_path / "data" / "evals" and run_dir("r1") == tmp_path / "data" / "evals" / "r1"
+    assert run_dir(str(tmp_path)) == tmp_path  # a folder is taken as it is
+    monkeypatch.setenv("DATA_DIR", "")
+    assert runs_dir() == run.ROOT / "data" / "evals"
 
 
 # --- report and review --------------------------------------------------------------------------------
@@ -327,6 +414,8 @@ def test_merge_writes_reviews_and_metrics(two_runs, tmp_path):
             blocks.append(review(blind, score=7, omissions=["E"], unsupported_additions=1))
     (tmp_path / "pack" / "reviews.yaml").write_text(yaml.safe_dump(blocks), encoding="utf-8")
     assert merge(tmp_path / "pack") == [r.resolve() for r in two_runs]
+    reviewed = json.loads((two_runs[0] / "summary.json").read_text(encoding="utf-8"))
+    assert write_summary(two_runs[0], "A") == reviewed  # a resumed run rebuilds its summary with the reviews
     a, b = (json.loads((r / "summary.json").read_text(encoding="utf-8"))["review"] for r in two_runs)
     assert (a["all"]["mean_score"], a["all"]["defects_found_pct"], a["all"]["verdict_pct"]) == (5.5, 0.0, 0.0)
     assert (b["all"]["mean_score"], b["all"]["defects_found_pct"], b["all"]["verdict_pct"]) == (7.5, 100.0, 100.0)

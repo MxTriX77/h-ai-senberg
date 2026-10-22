@@ -156,6 +156,13 @@ def test_answer_lines_last_wins_and_markdown():
     assert answer_lines(text) == {"A1": "2.61 g", "A2": "80.5 %", "A3": "salicylic acid"}
 
 
+def test_cyrillic_look_alike_labels():
+    text = "\u04101: 2,61 г\n**\u0410\u0032**\uff1a верно\n\u04303: Масса\n\u04121: x"  # А1, А2 full-width colon, а3, В1
+    assert answer_lines(text) == {"A1": "2,61 г", "A2": "верно", "A3": "Масса", "B1": "x"}  # values untouched
+    problem = {"lang": "ru", "parts": [{"label": "A1", "number": 2.61, "rel_tol": 0.01}, {"label": "A2", "verdict": ["верно"]}]}
+    assert score_parts(text, problem) == [True, True]
+
+
 @pytest.mark.parametrize("part, line, lang, ok", [
     ({"number": 21.97, "rel_tol": 0.01}, "21,97 г", "ru", True),
     ({"number": 16.77, "rel_tol": 0.01}, "16,775 л", "ru", True),
@@ -167,6 +174,9 @@ def test_answer_lines_last_wins_and_markdown():
     ({"number": 0.0237, "rel_tol": 0.01}, "0.024 M", "en", True),  # the key rounded to the answer's precision
     ({"number": 0.0237, "rel_tol": 0.01}, "0.025 M", "en", False),
     ({"number": 0.0237, "rel_tol": 0.01}, "0.0240 M", "en", False),  # four places claimed: 0.0237 is not 0.0240
+    ({"number": 0.0237, "rel_tol": 0.01}, "0.02 M", "en", False),  # one significant figure is not enough
+    ({"number": 2.61, "rel_tol": 0.01}, "3 g", "en", False),
+    ({"number": 2.61, "rel_tol": 0.001}, "2.6 g", "en", True),
     ({"number": 2.6137e-3, "rel_tol": 0.001}, "2.61 × 10^-3", "en", True),
     ({"number": 6.38, "abs_tol": 0.01}, "6,4", "ru", True),
     ({"verdict": ["false", "неверно"]}, "неверно, масса меньше на 1,6 %", "ru", True),
