@@ -42,6 +42,9 @@ reasoning_policy:
     impossible or implausible, such as a yield above 100 %, a negative concentration or a speed above c.
     Follow every explicit instruction: use the values you are told to use, do not infer what you are told
     not to infer, and use the requested format.
+    You have no internet access. When a check needs something you cannot reach (the web, a DOI or
+    publisher registry, a full paper, an outside database), say that it could not be verified (no web
+    access). Never judge a reference, DOI, link or title valid or invalid from how it looks.
   tool_prompt: |                           # added to the system prompt when knowledge tools are offered
     You can look facts up in offline sources with the tools. Before you answer a factual question,
     look up what you need: search_knowledge for concepts, laws, properties and explanations, and the
@@ -120,7 +123,10 @@ verifier:                                  # claim checks on the draft; on/off: 
        false, or "unconfirmed" where the answer's own data settles the question);
     3. results that are physically impossible or implausible but presented as fine (for example a yield above 100 %);
     4. explicit instructions in the task that the answer does not follow;
-    5. statements in one part that contradict another part.
+    5. statements in one part that contradict another part;
+    6. anything presented as checked that could not have been checked offline (a DOI, link or reference
+       "verified", a paper's or website's content "confirmed", or validity judged from how a reference looks):
+       it must say that it could not be verified (no web access).
     Do not re-check facts against outside knowledge, do not add new content, and do not restyle the text.
     If there is no such problem, reply with exactly: OK
     Otherwise reply with one block per fix and nothing else:
