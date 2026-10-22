@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, PositiveInt, PrivateAttr, ValidationError, field_validator
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
+PROFILE_ENV = "MODEL_PROFILE"  # selects config/models/<name>.yaml, merged over config.yaml
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -114,10 +115,18 @@ def load_config(path: Path | str | None = None) -> Config:
 
     load_dotenv(root / ".env", override=False)
 
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as e:
-        raise ConfigError(f"{path}: invalid YAML: {e}") from e
+    raw = _read_yaml(path)
+    source = str(path)
+    profile = os.environ.get(PROFILE_ENV)
+    if profile:
+        profile_path = path.parent / "models" / f"{profile}.yaml"
+        if not profile_path.is_file():
+            available = sorted(p.stem for p in (path.parent / "models").glob("*.yaml"))
+            raise ConfigError(
+                f"model profile '{profile}' not found: {profile_path} (available: {', '.join(available) or 'none'})"
+            )
+        raw = _merge(raw, _read_yaml(profile_path))
+        source = f"{path} + {profile_path.name}"
 
     data = _interpolate(raw, "")
     try:
@@ -126,7 +135,7 @@ def load_config(path: Path | str | None = None) -> Config:
         problems = "; ".join(
             f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
         )
-        raise ConfigError(f"{path}: {problems}") from e
+        raise ConfigError(f"{source}: {problems}") from e
 
     for section, name in _PATH_FIELDS:
         sec = getattr(cfg, section)
@@ -135,6 +144,24 @@ def load_config(path: Path | str | None = None) -> Config:
             setattr(sec, name, root / p)
     cfg._root = root
     return cfg
+
+
+def _read_yaml(path: Path) -> dict:
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path}: invalid YAML: {e}") from e
+
+
+def _merge(base: dict, overlay: dict) -> dict:
+    """Overlay wins; nested sections merge key by key, other values are replaced."""
+    out = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
 
 
 def _interpolate(value: Any, key: str) -> Any:
