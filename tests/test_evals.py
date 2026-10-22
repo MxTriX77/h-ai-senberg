@@ -7,7 +7,19 @@ import sqlite3
 import pytest
 
 from conftest import content, finish, tool_call
-from evals.run import answer_text, is_correct, load_questions, pick, run_eval, summarize
+from evals.run import (
+    answer_lines,
+    answer_text,
+    is_correct,
+    load_problems,
+    load_questions,
+    part_correct,
+    pick,
+    run_eval,
+    score_parts,
+    select,
+    summarize,
+)
 from haisenberg.agent import Agent
 from haisenberg.l1.store import L1Store
 from haisenberg.tools import Knowledge
@@ -98,3 +110,101 @@ def test_summary_of_errors():
     r = {"correct": False, "unmarked_contradiction": False, "verification": {}, "seconds": 2.0, "error": "down"}
     s = summarize([r])
     assert s["errors"] == 1 and s["correct_pct"] == 0.0 and s["supported_claims_pct"] == 0.0
+
+
+
+# --- reasoning problems ---------------------------------------------------------------------------
+
+
+def test_shipped_reasoning_set():
+    problems = load_problems()
+    tuning = [p for p in problems if not p.get("holdout")]
+    assert len(tuning) >= 25 and len(problems) - len(tuning) >= 3
+    assert {p["domain"] for p in problems} == {"chemistry", "physics"}
+    assert sum(p["lang"] == "ru" for p in problems) >= 4
+    topics = {p["topic"] for p in problems}
+    for needed in ("stoichiometry", "unit-conversion", "kinematics", "circuits", "gas-laws", "ph", "equilibrium",
+                   "inconsistent-data", "claim-triage", "error-finding", "constraints"):
+        assert needed in topics, needed
+    for p in problems:  # every part's label is asked for in the question
+        assert all(f"{part['label']}:" in p["question"] for part in p["parts"]), p["id"]
+
+
+@pytest.mark.parametrize("part, error", [
+    ({"label": "A1", "number": 1, "text": ["x"]}, "exactly one"),
+    ({"label": "A1", "number": 1}, "abs_tol or rel_tol"),
+    ({"label": "A1", "verdict": []}, "non-empty"),
+])
+def test_malformed_part(tmp_path, part, error):
+    bad = {"problems": [{"id": "p1", "domain": "physics", "topic": "t", "lang": "en", "question": "q", "parts": [part]}]}
+    path = tmp_path / "r.yaml"
+    path.write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"p1: part A1: .*{error}"):
+        load_problems(path)
+
+
+def test_answer_lines_last_wins_and_markdown():
+    text = "Working: A1: 2.5\n\n- **A1:** 2.61 g\n**A2**: 80.5 %\nA3 : salicylic acid [S1]"
+    assert answer_lines(text) == {"A1": "2.61 g", "A2": "80.5 %", "A3": "salicylic acid"}
+
+
+@pytest.mark.parametrize("part, line, lang, ok", [
+    ({"number": 21.97, "rel_tol": 0.01}, "21,97 г", "ru", True),
+    ({"number": 16.77, "rel_tol": 0.01}, "16,775 л", "ru", True),
+    ({"number": 1900, "rel_tol": 0.005}, "1,900 mmHg", "en", True),
+    ({"number": 0.0748, "rel_tol": 0.01}, "0,0748", "en", True),
+    ({"number": 3.34e22, "rel_tol": 0.005}, "3.34 × 10²² molecules", "en", True),
+    ({"number": 2.61, "rel_tol": 0.01}, "about 2.5 g (2.61 g theoretical)", "en", False),
+    ({"number": 180, "abs_tol": 0.01}, "180.16 g/mol", "en", False),
+    ({"verdict": ["false", "неверно"]}, "неверно, масса меньше на 1,6 %", "ru", True),
+    ({"verdict": ["false"]}, "not false", "en", False),
+    ({"verdict": ["false"]}, "❌ False: 1.6 % short", "en", True),
+    ({"verdict": ["верно"]}, "неверно", "ru", False),
+    ({"verdict": ["oxygen", "O2"]}, "The oxygen (O2) is limiting", "en", True),
+    ({"verdict": ["unconfirmed", "no"]}, "not verified", "en", False),
+    ({"ids": ["S4", "S5"]}, "S4 and S5", "en", True),
+    ({"ids": ["S4", "S5"]}, "S4", "en", False),
+    ({"text": ["HCl"]}, "HCl is limiting", "en", True),
+    ({"number": 1, "abs_tol": 0}, None, "en", False),
+])
+def test_part_correct(part, line, lang, ok):
+    assert part_correct(part, line, lang) is ok
+
+
+def test_holdout_and_sets():
+    facts = [{"id": "f1", "category": "facts"}]
+    problems = [{"id": "r1", "category": "reasoning"}, {"id": "r2", "category": "reasoning", "holdout": True}]
+    assert [i["id"] for i in select(facts, problems)] == ["f1", "r1"]
+    assert [i["id"] for i in select(facts, problems, "reasoning")] == ["r1"]
+    assert [i["id"] for i in select(facts, problems, "facts")] == ["f1"]
+    assert [i["id"] for i in select(facts, problems, "all", holdout=True)] == ["r2"]
+
+
+def test_reasoning_groups_in_a_subset():
+    _, facts = load_questions()
+    items = facts + [p for p in load_problems() if not p.get("holdout")]
+    chosen = pick(items, limit=22)
+    groups = {f"{q.get('source', 'reasoning')}/{q['domain']}" for q in chosen}
+    assert {"reasoning/chemistry", "reasoning/physics"} <= groups and len(chosen) == 22
+
+
+@pytest.mark.anyio
+async def test_reasoning_problem_end_to_end(cfg, fake, built_store, tmp_path):
+    problem = {"id": "r1", "category": "reasoning", "domain": "chemistry", "topic": "t", "lang": "en",
+               "question": "q", "parts": [{"label": "A1", "number": 2.61, "rel_tol": 0.01},
+                                          {"label": "A2", "verdict": ["true"]}]}
+    fact = {"id": "q1", "category": "facts", "question": "Boiling point of benzene?",
+            "answer": {"number": 80.1, "abs_tol": 0.5}}
+    fake.scripts = [
+        [content("The yield is 2.61 g.\nA1: 2.61 g\nA2: false")], [content("C1: not_said")],
+        [content("Benzene boils at 80.1 °C.")], [content("C1: not_said")],
+    ]
+    agent = Agent(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))
+    report = await run_eval(agent, [problem, fact], tmp_path / "r.json", {"model": "fake"})
+    r1 = report["results"][0]
+    assert r1["category"] == "reasoning" and r1["parts"] == {"A1": True, "A2": False} and not r1["correct"]
+    s = report["summary"]
+    assert s["questions"] == 2 and s["correct_pct"] == 50.0 and s["parts_pct"] == 50.0
+    assert set(s["by_category"]) == {"facts", "reasoning"}
+    assert s["by_category"]["reasoning"]["parts_pct"] == 50.0 and s["by_category"]["facts"]["correct_pct"] == 100.0
+    assert score_parts("A1: 2.61\nA2: true", problem) == [True, True]

@@ -155,12 +155,16 @@ With the 2026 sources the store holds about 37,500 articles, 355 constants and 9
 
 `evals/questions.yaml` holds about 100 chemistry and physics questions with known answers (a number with a tolerance, a formula, or accepted words), written for this project. The known answers come from CODATA 2022 (public domain), PubChem (no restrictions) and facts stated in the Wikipedia articles of the store (CC BY-SA 4.0; facts only, no text copied). A test checks every CODATA and PubChem answer against the store.
 
-The runner sends questions through the same tools, tool loop and verifier as the chat, using the configured backend (the model must be running):
+`evals/reasoning.yaml` holds 31 multi-step problems, also written for this project: stoichiometry and yields (including an impossible yield), unit conversions, kinematics, energy, circuits, gas laws, pH, buffers, equilibrium, titration, decay, inconsistent given data, sorting claims into true, false or unconfirmed from the given data, finding the wrong statements in a short report, and following explicit constraints. Some are in Russian. Each problem asks for its results on labelled lines (`A1: …`, `A2: …`), and every part is scored in code on its line: a number within a tolerance (a decimal comma is fine), a verdict word at the start of the line, or the exact set of wrong statement ids. No LLM grades anything. A problem counts as solved when all its parts are right. Five problems are held out: they are for a final check only and never run unless you pass `--holdout`.
+
+The runner sends questions and problems through the same tools, tool loop and verifier as the chat, using the configured backend (the model must be running):
 
 ```bash
-uv run python -m evals.run --limit 20      # 20 questions spread over every source and domain
-uv run python -m evals.run                 # all of them (hours with a local 9B model)
-uv run python -m evals.run --ids codata-01,wchem-01
+uv run python -m evals.run --limit 20      # 20 items spread over every source/domain group and the reasoning set
+uv run python -m evals.run                 # all fact questions and reasoning problems (hours with a local 9B model)
+uv run python -m evals.run --set reasoning # only the reasoning problems (or --set facts)
+uv run python -m evals.run --holdout       # only the held-out problems: final check
+uv run python -m evals.run --ids codata-01,r-stoich-02
 ```
 
-It prints one line per question and a summary: % correct answers, % of claims supported, unmarked contradictions (wrong answers whose every claim the verifier rated supported, target 0), unverified/corrected/removed claims and seconds per question. Outcomes come from the verification report, so the score is the same in both answer styles. The full report goes to `data/evals/run-<timestamp>.json` (or `--out FILE`).
+It prints one line per item (for problems, `+`/`-` per part) and a summary for all items and per set: % correct answers (solved problems), % of problem parts right, % of claims supported, unmarked contradictions (wrong answers whose every claim the verifier rated supported, target 0), unverified/corrected/removed claims and seconds per item. Outcomes come from the verification report, so the score is the same in both answer styles. The full report goes to `data/evals/run-<timestamp>.json` (or `--out FILE`).

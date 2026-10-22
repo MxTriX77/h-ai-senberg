@@ -1,0 +1,441 @@
+# Multi-step reasoning problems (written for this project). Each problem asks for labelled answer lines
+# (A1:, A2:, ...); every part is scored in code on its line (see evals/run.py): number (tolerance),
+# text (accepted words), verdict (the line starts with an accepted word) or ids (exact set of ids).
+# Keys use IUPAC standard atomic weights (H 1.008, C 12.011, N 14.007, O 15.999, Na 22.990, S 32.06,
+# Cl 35.45, Ca 40.078, Cu 63.546, Zn 65.38); tolerances allow other common roundings.
+# holdout: true = kept out of tuning runs; run them with `--holdout` for the final check only.
+
+problems:
+  # --- stoichiometry ---------------------------------------------------------------------------------
+  - id: r-stoich-01
+    domain: chemistry
+    topic: stoichiometry
+    lang: en
+    question: >-
+      10.0 g of hydrogen gas reacts with 64.0 g of oxygen gas to form water. Which reactant is limiting,
+      and what mass of water forms? Finish your answer with exactly these two lines:
+      A1: <limiting reactant>
+      A2: <mass of water in g>
+    parts:
+      - {label: A1, verdict: [oxygen, O2, "O₂"]}
+      - {label: A2, number: 72.06, rel_tol: 0.01}
+
+  - id: r-stoich-02
+    domain: chemistry
+    topic: stoichiometry
+    lang: en
+    question: >-
+      Aspirin (C9H8O4) is made from 2.00 g of salicylic acid (C7H6O3) and 5.00 mL of acetic anhydride
+      (C4H6O3, density 1.08 g/mL); the reaction is 1:1. The student isolates 2.10 g of aspirin. Find the
+      limiting reagent, the theoretical yield and the percent yield. Finish with exactly these lines:
+      A1: <limiting reagent>
+      A2: <theoretical yield in g>
+      A3: <percent yield in %>
+    parts:
+      - {label: A1, verdict: [salicylic acid, "C7H6O3"]}
+      - {label: A2, number: 2.609, rel_tol: 0.01}
+      - {label: A3, number: 80.5, abs_tol: 1.0}
+
+  - id: r-stoich-03
+    domain: chemistry
+    topic: implausible-yield
+    lang: en
+    question: >-
+      A student burns 2.00 g of sodium in excess chlorine and reports 5.50 g of dry, pure NaCl. What is the
+      theoretical yield of NaCl, what percent yield does the report imply, and is the reported result
+      possible? Finish with exactly these lines:
+      A1: <theoretical yield in g>
+      A2: <implied percent yield in %>
+      A3: <possible or impossible>
+    parts:
+      - {label: A1, number: 5.084, rel_tol: 0.01}
+      - {label: A2, number: 108.2, abs_tol: 1.5}
+      - {label: A3, verdict: [impossible, not possible, no]}
+
+  - id: r-stoich-04
+    domain: chemistry
+    topic: stoichiometry
+    lang: en
+    question: >-
+      6.54 g of zinc is added to 50.0 mL of 2.00 M hydrochloric acid (Zn + 2 HCl → ZnCl2 + H2). Which
+      reactant is limiting, and what volume of hydrogen forms at 25.0 °C and 1.00 atm (ideal gas)?
+      Finish with exactly these lines:
+      A1: <limiting reactant>
+      A2: <volume of H2 in L>
+    parts:
+      - {label: A1, verdict: [HCl, hydrochloric acid, hydrogen chloride]}
+      - {label: A2, number: 1.223, rel_tol: 0.015}
+
+  - id: r-stoich-05
+    domain: chemistry
+    topic: stoichiometry
+    lang: ru
+    question: >-
+      Этанол (C2H5OH) массой 11,5 г полностью сгорает в кислороде. Сколько граммов CO2 образуется и
+      сколько литров O2 (н. у., 22,4 л/моль) потребуется? Закончите ответ ровно двумя строками:
+      A1: <масса CO2 в г>
+      A2: <объём O2 в л>
+    parts:
+      - {label: A1, number: 21.97, rel_tol: 0.01}
+      - {label: A2, number: 16.77, rel_tol: 0.01}
+
+  # --- unit conversion ------------------------------------------------------------------------------
+  - id: r-units-01
+    domain: physics
+    topic: unit-conversion
+    lang: en
+    question: >-
+      A car's fuel economy is 35 miles per US gallon. Express it in litres per 100 km
+      (1 mile = 1.609344 km, 1 US gallon = 3.785411784 L). Finish with exactly this line:
+      A1: <L/100 km>
+    parts:
+      - {label: A1, number: 6.720, rel_tol: 0.01}
+
+  - id: r-units-02
+    domain: physics
+    topic: unit-conversion
+    lang: en
+    holdout: true
+    question: >-
+      Convert a pressure of 2.50 atm to kilopascals and to millimetres of mercury. Finish with exactly
+      these lines:
+      A1: <pressure in kPa>
+      A2: <pressure in mmHg>
+    parts:
+      - {label: A1, number: 253.3, rel_tol: 0.005}
+      - {label: A2, number: 1900, rel_tol: 0.005}
+
+  - id: r-units-03
+    domain: physics
+    topic: unit-conversion
+    lang: en
+    question: >-
+      How much energy, in kilowatt-hours, does it take to heat 50.0 L of water from 15.0 °C to 60.0 °C?
+      Use c = 4.18 J g⁻¹ K⁻¹ and a density of 1.00 g/mL, and ignore losses. Finish with exactly this line:
+      A1: <energy in kWh>
+    parts:
+      - {label: A1, number: 2.6125, rel_tol: 0.01}
+
+  # --- multi-step physics ---------------------------------------------------------------------------
+  - id: r-phys-01
+    domain: physics
+    topic: kinematics
+    lang: en
+    question: >-
+      A ball is thrown straight up at 15.0 m/s from the edge of a roof 20.0 m above the ground and then
+      falls to the ground beside the building. Ignore air resistance and use g = 9.81 m/s². Find its
+      greatest height above the ground and the time from the throw until it hits the ground. Finish with
+      exactly these lines:
+      A1: <greatest height above the ground in m>
+      A2: <time to hit the ground in s>
+    parts:
+      - {label: A1, number: 31.47, rel_tol: 0.01}
+      - {label: A2, number: 4.06, rel_tol: 0.01}
+
+  - id: r-phys-02
+    domain: physics
+    topic: energy
+    lang: en
+    question: >-
+      A 1200 kg car moving at 25.0 m/s brakes to a stop over 50.0 m. What was its kinetic energy before
+      braking, and what was the average braking force? Finish with exactly these lines:
+      A1: <kinetic energy in kJ>
+      A2: <average braking force in N>
+    parts:
+      - {label: A1, number: 375, rel_tol: 0.01}
+      - {label: A2, number: 7500, rel_tol: 0.01}
+
+  - id: r-phys-03
+    domain: physics
+    topic: circuits
+    lang: en
+    question: >-
+      A 6.0 Ω and a 3.0 Ω resistor are connected in parallel, and this pair is in series with a 4.0 Ω
+      resistor across an ideal 12 V battery. Find the current from the battery and the current through
+      the 3.0 Ω resistor. Finish with exactly these lines:
+      A1: <battery current in A>
+      A2: <current through the 3.0 Ω resistor in A>
+    parts:
+      - {label: A1, number: 2.0, rel_tol: 0.01}
+      - {label: A2, number: 1.333, rel_tol: 0.01}
+
+  - id: r-phys-04
+    domain: physics
+    topic: gas-laws
+    lang: en
+    question: >-
+      An ideal gas occupies 2.50 L at 25.0 °C and 1.00 atm. How many moles are there, and what volume does
+      the gas occupy at 100.0 °C and 2.00 atm? Finish with exactly these lines:
+      A1: <amount in mol>
+      A2: <new volume in L>
+    parts:
+      - {label: A1, number: 0.1022, rel_tol: 0.01}
+      - {label: A2, number: 1.564, rel_tol: 0.01}
+
+  - id: r-phys-05
+    domain: physics
+    topic: energy
+    lang: ru
+    holdout: true
+    question: >-
+      Тело массой 2,0 кг соскальзывает без трения с высоты 5,0 м, а затем движется по горизонтальной
+      поверхности с коэффициентом трения 0,20. Найдите скорость у основания спуска (g = 9,81 м/с²) и путь
+      по горизонтали до остановки. Закончите ответ ровно двумя строками:
+      A1: <скорость в м/с>
+      A2: <путь в м>
+    parts:
+      - {label: A1, number: 9.90, rel_tol: 0.01}
+      - {label: A2, number: 25.0, rel_tol: 0.01}
+
+  - id: r-phys-06
+    domain: physics
+    topic: radioactive-decay
+    lang: en
+    question: >-
+      Iodine-131 has a half-life of 8.02 days. What fraction of a sample remains after 30.0 days, and how
+      much of a 5.00 mg sample is left? Finish with exactly these lines:
+      A1: <fraction remaining, as a decimal>
+      A2: <mass left in mg>
+    parts:
+      - {label: A1, number: 0.0748, rel_tol: 0.01}
+      - {label: A2, number: 0.374, rel_tol: 0.01}
+
+  # --- equilibrium, pH, concentrations --------------------------------------------------------------
+  - id: r-chem-01
+    domain: chemistry
+    topic: ph
+    lang: en
+    question: >-
+      What is the pH of 0.10 M acetic acid (Ka = 1.8 × 10⁻⁵) at 25 °C? Finish with exactly this line:
+      A1: <pH, two decimals>
+    parts:
+      - {label: A1, number: 2.87, abs_tol: 0.02}
+
+  - id: r-chem-02
+    domain: chemistry
+    topic: ph
+    lang: en
+    holdout: true
+    question: >-
+      10.0 mL of 0.50 M NaOH is diluted with water to 250.0 mL. What is the pH of the diluted solution at
+      25 °C? Finish with exactly this line:
+      A1: <pH, two decimals>
+    parts:
+      - {label: A1, number: 12.30, abs_tol: 0.02}
+
+  - id: r-chem-03
+    domain: chemistry
+    topic: concentration
+    lang: en
+    question: >-
+      What mass of copper(II) sulfate pentahydrate, CuSO4·5H2O, is needed to make 500.0 mL of 0.200 M
+      CuSO4 solution? Finish with exactly this line:
+      A1: <mass in g>
+    parts:
+      - {label: A1, number: 24.97, rel_tol: 0.005}
+
+  - id: r-chem-04
+    domain: chemistry
+    topic: buffer
+    lang: en
+    question: >-
+      A buffer contains 0.30 mol of acetic acid and 0.20 mol of sodium acetate in 1.0 L (pKa = 4.76).
+      What is its pH, and what is the pH after 0.050 mol of HCl is added (no volume change)? Finish with
+      exactly these lines:
+      A1: <pH before, two decimals>
+      A2: <pH after, two decimals>
+    parts:
+      - {label: A1, number: 4.58, abs_tol: 0.02}
+      - {label: A2, number: 4.39, abs_tol: 0.02}
+
+  - id: r-chem-05
+    domain: chemistry
+    topic: titration
+    lang: en
+    question: >-
+      25.0 mL of sulfuric acid is exactly neutralised by 31.2 mL of 0.100 M NaOH. What is the molar
+      concentration of the sulfuric acid? Finish with exactly this line:
+      A1: <concentration in mol/L>
+    parts:
+      - {label: A1, number: 0.0624, rel_tol: 0.01}
+
+  - id: r-chem-06
+    domain: chemistry
+    topic: equilibrium
+    lang: en
+    question: >-
+      For N2 + 3 H2 ⇌ 2 NH3, an equilibrium mixture in a 1.00 L vessel contains 0.50 mol N2, 1.50 mol H2
+      and 0.20 mol NH3. What is Kc? Finish with exactly this line:
+      A1: <Kc>
+    parts:
+      - {label: A1, number: 0.0237, rel_tol: 0.01}
+
+  # --- inconsistent given data ----------------------------------------------------------------------
+  - id: r-data-01
+    domain: chemistry
+    topic: inconsistent-data
+    lang: en
+    question: >-
+      A lab report says: "We reacted 0.250 mol of A with 0.250 mol of B, a 1:1 ratio. We used 10.0 g of A
+      (M = 60.0 g/mol) and 20.0 g of B (M = 100.0 g/mol)." Are the stated amounts consistent with the stated
+      masses? Finish with exactly these lines:
+      A1: <consistent or inconsistent>
+      A2: <amount of A in mol from its mass>
+      A3: <amount of B in mol from its mass>
+    parts:
+      - {label: A1, verdict: [inconsistent, not consistent, no]}
+      - {label: A2, number: 0.1667, rel_tol: 0.01}
+      - {label: A3, number: 0.200, rel_tol: 0.01}
+
+  - id: r-data-02
+    domain: physics
+    topic: inconsistent-data
+    lang: en
+    holdout: true
+    question: >-
+      A report says: "A 2.0 kg stone was dropped from rest from a height of 10.0 m and hit the ground at
+      20 m/s; air resistance was negligible." Is this consistent? Use g = 9.81 m/s². Finish with exactly
+      these lines:
+      A1: <consistent or inconsistent>
+      A2: <the impact speed the stated height implies, in m/s>
+    parts:
+      - {label: A1, verdict: [inconsistent, not consistent, no]}
+      - {label: A2, number: 14.0, rel_tol: 0.01}
+
+  - id: r-data-03
+    domain: chemistry
+    topic: inconsistent-data
+    lang: ru
+    question: >-
+      В отчёте написано: «Навеску CaCO3 массой 5,00 г прокалили; потеря массы составила 3,00 г, что
+      соответствует полному разложению CaCO3 → CaO + CO2». Согласуется ли потеря массы с полным
+      разложением? Закончите ответ ровно двумя строками:
+      A1: <согласуется или не согласуется>
+      A2: <ожидаемая потеря массы в г>
+    parts:
+      - {label: A1, verdict: [не согласуется, несогласуется, нет, inconsistent, not consistent, no]}
+      - {label: A2, number: 2.20, rel_tol: 0.01}
+
+  # --- claims: true / false / unconfirmed -----------------------------------------------------------
+  - id: r-claims-01
+    domain: chemistry
+    topic: claim-triage
+    lang: en
+    question: >-
+      A supplier's certificate says: product X, purity 99.5 % by GC, batch 4411, net mass 25.0 kg, shipped
+      2026-03-01. It gives no water content. Our receiving log says: 24.6 kg received on 2026-03-03. Using
+      only this information, classify each claim as true, false or unconfirmed, with a short reason.
+      Claim 1: the received mass matches the certificate within 1 %. Claim 2: the product contains less
+      than 0.1 % water. Claim 3: the goods arrived after the shipping date. Claim 4: the purity was
+      measured by gas chromatography. Finish with exactly these lines, each starting with true, false or
+      unconfirmed:
+      A1: <claim 1>
+      A2: <claim 2>
+      A3: <claim 3>
+      A4: <claim 4>
+    parts:
+      - {label: A1, verdict: [false]}
+      - {label: A2, verdict: [unconfirmed]}
+      - {label: A3, verdict: [true]}
+      - {label: A4, verdict: [true]}
+
+  - id: r-claims-02
+    domain: chemistry
+    topic: claim-triage
+    lang: en
+    question: >-
+      10.0 g of NaOH is dissolved in water and made up to 250.0 mL. Classify each claim as true, false or
+      unconfirmed, with a short reason. Claim 1: the NaOH concentration is 1.00 mol/L (to three significant
+      figures). Claim 2: the solution contains 0.500 mol of sodium ions. Claim 3: the solution was made up
+      at 25 °C. Finish with exactly these lines, each starting with true, false or unconfirmed:
+      A1: <claim 1>
+      A2: <claim 2>
+      A3: <claim 3>
+    parts:
+      - {label: A1, verdict: [true]}
+      - {label: A2, verdict: [false]}
+      - {label: A3, verdict: [unconfirmed]}
+
+  - id: r-claims-03
+    domain: chemistry
+    topic: claim-triage
+    lang: ru
+    question: >-
+      5,85 г NaCl растворили в воде и довели объём раствора до 100,0 мл. Оцените каждое утверждение как
+      «верно», «неверно» или «не подтверждено» и кратко обоснуйте. Утверждение 1: концентрация NaCl равна
+      1,00 моль/л. Утверждение 2: раствор насыщенный. Утверждение 3: раствор приготовлен при 20 °C.
+      Закончите ответ ровно тремя строками, каждая начинается со слов «верно», «неверно» или
+      «не подтверждено»:
+      A1: <утверждение 1>
+      A2: <утверждение 2>
+      A3: <утверждение 3>
+    parts:
+      - {label: A1, verdict: [верно, true]}
+      - {label: A2, verdict: [неверно, false]}
+      - {label: A3, verdict: [не подтверждено, неподтверждено, unconfirmed]}
+
+  # --- errors in a short report ---------------------------------------------------------------------
+  - id: r-report-01
+    domain: chemistry
+    topic: error-finding
+    lang: en
+    question: >-
+      Which numbered statements of this report contain an error? S1: The molar mass of CaCO3 is
+      100.09 g/mol. S2: So 5.00 g of CaCO3 is 0.0500 mol. S3: Heating gives CaCO3 → CaO + CO2, so 0.0500 mol
+      of CO2 forms, which is 1.12 L at STP (22.4 L/mol). S4: The mass of CaO formed is 0.0500 × 56.08 =
+      3.80 g. S5: The mass lost on heating is 5.00 − 3.80 = 2.20 g, which matches the mass of CO2
+      (0.0500 × 44.01 = 2.20 g). Finish with exactly this line, listing the ids of every wrong statement:
+      A1: <ids, e.g. S1, S3>
+    parts:
+      - {label: A1, ids: [S4, S5]}
+
+  - id: r-report-02
+    domain: physics
+    topic: error-finding
+    lang: ru
+    holdout: true
+    question: >-
+      В каких пронумерованных утверждениях отчёта есть ошибка? S1: Резисторы 10 Ом и 15 Ом соединены
+      последовательно, общее сопротивление 25 Ом. S2: При напряжении 50 В ток равен 2,0 А. S3: Мощность
+      на резисторе 10 Ом равна 2,0² × 10 = 40 Вт. S4: Мощность на резисторе 15 Ом равна 2,0² × 15 = 50 Вт.
+      S5: Полная мощность цепи равна 100 Вт. Закончите ответ ровно одной строкой со всеми ошибочными
+      утверждениями:
+      A1: <номера, например S1, S3>
+    parts:
+      - {label: A1, ids: [S4]}
+
+  # --- explicit constraints -------------------------------------------------------------------------
+  - id: r-constraint-01
+    domain: chemistry
+    topic: constraints
+    lang: en
+    question: >-
+      Compute the molar mass of glucose, C6H12O6, using only these atomic masses: C = 12, H = 1, O = 16.
+      Do not use more precise values. Finish with exactly this line:
+      A1: <molar mass in g/mol>
+    parts:
+      - {label: A1, number: 180, abs_tol: 0.01}
+
+  - id: r-constraint-02
+    domain: chemistry
+    topic: constraints
+    lang: en
+    question: >-
+      A reagent bottle's label reads "ACS reagent grade, assay ≥ 99.0 %". No certificate of analysis or test
+      result for this lot is available. Using only this information and without assuming anything from the
+      label's wording, is the actual purity of this lot verified? Finish with exactly this line, starting
+      with yes, no or unconfirmed:
+      A1: <verdict>
+    parts:
+      - {label: A1, verdict: [unconfirmed, no, not verified]}
+
+  - id: r-constraint-03
+    domain: chemistry
+    topic: constraints
+    lang: en
+    question: >-
+      How many water molecules are in 1.00 g of water? Give the result in scientific notation with three
+      significant figures. Finish with exactly this line:
+      A1: <number of molecules>
+    parts:
+      - {label: A1, number: 3.34e22, rel_tol: 0.005}
