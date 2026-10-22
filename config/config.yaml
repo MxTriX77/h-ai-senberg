@@ -1,0 +1,67 @@
+# h-ai-senberg configuration: the one file that controls models, endpoints, prompts, paths and launch.
+# Any string may use ${VAR} or ${VAR:-default}; values come from the environment or `.env`
+# (the real environment wins). Every variable used here is listed in `.env.example`.
+# Relative paths resolve against the project root (the folder that holds `config/`).
+
+app:
+  host: "${APP_HOST:-127.0.0.1}"
+  port: "${APP_PORT:-8000}"
+  debug: false
+
+model_backend:
+  provider: "openai_compatible"            # informational; every backend speaks the OpenAI chat API
+  api_base: "${API_BASE_URL:-http://127.0.0.1:8080/v1}"
+  api_key: "${API_KEY:-}"                  # empty for local llama-server; set in .env for cloud backends
+  model_id: "${MODEL_ID:-qwen3.5-9b}"      # sent as `model`; also llama-server's --alias
+  temperature: 0.6
+  max_tokens: 8192
+  timeout_s: 600                           # read timeout: thinking can be quiet for a while
+  extra_body:                              # per-model sampling quirks, merged into each request
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+
+reasoning_policy:
+  system_prompt: |
+    You are a careful assistant for chemistry and physics.
+    Answer precisely and use SI units unless the question asks otherwise.
+    For any number, show the working: the formula, the values you used and the result with its unit.
+    If you are not sure, say so plainly instead of guessing.
+    Never invent sources, citations, data or quotes.
+  enable_multi_hop_verification: true      # used from the verifier step on
+  max_search_depth: 3                      # used from the verifier step on
+
+retrieval:                                 # used from the Layer 1 step on
+  layer1_encyclopedia_db: "${DATA_DIR:-data}/encyclopedia_fts.db"
+  layer2_literature_index: "${DATA_DIR:-data}/vector_store/"
+  top_k_proofs: 5
+
+llama_server:                              # local reasoner, started by `uv run haisenberg`
+  enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend
+  executable: "${LLAMA_SERVER_EXE:-llama-server}"
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"
+  host: "127.0.0.1"
+  port: 8080                               # keep in step with model_backend.api_base
+  ctx_size: 16384
+  startup_timeout_s: 300
+  env:
+    GGML_VK_VISIBLE_DEVICES: "${LLAMA_VK_DEVICES:-1}"   # Vulkan1 = RTX 4050, Vulkan0 = AMD iGPU
+  flags:                                   # true -> --flag, false/null -> omitted, else --flag value
+    no-ui: true                            # this app serves the UI
+    jinja: true                            # use the GGUF's own chat template (tool calls later)
+    reasoning: "on"
+    reasoning-format: deepseek             # thinking arrives as reasoning_content
+    reasoning-budget: 4096
+    parallel: 1
+    n-predict: 8192
+    gpu-layers: auto
+    fit: "on"
+    flash-attn: auto
+    cache-type-k: q8_0
+    cache-type-v: q8_0
+    threads: 8
+
+ui:
+  dist_dir: "ui/dist"                      # built by scripts/build_ui.py
+  settings: {}                             # WebUI defaults, served as /props ui_settings
