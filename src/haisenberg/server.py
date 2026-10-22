@@ -68,8 +68,6 @@ def create_app(cfg: Config, llm: LLMClient | None = None, knowledge: Knowledge |
             )
         try:
             first = await anext(stream, None)
-            if first and "route" in first:  # the router's note comes before any model call
-                first = await anext(stream, None)
         except UpstreamError as e:
             status = e.status if e.status and 400 <= e.status < 500 else 502
             return _error(status, e.message, "upstream_error")

@@ -15,7 +15,6 @@ from typing import Any
 
 from .config import Config
 from .llm import LLMClient, estimate_tokens
-from .router import CASUAL, route
 from .tools import Knowledge, Sources
 from .verifier import Verification, Verifier, strip_cites
 
@@ -70,25 +69,6 @@ class Agent:
         self.context = cfg.context_tokens
         self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
         self.chars_per_token = cfg.model_backend.chars_per_token
-        self.router = cfg.router
-
-    async def _casual(self, messages: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
-        """Small talk (router): one call, no tools, no checks; the answer streams straight as content."""
-        finish = None
-        stream = self.llm.stream_chat(messages, **self.router.casual_request)
-        try:
-            async for chunk in stream:
-                choice = (chunk.get("choices") or [{}])[0]
-                delta = choice.get("delta") or {}
-                if text := delta.get("reasoning_content"):
-                    yield {"reasoning_content": text}
-                if text := delta.get("content"):
-                    yield {"content": text}
-                finish = choice.get("finish_reason") or finish
-        finally:
-            await stream.aclose()
-        yield {"verification": {}}
-        yield {"finish_reason": finish or "stop"}
 
     def _estimate(self, messages: list[dict[str, Any]]) -> int:
         return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
@@ -104,10 +84,8 @@ class Agent:
         return history
 
     async def run(self, history: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
-        depth, why = route(_question(history), self.router)
-        yield {"route": depth}  # for in-process callers (evals); the server forwards only text fields
-        tools = [] if depth == CASUAL else self.knowledge.tools
-        system = self.policy.casual_prompt if depth == CASUAL else self.policy.system_prompt
+        tools = self.knowledge.tools
+        system = self.policy.system_prompt
         if tools:
             system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -118,12 +96,6 @@ class Agent:
             yield {"verification": {}}
             yield {"finish_reason": "stop"}
             return
-        if depth == CASUAL:
-            async for item in self._casual(messages):
-                yield item
-            return
-        if self.router.enabled:
-            yield {"reasoning_content": f"Route: {depth} ({why})\n"}
         sources = Sources()
         rounds, room_left = 0, True
         while True:

@@ -59,30 +59,16 @@ class ModelBackendConfig(_Section):
 
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
-    casual_prompt: str  # system message for casual talk (router): short and natural
     tool_prompt: str
     enable_multi_hop_verification: bool
     max_search_depth: NonNegativeInt
 
-    @field_validator("system_prompt", "casual_prompt", "tool_prompt")
+    @field_validator("system_prompt", "tool_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("must not be empty")
         return v
-
-
-class RouterConfig(_Section):
-    """How much checking a message gets (D-033); see haisenberg.router."""
-
-    enabled: bool
-    casual_max_chars: PositiveInt
-    casual_max_other_words: NonNegativeInt  # words besides the casual cues
-    analytic_min_chars: PositiveInt
-    analytic_min_items: PositiveInt
-    casual_cues: list[str]  # whole words or phrases
-    analytic_cues: list[str]  # word starts
-    casual_request: dict[str, Any] = {}  # fields merged into the casual call (per-model quirks, D-013)
 
 
 class RetrievalConfig(_Section):
@@ -166,7 +152,6 @@ class Config(_Section):
     app: AppConfig
     model_backend: ModelBackendConfig
     reasoning_policy: ReasoningPolicyConfig
-    router: RouterConfig
     retrieval: RetrievalConfig
     tools: dict[str, ToolText]
     verifier: VerifierConfig
