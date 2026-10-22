@@ -222,12 +222,3 @@ def test_check_fixes_counted():
          "verification": {"counts": {}, "checks": [{"checker": "x", "text": "a", "fixed": "b", "note": ""},
                                                    {"checker": "x", "text": "c", "fixed": None, "note": ""}]}}
     assert summarize([r])["check_fixes"] == 1
-
-
-@pytest.mark.anyio
-async def test_route_recorded(cfg, fake, built_store, tmp_path):
-    fake.scripts = [[content("Benzene boils at 80.1 °C.")], [content("C1: not_said")]]
-    agent = Agent(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))
-    q = {"id": "q1", "question": "Boiling point of benzene?", "answer": {"number": 80.1, "abs_tol": 0.5}}
-    report = await run_eval(agent, [q], tmp_path / "r.json")
-    assert report["results"][0]["route"] == "factual"

@@ -41,16 +41,6 @@ The server owns the policy: the system prompt from `config/config.yaml` replaces
 - **llama-server is restarted.** When the llama-server the app started exits (a crash, a kill), the app logs its exit code or signal and starts it again; the next question works once it has loaded. Set `LLAMA_LOG_FILE=/path/llama.log` to also keep llama-server's own log in a file.
 - **The context cannot overflow.** Each model call fits `prompt + max_tokens` into the context (`llama_server.ctx_size`, or `model_backend.context_tokens` for a remote backend), estimating tokens as characters / `model_backend.chars_per_token` (2.0, on the safe side of the 2.4 measured on dense tool results). Old turns of a long chat are dropped first, tool results are shortened when they would not fit (and the model then answers with what it has), and the judge gets only the passages that fit.
 
-### How much checking a message gets
-
-A router picks the depth of each message by rules in code, without a model call (`router` in the config):
-
-- **Casual** (small talk such as "hi, how are you?", "thanks!", "tell me a joke"): one short model call with `reasoning_policy.casual_prompt`, no tools, no checks, no thinking (`router.casual_request`). The answer streams straight back. A message counts as casual only when it is short (`casual_max_chars`), has no digits, and holds a casual cue (`casual_cues`) with at most `casual_max_other_words` other words, so "is it ok to mix bleach and ammonia?" is not casual.
-- **Analytic** (listed items such as `A) … B) …` or `Claim 1: …`, long messages, or a request to check, verify, compare or audit something that comes with numbers or several sentences): today's full path; the evidence protocol builds on it.
-- **Factual**: everything else, with lookups and claim checks. Anything the rules are unsure about lands here.
-
-The Reasoning block starts with the route and why (`Route: analytic (3 listed items)`). Cue words are in English and Russian; add more languages in `casual_cues` and `analytic_cues`. `router.enabled: false` sends every message down the factual path.
-
 ### Tools and citations
 
 When the Layer 1 store exists, the model looks facts up before it answers. The tools are generated from the sources in the store: `search_knowledge(query, domain?)` searches every text source (today the Wikipedia articles; `domain` is one of the domains the sources declare, e.g. `chemistry`, `physics`), and there is one lookup per kind of structured data (`lookup_compound` for PubChem, `lookup_constant` for CODATA). Their descriptions, the extra instructions for tool use (`reasoning_policy.tool_prompt`) and the number of tool rounds per answer (`reasoning_policy.max_search_depth`; `0` turns tools off) are in `config/config.yaml`. Tools are sent as standard OpenAI `tools`, so the backend must support tool calls (llama-server does with `--jinja`, which the launcher sets).

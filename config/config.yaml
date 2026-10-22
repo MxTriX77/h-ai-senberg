@@ -28,8 +28,8 @@ model_backend:
 
 reasoning_policy:
   system_prompt: |
-    You are a helpful, careful assistant. Talk naturally, and be precise whenever facts or numbers matter.
-    Use SI units unless the question asks otherwise.
+    You are a careful assistant for chemistry and physics.
+    Answer precisely and use SI units unless the question asks otherwise.
     For any number, show the working: the formula, the values you used and the result with its unit.
     If you are not sure, say so plainly instead of guessing.
     Never invent sources, citations, data or quotes.
@@ -45,8 +45,6 @@ reasoning_policy:
     You have no internet access. When a check needs something you cannot reach (the web, a DOI or
     publisher registry, a full paper, an outside database), say that it could not be verified (no web
     access). Never judge a reference, DOI, link or title valid or invalid from how it looks.
-  casual_prompt: |                         # system message for casual talk (see router): no tools, no checks
-    You are a friendly, helpful assistant. Reply naturally and briefly, in the user's language.
   tool_prompt: |                           # added to the system prompt when knowledge tools are offered
     You can look facts up in offline sources with the tools. Before you answer a factual question,
     look up what you need: search_knowledge for concepts, laws, properties and explanations, and the
@@ -60,23 +58,6 @@ reasoning_policy:
     recompute everything that depends on it.
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
-
-router:                                    # how much checking a message gets (D-033); no model call
-  enabled: true                            # false: every message takes the factual path (lookups + claim checks)
-  casual_max_chars: 80                     # casual: this short, no digits, and a casual cue (whole words or phrases)
-  casual_max_other_words: 3                #   with at most this many other words ("is it ok to mix X and Y?" is not)
-  analytic_min_chars: 600                  # analytic: this long, or analytic_min_items listed items, or an
-  analytic_min_items: 2                    #   analytic cue (word start) with digits or two or more sentences
-  casual_cues: [hi, hello, hey, thanks, thank you, thx, good morning, good evening, good night, how are you,
-                "how's it going", who are you, what can you do, what are you, bye, goodbye, see you, ok, okay,
-                cool, nice, great, lol, tell me a joke, a joke, a poem, a story, привет, здравствуй, здравствуйте,
-                добрый день, доброе утро, добрый вечер, спасибо, как дела, кто ты, что ты умеешь, пока, до свидания,
-                отлично, круто, расскажи анекдот, шутку, стих]
-  analytic_cues: [verif, check, audit, assess, evaluat, compar, analy, prove, proof, true or false, critique,
-                  review, examine, is it correct, is this correct, find the error, find errors, inconsisten,
-                  провер, оцен, сравн, анализ, проанализ, докаж, верно ли, найди ошибк, аудит, рецензи]
-  casual_request:                          # fields of the casual call (per-model quirks, D-013)
-    chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer without thinking
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml

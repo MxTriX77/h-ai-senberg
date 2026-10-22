@@ -168,12 +168,11 @@ def pick(questions: list[dict], ids: list[str] | None = None, limit: int | None 
 
 
 async def run_one(agent: Agent, q: dict[str, Any]) -> dict[str, Any]:
-    t0, answer, report, error, depth = time.monotonic(), "", {}, None, None
+    t0, answer, report, error = time.monotonic(), "", {}, None
     try:
         async for item in agent.run([{"role": "user", "content": q["question"]}]):
             answer += item.get("content", "")
             report = item.get("verification", report)
-            depth = item.get("route", depth)
     except (UpstreamError, httpx.HTTPError) as e:
         error = str(e)
     claims = report.get("claims", [])
@@ -188,7 +187,6 @@ async def run_one(agent: Agent, q: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": q["id"],
         "category": category,
-        "route": depth,
         "question": q["question"],
         "known": q["answer"] if category == "facts" else q["parts"],
         "answer": answer,
