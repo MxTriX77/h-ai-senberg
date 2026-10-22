@@ -479,6 +479,15 @@ def test_plain_answer_shows_the_fixed_result(cfg, fake, knowledge):
     assert "0.0500 * 56.08 = 3.80 → 2.80" in reasoning_text(r)
 
 
+def test_arithmetic_check_switched_off(cfg, fake, knowledge):
+    cfg.verifier.arithmetic_check = False
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("It is 2 × 3 = 7.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "It is 2 × 3 = 7." and "Arithmetic:" not in reasoning_text(r)
+
+
 @pytest.mark.anyio
 async def test_report_lists_arithmetic_fixes(cfg, fake, knowledge):
     fake.chunks = [content("C1: not_said")]

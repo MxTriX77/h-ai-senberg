@@ -311,7 +311,9 @@ class Verifier:
 
     async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
         """Yield reasoning deltas while checking, then the Verification."""
-        draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol)
+        arithmetic, checked = [], 0
+        if self.cfg.arithmetic_check:
+            draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol)
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
