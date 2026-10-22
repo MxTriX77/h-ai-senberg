@@ -191,7 +191,8 @@ def test_long_history_trimmed(cfg, fake, knowledge):
 def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkeypatch):
     cfg.model_backend.max_tokens = 1000
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 100
-    monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: ("x" * 3000, ["[S1] X"], ["S1"]))
+    big = "x" * 4 * base_tokens(cfg, knowledge)  # one result is larger than all the room left
+    monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
     two_calls = [tool_call("lookup_compound", CAFFEINE, index=0, call_id="c1"),
                  tool_call("lookup_compound", CAFFEINE, index=1, call_id="c2"), finish("tool_calls")]
     fake.scripts = [two_calls, [content("answer")]]  # (a real backend honours tool_choice: "none")
