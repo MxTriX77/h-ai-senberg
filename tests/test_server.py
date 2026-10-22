@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import content, reasoning
+from haisenberg.agent import DRAFT_MARK
 from haisenberg.server import create_app
 
 
@@ -34,8 +35,9 @@ def test_thinking_then_answer(client, fake):
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
     ev = events(r.text)
     deltas = [e["choices"][0]["delta"] for e in ev[:-2]]
-    assert deltas == [
-        {"reasoning_content": "a"}, {"reasoning_content": "b"}, {"content": "c"}, {"content": "d"},
+    assert deltas == [  # the draft streams as reasoning; the answer is sent once the model is done
+        {"reasoning_content": "a"}, {"reasoning_content": "b"}, {"reasoning_content": DRAFT_MARK},
+        {"reasoning_content": "c"}, {"reasoning_content": "d"}, {"content": "cd"},
     ]
     assert ev[-2]["choices"][0] == {"index": 0, "delta": {}, "finish_reason": "stop"}
     assert ev[-1] == "[DONE]"
@@ -78,7 +80,9 @@ def test_non_streaming(client, fake):
     r = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
     body = r.json()
     assert body["object"] == "chat.completion"
-    assert body["choices"][0]["message"] == {"role": "assistant", "content": "answer", "reasoning_content": "think"}
+    assert body["choices"][0]["message"] == {
+        "role": "assistant", "content": "answer", "reasoning_content": "think" + DRAFT_MARK + "answer",
+    }
 
 
 def test_missing_messages_400(client):
@@ -109,7 +113,9 @@ def test_mid_stream_drop_ends_without_done(client, fake):
     fake.chunks = [content("a"), content("b"), content("c")]
     fake.fail_after = 2
     ev = events(chat(client).text)
-    assert [e["choices"][0]["delta"] for e in ev] == [{"content": "a"}, {"content": "b"}]
+    assert [e["choices"][0]["delta"] for e in ev] == [
+        {"reasoning_content": DRAFT_MARK}, {"reasoning_content": "a"}, {"reasoning_content": "b"},
+    ]
 
 
 def test_models(client, cfg):

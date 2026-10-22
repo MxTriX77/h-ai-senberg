@@ -33,6 +33,12 @@ The app speaks the OpenAI chat API at `http://127.0.0.1:8000/v1/chat/completions
 
 The server owns the policy: the system prompt from `config/config.yaml` replaces any system message a client sends, and client sampling settings are ignored.
 
+### Tools and citations
+
+When the Layer 1 store exists, the model looks facts up before it answers. The tools are generated from the sources in the store: `search_knowledge(query, domain?)` searches every text source (today the Wikipedia articles; `domain` is one of the domains the sources declare, e.g. `chemistry`, `physics`), and there is one lookup per kind of structured data (`lookup_compound` for PubChem, `lookup_constant` for CODATA). Their descriptions, the extra instructions for tool use (`reasoning_policy.tool_prompt`) and the number of tool rounds per answer (`reasoning_policy.max_search_depth`; `0` turns tools off) are in `config/config.yaml`. Tools are sent as standard OpenAI `tools`, so the backend must support tool calls (llama-server does with `--jinja`, which the launcher sets).
+
+The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft. The answer follows once the model is done: it cites sources as `[S1]` and ends with a list of the cited sources with their license and URL.
+
 To use another backend (an already running server or any OpenAI-compatible API), set in `.env`:
 
 ```bash
@@ -88,7 +94,7 @@ The build goes to `ui/dist/` (not committed).
 
 ## Data
 
-Offline sources are listed in `config/sources.yaml` (URL, destination, checksum, license). One command downloads whatever is missing into `data/raw/` (or `$DATA_DIR/raw`):
+Offline sources are listed in `config/sources.yaml` (URL, destination, checksum, license, domains). One command downloads whatever is missing into `data/raw/` (or `$DATA_DIR/raw`):
 
 ```bash
 uv run python -m ingest.download            # everything (~22 GB)
@@ -111,12 +117,16 @@ It holds:
 - **CODATA 2022 constants**: all 355.
 - **PubChem compounds**: every compound with a MeSH heading, plus every compound linked from a stored article. Each has its title, formula and synonyms, and a molar mass computed from the formula with IUPAC standard atomic weights.
 
-Every record carries a citation (source file and version, license, locator, URL). Query it from the command line:
+Every record carries its domains and a citation (source file and version, license, locator, URL). Query it from the command line:
 
 ```bash
 uv run haisenberg-l1 search "planck constant"
 uv run haisenberg-l1 compound caffeine          # also CID 2519, 58-08-2, C8H10N4O2
 uv run haisenberg-l1 constant "electron mass" --json
 ```
+
+Adding a source of a known kind is config only: add its entry (with `domains`) to `config/sources.yaml`, download, rebuild; the tools pick it up. Which pages of the all-articles mini ZIM fill gaps (infobox classes, WikiProjects and importance ratings, each mapped to a domain) is the `filter` of its entry.
+
+The store has a schema version; code from a newer version refuses an older store and asks for a rebuild (`uv run python -m ingest.build_l1`).
 
 With the 2026 sources the store holds about 37,500 articles, 355 constants and 96,700 compounds: about 200 MB, rebuilt in about 6 minutes. Lookups take a few milliseconds. `uv run pytest` runs a latency and facts check on the real store when it exists (set `DATA_DIR` if it is not under `data/`).

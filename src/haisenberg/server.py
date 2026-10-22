@@ -15,16 +15,19 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .agent import Agent
 from .config import Config
 from .llm import LLMClient, UpstreamError
+from .tools import Knowledge
 
 log = logging.getLogger(__name__)
 
 _FIELDS = ("reasoning_content", "content")
 
 
-def create_app(cfg: Config, llm: LLMClient | None = None) -> FastAPI:
+def create_app(cfg: Config, llm: LLMClient | None = None, knowledge: Knowledge | None = None) -> FastAPI:
     llm = llm or LLMClient(cfg.model_backend)
+    agent = Agent(cfg, llm, knowledge or Knowledge.open(cfg))
     model_id = cfg.model_backend.model_id
 
     @asynccontextmanager
@@ -44,15 +47,15 @@ def create_app(cfg: Config, llm: LLMClient | None = None) -> FastAPI:
         if not isinstance(messages, list) or not messages:
             return _error(400, "`messages` must be a non-empty list", "invalid_request_error")
 
-        # The server owns policy: configured system prompt, no client system messages,
-        # history reduced to role + content, client sampling and model ignored.
-        upstream = [{"role": "system", "content": cfg.reasoning_policy.system_prompt}] + [
+        # The server owns policy: the agent adds the configured system prompt and tools; client system
+        # messages are dropped, history is reduced to role + content, client sampling/model/tools ignored.
+        history = [
             {"role": m["role"], "content": m.get("content") or ""}
             for m in messages
             if isinstance(m, dict) and m.get("role") in ("user", "assistant")
         ]
 
-        stream = llm.stream_chat(upstream)
+        stream = agent.run(history)
         try:
             first = await anext(stream, None)
         except UpstreamError as e:
@@ -126,14 +129,12 @@ def create_app(cfg: Config, llm: LLMClient | None = None) -> FastAPI:
 
 
 async def _deltas(first: dict | None, stream: AsyncIterator[dict]):
-    """Yield (delta, finish_reason) from upstream chunks, keeping only content and reasoning."""
+    """Yield (delta, finish_reason) from the agent's items, keeping only non-empty content and reasoning."""
     try:
-        chunk = first
-        while chunk is not None:
-            choice = (chunk.get("choices") or [{}])[0]
-            delta = choice.get("delta") or {}
-            yield {k: delta[k] for k in _FIELDS if delta.get(k)}, choice.get("finish_reason")
-            chunk = await anext(stream, None)
+        item = first
+        while item is not None:
+            yield {k: item[k] for k in _FIELDS if item.get(k)}, item.get("finish_reason")
+            item = await anext(stream, None)
     finally:
         await stream.aclose()
 

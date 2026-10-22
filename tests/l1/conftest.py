@@ -100,12 +100,4 @@ def fresh_store(fixture_raw, fixture_manifest, tmp_path) -> Path:
     return db
 
 
-@pytest.fixture(scope="session")
-def built_store(tmp_path_factory) -> Path:
-    """One store built from the fixtures, shared read-only by the tests."""
-    from ingest.build_l1 import build
-
-    root = tmp_path_factory.mktemp("l1store")
-    db = root / "l1.db"
-    build(write_manifest(root / "sources.yaml"), make_raw(root), db)
-    return db
+# built_store (one fixture store shared by every test) lives in tests/conftest.py.

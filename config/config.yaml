@@ -29,14 +29,43 @@ reasoning_policy:
     For any number, show the working: the formula, the values you used and the result with its unit.
     If you are not sure, say so plainly instead of guessing.
     Never invent sources, citations, data or quotes.
+  tool_prompt: |                           # added to the system prompt when knowledge tools are offered
+    You can look facts up in offline sources with the tools. Before you answer a factual question,
+    look up what you need: search_knowledge for concepts, laws, properties and explanations, and the
+    lookup tools for compound data and physical constants. A few precise lookups beat many vague ones.
+    Every result has a source id such as [S1]. Put the id of the result you used right after each fact
+    you take from it, for example: "Ethanol boils at 78.2 Â°C [S1]." Cite only ids you were given.
+    If the results do not contain what you need, say so, and say which parts come from your own knowledge.
   enable_multi_hop_verification: true      # used from the verifier step on
-  max_search_depth: 3                      # used from the verifier step on
+  max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
   layer1_encyclopedia_db: "${DATA_DIR:-data}/encyclopedia_fts.db"   # Layer 1 store, rebuilt from raw_dir
   layer2_literature_index: "${DATA_DIR:-data}/vector_store/"
-  top_k_proofs: 5                          # default result count of the encyclopedia search
+  top_k_proofs: 5                          # records per search or lookup (agent tools, encyclopedia search default)
+  passage_chars: 1500                      # longest article passage handed to the model per record
+
+tools:                                     # texts of the agent tools; which tools exist follows the sources in the store (D-021)
+  search_knowledge:
+    description: >-
+      Search the offline encyclopedia (lead sections and infoboxes of Wikipedia articles) for concepts,
+      laws, phenomena, elements and compounds. Returns the best-matching passages, each with a source id.
+    parameters:
+      query: "A few keywords naming the topic, e.g. 'ethanol boiling point' or 'photoelectric effect'."
+      domain: "Optional: search only this subject area."
+  lookup_compound:
+    description: >-
+      Look up a chemical compound in PubChem by name, CAS number, CID or molecular formula. Returns its
+      formula, molar mass, monoisotopic mass and synonyms, each record with a source id.
+    parameters:
+      query: "Compound name, CAS number (e.g. 64-17-5), PubChem CID or formula (e.g. C2H6O)."
+  lookup_constant:
+    description: >-
+      Look up a physical constant (CODATA 2022) by name. Returns its value, uncertainty and unit,
+      each record with a source id.
+    parameters:
+      query: "Constant name, e.g. 'Planck constant', 'electron mass' or 'Avogadro constant'."
 
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend

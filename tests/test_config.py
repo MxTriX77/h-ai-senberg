@@ -246,3 +246,29 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
         write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
         monkeypatch.setenv(PROFILE_ENV, profile.stem)
         assert load_config(path).model_backend.model_id
+
+
+@pytest.mark.parametrize("section, key, value, named", [
+    ("reasoning_policy", "max_search_depth", -1, r"reasoning_policy\.max_search_depth"),
+    ("reasoning_policy", "tool_prompt", None, r"reasoning_policy\.tool_prompt"),
+    ("reasoning_policy", "tool_prompt", " ", r"reasoning_policy\.tool_prompt"),
+    ("retrieval", "passage_chars", 0, r"retrieval\.passage_chars"),
+])
+def test_tool_and_search_settings_validated(tmp_path, section, key, value, named):
+    data = base()
+    if value is None:
+        del data[section][key]
+    else:
+        data[section][key] = value
+    with pytest.raises(ConfigError, match=named):
+        load_config(write(tmp_path, data))
+
+
+def test_tool_texts(tmp_path):
+    cfg = load_config(write(tmp_path))
+    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant"}
+    assert set(cfg.tools["search_knowledge"].parameters) == {"query", "domain"}
+    data = base()
+    data["tools"]["search_knowledge"]["description"] = ""
+    with pytest.raises(ConfigError, match=r"tools\.search_knowledge\.description"):
+        load_config(write(tmp_path, data))

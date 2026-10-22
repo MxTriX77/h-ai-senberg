@@ -28,9 +28,10 @@ class LLMClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def stream_chat(self, messages: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+    async def stream_chat(self, messages: list[dict[str, Any]], **fields: Any) -> AsyncIterator[dict[str, Any]]:
         """Yield parsed `chat.completion.chunk` dicts until `[DONE]`.
 
+        `fields` (e.g. tools, tool_choice, sampling) are merged into the body last and win.
         Raises UpstreamError before the first chunk if the call fails; closing the
         iteration early closes the upstream connection.
         """
@@ -42,6 +43,7 @@ class LLMClient:
             "temperature": cfg.temperature,
             "max_tokens": cfg.max_tokens,
             **cfg.extra_body,
+            **fields,
         }
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         request = self._http.build_request(
