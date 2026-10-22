@@ -1,0 +1,15 @@
+.claude/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# local secrets
+.env
+
+# local data and indexes (large, rebuilt from scripts)
+data/
+
+# model weights
+models/

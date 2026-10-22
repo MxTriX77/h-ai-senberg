@@ -1,2 +1,7 @@
 # h-ai-senberg
-a modular, verifiable research AI chatbot powered by local proof-check layers (offline dump of wikipedia + antigravity API + pubchem) 
+
+A local, verifiable research chat for chemistry and physics.
+
+A local LLM answers questions and checks its claims against offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks) before showing the answer. Every claim is cited or marked unverified.
+
+Status: early development.
