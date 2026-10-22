@@ -1,4 +1,6 @@
+import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -6,7 +8,15 @@ import time
 import httpx
 import pytest
 
-from haisenberg.launcher import LauncherError, build_command, build_env, ensure_llama_server, stop
+from haisenberg.launcher import (
+    LauncherError,
+    Supervisor,
+    build_command,
+    build_env,
+    describe_exit,
+    ensure_llama_server,
+    stop,
+)
 
 SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
 
@@ -25,13 +35,15 @@ def health(*statuses):
 
 
 def test_flags_mapping(cfg):
-    cfg.llama_server.flags = {"jinja": True, "reasoning-format": "deepseek", "no-ui": True, "mlock": False, "x": None}
+    cfg.llama_server.flags = {
+        "jinja": True, "reasoning-format": "deepseek", "no-ui": True, "mlock": False, "x": None, "log-file": "",
+    }
     cmd = build_command(cfg)
     assert cmd[0] == cfg.llama_server.executable
     assert cmd[cmd.index("--model") + 1] == str(cfg.llama_server.model_path)
     assert cmd[cmd.index("--alias") + 1] == cfg.model_backend.model_id
     assert cmd[-4:] == ["--jinja", "--reasoning-format", "deepseek", "--no-ui"]
-    assert "--mlock" not in cmd and "--x" not in cmd
+    assert "--mlock" not in cmd and "--x" not in cmd and "--log-file" not in cmd
 
 
 def test_vulkan_device_env(cfg):
@@ -126,3 +138,59 @@ def test_llama_server_dies_when_the_app_is_killed():
     app.kill()  # hard kill: no cleanup code runs in the app
     app.wait()
     assert _gone_within(child_pid, 10)
+
+
+def wait_for(condition, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return condition()
+
+
+def test_supervisor_restarts_a_dead_server(cfg, caplog):
+    started = []
+
+    def start():
+        started.append(subprocess.Popen(SLEEPER))
+        return started[-1]
+
+    sup = Supervisor(cfg, start=start, pause_s=0.01)
+    with caplog.at_level(logging.INFO):
+        sup.start()
+        try:
+            started[0].kill()  # a crash or an OOM kill
+            assert wait_for(lambda: sup.restarts == 1 and len(started) == 2)
+            assert sup.proc is started[1] and started[1].poll() is None
+        finally:
+            sup.stop()
+    assert started[1].poll() is not None and len(started) == 2  # stopped once, not restarted
+    expected = "signal SIGKILL" if os.name != "nt" else "code 1"
+    assert f"llama-server exited with {expected}" in caplog.text
+
+
+def test_supervisor_retries_a_failed_restart(cfg):
+    calls = []
+
+    def start():
+        calls.append(1)
+        if len(calls) == 2:
+            raise LauncherError("still broken")
+        return subprocess.Popen([sys.executable, "-c", "pass"] if len(calls) == 1 else SLEEPER)
+
+    sup = Supervisor(cfg, start=start, pause_s=0.01)
+    sup.start()
+    try:
+        assert wait_for(lambda: len(calls) == 3 and sup.proc is not None and sup.proc.poll() is None)
+    finally:
+        sup.stop()
+
+
+def test_supervisor_does_not_watch_a_reused_server(cfg):
+    sup = Supervisor(cfg, start=lambda: None)
+    sup.start()
+    assert sup._thread is None
+    sup.stop()
+
+
+def test_describe_exit():
+    assert describe_exit(1) == "code 1" and describe_exit(-signal.SIGTERM) == "signal SIGTERM"

@@ -6,7 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, reasoning, tool_call
-from haisenberg.agent import DRAFT_MARK, Agent
+from haisenberg.agent import CUT_NOTE, DRAFT_MARK, Agent
+from haisenberg.llm import estimate_tokens
 from haisenberg.l1.store import L1Store
 from haisenberg.server import create_app
 from haisenberg.tools import Knowledge
@@ -156,8 +157,60 @@ def test_backend_dies_in_round_two(client, fake, caplog):
     fake.scripts = [lookup_round(), CONNECT_ERROR]
     with caplog.at_level(logging.ERROR):
         r = chat(client)
-    assert r.status_code == 200 and "[DONE]" not in r.text
+    assert r.status_code == 200 and r.text.endswith("data: [DONE]\n\n")
+    assert "could not be completed" in answer(r) and "unreachable" in answer(r)
     assert "unreachable" in caplog.text
+
+
+# --- context budget ----------------------------------------------------------------------------------
+
+
+def within_context(cfg, body) -> bool:
+    prompt = estimate_tokens(body["messages"], cfg.model_backend.chars_per_token, body.get("tools"))
+    return prompt + body.get("max_tokens", cfg.model_backend.max_tokens) <= cfg.context_tokens
+
+
+def base_tokens(cfg, knowledge) -> int:
+    system = f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"
+    return estimate_tokens([{"role": "system", "content": system}], cfg.model_backend.chars_per_token, knowledge.tools)
+
+
+def test_long_history_trimmed(cfg, fake, knowledge):
+    cfg.model_backend.max_tokens = 1000
+    cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 3000
+    turns = [{"role": r, "content": f"{r} turn {i} " + "x" * 600} for i in range(10) for r in ("user", "assistant")]
+    fake.scripts = [[content("ok")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        chat(c, [*turns, {"role": "user", "content": "the question"}])
+    sent = fake.bodies[0]["messages"]
+    assert 2 < len(sent) < len(turns) + 2 and sent[1]["role"] == "user"
+    assert sent[-1] == {"role": "user", "content": "the question"} and sent[-2]["content"].startswith("assistant turn 9")
+    assert within_context(cfg, fake.bodies[0])
+
+
+def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkeypatch):
+    cfg.model_backend.max_tokens = 1000
+    cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 100
+    monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: ("x" * 3000, ["[S1] X"], ["S1"]))
+    two_calls = [tool_call("lookup_compound", CAFFEINE, index=0, call_id="c1"),
+                 tool_call("lookup_compound", CAFFEINE, index=1, call_id="c2"), finish("tool_calls")]
+    fake.scripts = [two_calls, [content("answer")]]  # (a real backend honours tool_choice: "none")
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "answer" and len(fake.requests) == 2  # the first round filled the context
+    assert all(within_context(cfg, b) for b in fake.bodies)
+    tool_results = [m["content"] for m in fake.bodies[1]["messages"] if m["role"] == "tool"]
+    assert all(t.endswith(CUT_NOTE) for t in tool_results) and len(tool_results) == 2
+    assert fake.bodies[1]["tool_choice"] == "none" and "shortened to fit" in reasoning_text(r)
+
+
+def test_question_too_long(cfg, fake, knowledge):
+    cfg.model_backend.max_tokens = 1000
+    cfg.llama_server.ctx_size = 1000 + base_tokens(cfg, knowledge) + 100
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c, [{"role": "user", "content": "x" * 5000}])
+    assert "too long for the model's context" in answer(r) and not fake.requests
+    assert r.text.endswith("data: [DONE]\n\n")
 
 
 def test_client_tools_ignored(client, fake, knowledge):

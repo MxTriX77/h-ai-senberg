@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -23,6 +24,8 @@ from .tools import Knowledge
 log = logging.getLogger(__name__)
 
 _FIELDS = ("reasoning_content", "content")
+_END = object()
+KEEPALIVE = ": keep-alive\n\n"  # SSE comment: keeps proxies and the WebUI (3 s silence check) from dropping us
 
 
 def create_app(cfg: Config, llm: LLMClient | None = None, knowledge: Knowledge | None = None) -> FastAPI:
@@ -56,19 +59,18 @@ def create_app(cfg: Config, llm: LLMClient | None = None, knowledge: Knowledge |
         ]
 
         stream = agent.run(history)
+        cid, created = f"chatcmpl-{uuid.uuid4()}", int(time.time())
+        if body.get("stream"):  # start at once: waiting for the model (queue, prompt, restart) is covered by keep-alives
+            return StreamingResponse(
+                _sse(cid, created, model_id, stream, cfg.app.keepalive_s),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"},
+            )
         try:
             first = await anext(stream, None)
         except UpstreamError as e:
             status = e.status if e.status and 400 <= e.status < 500 else 502
             return _error(status, e.message, "upstream_error")
-
-        cid, created = f"chatcmpl-{uuid.uuid4()}", int(time.time())
-        if body.get("stream"):
-            return StreamingResponse(
-                _sse(cid, created, model_id, first, stream),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache"},
-            )
         try:
             return JSONResponse(await _collect(cid, created, model_id, first, stream))
         except (UpstreamError, httpx.HTTPError) as e:
@@ -139,7 +141,29 @@ async def _deltas(first: dict | None, stream: AsyncIterator[dict]):
         await stream.aclose()
 
 
-async def _sse(cid: str, created: int, model: str, first: dict | None, stream: AsyncIterator[dict]):
+async def _with_keepalive(stream: AsyncIterator[dict], interval: float):
+    """Yield the stream's items, and None whenever `interval` seconds pass without one.
+    Closing this generator (client gone) cancels the pending read first, which closes the upstream."""
+    pending: asyncio.Task | None = None
+    try:
+        while True:
+            pending = pending or asyncio.ensure_future(anext(stream, _END))
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield None
+                continue
+            item, pending = pending.result(), None
+            if item is _END:
+                return
+            yield item
+    finally:
+        if pending is not None:
+            pending.cancel()  # the read unwinds through the agent's cleanup, which closes the upstream request
+        else:
+            await stream.aclose()
+
+
+async def _sse(cid: str, created: int, model: str, stream: AsyncIterator[dict], keepalive_s: float):
     def event(delta: dict, finish: str | None = None) -> str:
         chunk = {
             "id": cid,
@@ -150,18 +174,30 @@ async def _sse(cid: str, created: int, model: str, first: dict | None, stream: A
         }
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-    finish = None
+    finish, items = None, _with_keepalive(stream, keepalive_s)
     try:
-        async for delta, reason in _deltas(first, stream):
-            finish = reason or finish
-            if delta:
+        async for item in items:
+            if item is None:
+                yield KEEPALIVE
+                continue
+            finish = item.get("finish_reason") or finish
+            if delta := {k: item[k] for k in _FIELDS if item.get(k)}:
                 yield event(delta)
-    except (UpstreamError, httpx.HTTPError) as e:
-        # Status 200 is already sent; ending without [DONE] tells the client the stream broke.
-        log.error("backend failed mid-stream: %s", e)
-        return
+    except Exception as e:  # status 200 is already sent: say what failed in the answer and end the stream properly
+        if isinstance(e, (UpstreamError, httpx.HTTPError)):
+            log.error("backend failed mid-stream: %s", e)
+        else:
+            log.exception("chat stream failed")
+        yield event({"content": failure_text(e)})
+    finally:
+        await items.aclose()  # client gone: stop the agent and its upstream request now, not at garbage collection
     yield event({}, finish or "stop")
     yield "data: [DONE]\n\n"
+
+
+def failure_text(e: Exception) -> str:
+    reason = e.message if isinstance(e, UpstreamError) else f"{type(e).__name__}: {e}"
+    return f"\n\n**The answer could not be completed:** {reason}. Please send the question again."
 
 
 async def _collect(cid: str, created: int, model: str, first: dict | None, stream: AsyncIterator[dict]):

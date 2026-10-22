@@ -1,7 +1,9 @@
+import httpx
 import pytest
 
-from conftest import content, reasoning
-from haisenberg.llm import UpstreamError
+from conftest import CONNECT_ERROR, DISCONNECT, UNAVAILABLE, content, reasoning
+from haisenberg import llm
+from haisenberg.llm import LLMClient, UpstreamError, estimate_tokens
 
 pytestmark = pytest.mark.anyio
 
@@ -71,3 +73,57 @@ async def test_early_close_closes_upstream(cfg, fake):
     assert await anext(stream) == content("a")
     await stream.aclose()
     assert fake.streams[-1].closed
+
+
+async def test_slow_backend_is_waited_for(cfg, fake):
+    fake.delay_s, fake.chunks = 0.3, [content("late")]
+    assert await drain(fake.client(cfg.model_backend)) == [content("late")]
+
+
+async def test_no_read_limit_by_default(cfg):
+    assert cfg.model_backend.timeout_s is None
+    timeout = LLMClient(cfg.model_backend)._http.timeout
+    assert timeout.read is None and timeout.connect == 10.0
+    cfg.model_backend.timeout_s = 1
+    assert LLMClient(cfg.model_backend)._http.timeout.read == 1
+
+
+async def test_read_limit_reached(cfg):
+    def handler(request):
+        raise httpx.ReadTimeout("no answer", request=request)
+
+    client = LLMClient(cfg.model_backend, http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with pytest.raises(UpstreamError, match="timed out"):
+        await drain(client)
+
+
+async def test_backend_comes_back(cfg, fake, monkeypatch):
+    monkeypatch.setattr(llm, "RETRY_S", 0.01)
+    cfg.model_backend.wait_s = 5
+    fake.scripts = [CONNECT_ERROR, DISCONNECT, UNAVAILABLE, [content("ok")]]
+    assert await drain(fake.client(cfg.model_backend)) == [content("ok")]
+    assert len(fake.requests) == 4
+
+
+async def test_unreachable_after_waiting(cfg, fake, monkeypatch):
+    monkeypatch.setattr(llm, "RETRY_S", 0.01)
+    cfg.model_backend.wait_s = 0.1
+    fake.connect_error = True
+    with pytest.raises(UpstreamError, match="unreachable"):
+        await drain(fake.client(cfg.model_backend))
+    assert len(fake.requests) > 2
+
+
+async def test_upstream_400_not_retried(cfg, fake):
+    cfg.model_backend.wait_s = 5
+    fake.status, fake.error_body = 400, {"error": {"message": "context too long"}}
+    with pytest.raises(UpstreamError):
+        await drain(fake.client(cfg.model_backend))
+    assert len(fake.requests) == 1
+
+
+def test_estimate_tokens():
+    messages = [{"role": "user", "content": "x" * 100},
+                {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "f", "arguments": "y" * 9}}]}]
+    assert estimate_tokens(messages, 2.0) == 55 + 2 * llm.PER_MESSAGE
+    assert estimate_tokens(messages, 2.0, tools=[{"a": 1}]) > estimate_tokens(messages, 2.0)

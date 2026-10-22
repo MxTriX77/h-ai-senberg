@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from .config import ModelBackendConfig
+
+
+RETRY_S = 2.0  # pause between attempts while the backend is unreachable or loading
+PER_MESSAGE = 8  # tokens a chat template adds per message (role markers), for the estimate below
+
+
+def estimate_tokens(messages: list[dict[str, Any]], chars_per_token: float, tools: list | None = None) -> int:
+    """Prompt tokens of a chat request, estimated from characters (no tokenizer: any backend works)."""
+    chars = len(json.dumps(tools, ensure_ascii=False)) if tools else 0
+    for m in messages:
+        c = m.get("content") or ""
+        chars += len(c) if isinstance(c, str) else sum(len(p.get("text", "")) for p in c if isinstance(p, dict))
+        for call in m.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            chars += len(fn.get("name") or "") + len(fn.get("arguments") or "")
+    return math.ceil(chars / chars_per_token) + PER_MESSAGE * len(messages)
 
 
 class UpstreamError(Exception):
@@ -32,7 +51,8 @@ class LLMClient:
         """Yield parsed `chat.completion.chunk` dicts until `[DONE]`.
 
         `fields` (e.g. tools, tool_choice, sampling) are merged into the body last and win.
-        Raises UpstreamError before the first chunk if the call fails; closing the
+        Raises UpstreamError before the first chunk if the call fails; a refused connection or a 503
+        (model loading, server restarting) is retried until `wait_s` has passed. Closing the
         iteration early closes the upstream connection.
         """
         cfg = self.cfg
@@ -46,16 +66,8 @@ class LLMClient:
             **fields,
         }
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
-        request = self._http.build_request(
-            "POST", cfg.api_base.rstrip("/") + "/chat/completions", json=body, headers=headers
-        )
-        try:
-            response = await self._http.send(request, stream=True)
-        except httpx.TimeoutException as e:
-            raise UpstreamError(f"backend at {cfg.api_base} timed out") from e
-        except httpx.TransportError as e:
-            raise UpstreamError(f"backend unreachable at {cfg.api_base}: {e}") from e
-
+        url = cfg.api_base.rstrip("/") + "/chat/completions"
+        response = await self._send(lambda: self._http.build_request("POST", url, json=body, headers=headers))
         try:
             if not response.is_success:
                 await response.aread()
@@ -70,6 +82,26 @@ class LLMClient:
                     yield json.loads(data)
         finally:
             await response.aclose()
+
+    async def _send(self, build) -> httpx.Response:
+        """Send until the backend answers with anything but 503, retrying refusals until `wait_s` is over.
+        No response means nothing was generated, so sending again is safe."""
+        api, deadline = self.cfg.api_base, time.monotonic() + self.cfg.wait_s
+        while True:
+            try:
+                response = await self._http.send(build(), stream=True)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as e:
+                if time.monotonic() >= deadline:  # RemoteProtocolError: e.g. a WSL relay with nothing behind it
+                    raise UpstreamError(f"backend unreachable at {api}: {e}") from e
+            except httpx.TimeoutException as e:  # only with a configured read limit (timeout_s)
+                raise UpstreamError(f"backend at {api} timed out") from e
+            except httpx.TransportError as e:
+                raise UpstreamError(f"backend unreachable at {api}: {e}") from e
+            else:
+                if response.status_code != 503 or time.monotonic() >= deadline:
+                    return response
+                await response.aclose()
+            await asyncio.sleep(min(RETRY_S, max(0.0, deadline - time.monotonic())))
 
 
 def _error_message(response: httpx.Response) -> str:

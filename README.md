@@ -33,6 +33,14 @@ The app speaks the OpenAI chat API at `http://127.0.0.1:8000/v1/chat/completions
 
 The server owns the policy: the system prompt from `config/config.yaml` replaces any system message a client sends, and client sampling settings are ignored.
 
+### Slow is fine, crashing is not
+
+- **No time limit on the model.** The app waits as long as the model needs: a request queued behind another one on llama-server's single slot, a long prompt on a CPU-offloaded model, slow generation (`model_backend.timeout_s: null`; set seconds to limit it). If the backend refuses connections or is still loading (HTTP 503), each call retries for up to `model_backend.wait_s` (300 s).
+- **Keep-alives.** A streamed answer starts at once, and the app sends an SSE comment (`: keep-alive`) after every `app.keepalive_s` (1 s) without output, so the browser never sees a silent connection (the WebUI gives up on a stream that is silent for 3 s when its tab comes back into view).
+- **Failures end the answer, not the connection.** If anything fails during an answer (the backend dies, rejects a request, or the app hits an error), the answer says what went wrong and that the question can be sent again, and the stream ends normally.
+- **llama-server is restarted.** When the llama-server the app started exits (a crash, a kill), the app logs its exit code or signal and starts it again; the next question works once it has loaded. Set `LLAMA_LOG_FILE=/path/llama.log` to also keep llama-server's own log in a file.
+- **The context cannot overflow.** Each model call fits `prompt + max_tokens` into the context (`llama_server.ctx_size`, or `model_backend.context_tokens` for a remote backend), estimating tokens as characters / `model_backend.chars_per_token` (2.0, on the safe side of the 2.4 measured on dense tool results). Old turns of a long chat are dropped first, tool results are shortened when they would not fit (and the model then answers with what it has), and the judge gets only the passages that fit.
+
 ### Tools and citations
 
 When the Layer 1 store exists, the model looks facts up before it answers. The tools are generated from the sources in the store: `search_knowledge(query, domain?)` searches every text source (today the Wikipedia articles; `domain` is one of the domains the sources declare, e.g. `chemistry`, `physics`), and there is one lookup per kind of structured data (`lookup_compound` for PubChem, `lookup_constant` for CODATA). Their descriptions, the extra instructions for tool use (`reasoning_policy.tool_prompt`) and the number of tool rounds per answer (`reasoning_policy.max_search_depth`; `0` turns tools off) are in `config/config.yaml`. Tools are sent as standard OpenAI `tools`, so the backend must support tool calls (llama-server does with `--jinja`, which the launcher sets).
@@ -87,6 +95,8 @@ bash scripts/wsl/run.sh
 ```
 
 Run `setup.sh` once, and again after adding a model. Then `run.sh` starts llama-server and the app; open http://localhost:8000 in a Windows browser. Ctrl+C stops both.
+
+Keep that terminal open while you use the app. WSL shuts the whole Ubuntu instance down about 15 s after its last terminal (or other `wsl.exe` process) closes, and llama-server and the app go with it, even when they were started in the background with `nohup` or `&`. To run unattended, keep a `wsl.exe` session attached.
 
 `setup.sh` installs everything under your WSL home: uv (`~/.local/bin`), the official llama.cpp Ubuntu CUDA build (`~/.local/share/llama.cpp/`), the Python environment (`~/.venvs/h-ai-senberg`, separate from the Windows `.venv`), and a copy of `models/*.gguf` on the WSL disk (`~/.local/share/h-ai-senberg/models/`), which loads in seconds instead of ~90 s over `/mnt/c`. The Windows setup is left as it is.
 

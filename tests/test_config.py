@@ -299,3 +299,24 @@ def test_answer_style(tmp_path):
     data["verifier"]["answer_style"] = "fancy"
     with pytest.raises(ConfigError, match=r"verifier\.answer_style"):
         load_config(write(tmp_path, data))
+
+
+def test_robustness_settings(tmp_path):
+    cfg = load_config(write(tmp_path))
+    b = cfg.model_backend
+    assert (cfg.app.keepalive_s, b.timeout_s, b.wait_s, b.context_tokens, b.chars_per_token) == (1, None, 300, None, 2.0)
+    assert cfg.context_tokens == cfg.llama_server.ctx_size == 16384 and b.max_tokens == 4096
+    data = base()
+    data["app"]["keepalive_s"] = 0
+    with pytest.raises(ConfigError, match=r"app\.keepalive_s"):
+        load_config(write(tmp_path, data))
+
+
+def test_big_profile_budget(tmp_path, monkeypatch):
+    root = tmp_path / "p"
+    path = write(root)
+    profile = REPO / "config" / "qwen3.5-35b-a3b-heretic.yaml"
+    write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
+    monkeypatch.setenv(PROFILE_ENV, profile.stem)
+    cfg = load_config(path)
+    assert (cfg.context_tokens, cfg.model_backend.max_tokens) == (32768, 8192)

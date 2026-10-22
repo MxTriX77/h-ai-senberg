@@ -18,7 +18,7 @@ import httpx
 
 from .config import Config
 from .l1.text import parse_formula, to_hill
-from .llm import LLMClient, UpstreamError
+from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import SEARCH, Knowledge, Source, Sources
 
 log = logging.getLogger(__name__)
@@ -259,6 +259,9 @@ class Verifier:
         self.cfg = cfg.verifier
         self.llm = llm
         self.knowledge = knowledge
+        judge_max = self.cfg.request.get("max_tokens") or cfg.model_backend.max_tokens
+        self.budget = cfg.context_tokens - judge_max  # prompt tokens a judge call may use
+        self.chars_per_token = cfg.model_backend.chars_per_token
 
     async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
         """Yield reasoning deltas while checking, then the Verification."""
@@ -306,14 +309,19 @@ class Verifier:
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
         """One judge call for these claims; sets their outcome. Yields reasoning lines."""
+        passages = list(passages)
+        while True:  # leave passages out from the end until the call fits the context
+            user = (
+                f"Question: {question}\n\nPassages:\n"
+                + "\n\n".join(f"[{s.id}] {s.record.label()}\n{s.passage}" for s in passages)
+                + "\n\nClaims:\n"
+                + "\n".join(f"C{c.n}: {plain(c.text)}" for c in claims)
+            )
+            messages = [{"role": "system", "content": self.cfg.judge_prompt}, {"role": "user", "content": user}]
+            if not passages or estimate_tokens(messages, self.chars_per_token) <= self.budget:
+                break
+            yield _say(f"- {passages.pop().id} left out of the judge call (context budget)\n")
         given = {s.id for s in passages}
-        user = (
-            f"Question: {question}\n\nPassages:\n"
-            + "\n\n".join(f"[{s.id}] {s.record.label()}\n{s.passage}" for s in passages)
-            + "\n\nClaims:\n"
-            + "\n".join(f"C{c.n}: {plain(c.text)}" for c in claims)
-        )
-        messages = [{"role": "system", "content": self.cfg.judge_prompt}, {"role": "user", "content": user}]
         try:
             reply = await self._complete(messages)
         except (UpstreamError, httpx.HTTPError) as e:
