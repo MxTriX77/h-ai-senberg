@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from .config import Config
+from .calc import find_arithmetic
 from .l1.text import parse_formula, to_hill
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import SEARCH, Knowledge, Source, Sources
@@ -60,12 +61,14 @@ class Claim:
 class Verification:
     answer: str  # the draft rendered by verifier.answer_style (see render)
     claims: list[Claim]
+    arithmetic: list[dict[str, str]] = field(default_factory=list)  # fixed results: expression, stated, fixed
 
     def report(self) -> dict[str, Any]:
         claims = [c for c in self.claims if c.outcome != NO_CLAIM]
         return {
             "claims": [{"text": c.text, "outcome": c.outcome, "ids": c.ids, "note": c.note} for c in claims],
             "counts": {o: sum(c.outcome == o for c in claims) for o in OUTCOMES},
+            "arithmetic": self.arithmetic,
         }
 
 
@@ -174,6 +177,29 @@ def _format(ref: float, like: Number) -> str:
     return f"{ref:.{like.decimals}f}"
 
 
+def fix_arithmetic(draft: str, rel_tol: float) -> tuple[str, list[dict[str, str]], int]:
+    """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
+    A result is wrong when it is off by more than half a unit of its last digit and rel_tol of the value."""
+    decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
+    fixes, checked = [], 0
+    for a in find_arithmetic(draft, decimal_comma):
+        window = draft[a.result_at : a.result_at + 80]
+        comma = r"(\d),(\d)" if decimal_comma else r"(\d),(\d{1,2}(?!\d)|\d{4,})"
+        numbers = read_numbers(re.sub(comma, r"\1.\2", window))  # same length: spans stay valid
+        if not numbers or numbers[0].start != 0:
+            continue
+        n, checked = numbers[0], checked + 1
+        if abs(n.value - a.value) <= max(n.half, rel_tol * abs(a.value)):
+            continue
+        start, end = a.result_at + n.start, a.result_at + n.end
+        fixed = _format(a.value, n)
+        fixes.append({"expression": a.expression, "stated": draft[start:end], "fixed": fixed, "at": (start, end)})
+    for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
+        start, end = f.pop("at")
+        draft = draft[:start] + f["fixed"] + draft[end:]
+    return draft, fixes, checked
+
+
 def _mentions(text: str, names: list[str]) -> bool:
     low = text.lower()
     return any(len(n) >= 3 and re.search(rf"(?<!\w){re.escape(n.lower())}(?!\w)", low) for n in names)
@@ -265,6 +291,11 @@ class Verifier:
 
     async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
         """Yield reasoning deltas while checking, then the Verification."""
+        draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol)
+        if checked:
+            yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
+                       f" {len(arithmetic)} fixed\n"
+                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic))
         claims = split_claims(draft)
         yield _say(f"\n\nVerification: {len(claims)} claims\n")
         pending = []
@@ -305,7 +336,7 @@ class Verifier:
                 yield _say(f"- C{c.n} corrected from {', '.join(c.ids)}: {plain(c.fixed or '')}\n")
             elif c.outcome == REMOVED:
                 yield _say(f"- C{c.n} removed (contradicted by {', '.join(c.ids)})\n")
-        yield Verification(render(draft, claims, self.cfg.answer_style == "annotated"), claims)
+        yield Verification(render(draft, claims, self.cfg.answer_style == "annotated"), claims, arithmetic)
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
         """One judge call for these claims; sets their outcome. Yields reasoning lines."""

@@ -211,6 +211,7 @@ def summarize(results: list[dict[str, Any]], by_category: bool = True) -> dict[s
         "unmarked_contradictions": sum(r["unmarked_contradiction"] for r in results),
         "claims": claims,
         **{f"{o}_claims": c for o, c in counts.items()},
+        "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in results),
         "errors": sum(r["error"] is not None for r in results),
         "mean_seconds": round(sum(r["seconds"] for r in results) / n, 1) if n else 0.0,
     }
@@ -280,8 +281,9 @@ def main(argv: list[str] | None = None) -> int:
         parts = f" ({s['parts_pct']}% of parts)" if "parts_pct" in s else ""
         print(f"{name}: {s['questions']} items, {s['correct_pct']}% correct{parts}, {s['supported_claims_pct']}% of"
               f" {s['claims']} claims supported ({s['unverified_claims']} unverified, {s['corrected_claims']} corrected,"
-              f" {s['removed_claims']} removed), {s['unmarked_contradictions']} unmarked contradictions,"
-              f" {s['errors']} errors, {s['mean_seconds']} s per item")
+              f" {s['removed_claims']} removed), {s['arithmetic_fixes']} arithmetic fixes,"
+              f" {s['unmarked_contradictions']} unmarked contradictions, {s['errors']} errors,"
+              f" {s['mean_seconds']} s per item")
     print(f"report: {out}")
     return 0
 

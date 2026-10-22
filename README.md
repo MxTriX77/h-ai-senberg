@@ -45,12 +45,15 @@ The server owns the policy: the system prompt from `config/config.yaml` replaces
 
 When the Layer 1 store exists, the model looks facts up before it answers. The tools are generated from the sources in the store: `search_knowledge(query, domain?)` searches every text source (today the Wikipedia articles; `domain` is one of the domains the sources declare, e.g. `chemistry`, `physics`), and there is one lookup per kind of structured data (`lookup_compound` for PubChem, `lookup_constant` for CODATA). Their descriptions, the extra instructions for tool use (`reasoning_policy.tool_prompt`) and the number of tool rounds per answer (`reasoning_policy.max_search_depth`; `0` turns tools off) are in `config/config.yaml`. Tools are sent as standard OpenAI `tools`, so the backend must support tool calls (llama-server does with `--jinja`, which the launcher sets).
 
+Next to the knowledge tools there is a built-in `calculate(expression)` tool. It evaluates plain arithmetic exactly: numbers in any common notation, `+ - * / ^`, parentheses, `sqrt`, `exp`, `ln`, `log`, trigonometry, `pi` and `e`. It parses the expression and runs no code. The tool prompt asks the model to use it for every calculation. Its text is `tools.calculate` in the config.
+
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
 ### Verification
 
 Before the answer is shown, the draft is checked claim by claim (sentences and list items) against the local sources only:
 
+- Arithmetic first: every `a × b = c` in the draft (also with units after the numbers, `%`, roots, logs, powers and LaTeX such as `\frac{a}{b}`) is recomputed in code. A result that is off by more than its rounding and `verifier.arithmetic_rel_tol` (0.5 %) is replaced by the right value.
 - Numbers and formulas are compared in code with the structured records (PubChem molar masses and formulas, CODATA values), within the claim's own rounding or `verifier.rel_tol`. A wrong number or formula next to a cited record is replaced by the record's value.
 - Everything else is checked by one extra model call, the judge (`verifier.judge_prompt`, without thinking), which reads the cited passages and says per claim: supports, contradicts (with a fix), not said, or no claim.
 - A claim no source supports gets one more search with its own text and a second judge call.
