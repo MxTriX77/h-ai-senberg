@@ -10,8 +10,18 @@ import yaml
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "l1"
 REPO = Path(__file__).resolve().parents[2]
 
+WIKI_CITE = "https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}"
+
 # Manifest entries for the fixture raw directory (URLs are never fetched by the build).
 FIXTURE_SOURCES = [
+    *(
+        {"name": name, "use": use, "dest": dest, "license": "CC BY-SA 4.0", "cite_url": WIKI_CITE}
+        for name, use, dest in [
+            ("wikipedia_en_chemistry_fixture", "wikipedia-zim", "kiwix/chem_fixture.zim"),
+            ("wikipedia_en_physics_fixture", "wikipedia-zim", "kiwix/phys_fixture.zim"),
+            ("wikipedia_en_all_mini_fixture", "wikipedia-mini-zim", "kiwix/mini_fixture.zim"),
+        ]
+    ),
     {
         "name": "codata_fixture",
         "use": "codata",

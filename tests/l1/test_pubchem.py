@@ -67,7 +67,9 @@ def test_stream_selected_caps_and_checks_order(tmp_path):
 def test_subset_rule_and_columns(built_store):
     con = sqlite3.connect(built_store)
     row = con.execute("SELECT title, formula, selected_by, molar_mass FROM compound WHERE cid = 241").fetchone()
-    assert row[:3] == ("Benzene", "C6H6", "mesh") and row[3] == pytest.approx(78.114, abs=0.001)
+    assert row[:3] == ("Benzene", "C6H6", "both") and row[3] == pytest.approx(78.114, abs=0.001)
+    by = dict(con.execute("SELECT cid, selected_by FROM compound WHERE cid IN (702, 2519, 5234)"))
+    assert by == {702: "wikipedia", 2519: "mesh", 5234: "both"}  # 702: Ethanol's chembox, not in MeSH fixture
     assert con.execute("SELECT count(*) FROM compound WHERE cid = 23931").fetchone()[0] == 0  # not in MeSH
     meta = dict(con.execute("SELECT key, value FROM meta"))
     assert meta["skipped_no_mass"] == "1"  # CID 999999999 is in the MeSH fixture only
