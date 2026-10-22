@@ -13,18 +13,24 @@ REPO = Path(__file__).resolve().parents[2]
 WIKI_CITE = "https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}"
 
 # Manifest entries for the fixture raw directory (URLs are never fetched by the build).
+MINI_FILTER = {  # same rules as the shipped manifest
+    "infoboxes": {"ib-chembox": "chemistry", "ib-element": "chemistry"},
+    "projects": {"Chemistry": "chemistry", "Chemicals": "chemistry", "Elements": "chemistry", "Physics": "physics"},
+    "importance": ["Top", "High", "Mid"],
+}
 FIXTURE_SOURCES = [
     *(
-        {"name": name, "use": use, "dest": dest, "license": "CC BY-SA 4.0", "cite_url": WIKI_CITE}
-        for name, use, dest in [
-            ("wikipedia_en_chemistry_fixture", "wikipedia-zim", "kiwix/chem_fixture.zim"),
-            ("wikipedia_en_physics_fixture", "wikipedia-zim", "kiwix/phys_fixture.zim"),
-            ("wikipedia_en_all_mini_fixture", "wikipedia-mini-zim", "kiwix/mini_fixture.zim"),
+        {"name": name, "use": use, "domains": domains, "dest": dest, "license": "CC BY-SA 4.0", "cite_url": WIKI_CITE}
+        for name, use, domains, dest in [
+            ("wikipedia_en_chemistry_fixture", "wikipedia-zim", ["chemistry"], "kiwix/chem_fixture.zim"),
+            ("wikipedia_en_physics_fixture", "wikipedia-zim", ["physics"], "kiwix/phys_fixture.zim"),
+            ("wikipedia_en_all_mini_fixture", "wikipedia-mini-zim", ["chemistry", "physics"], "kiwix/mini_fixture.zim"),
         ]
     ),
     {
         "name": "codata_fixture",
         "use": "codata",
+        "domains": ["physics", "chemistry"],
         "dest": "codata/allascii.txt",
         "license": "NIST, US government work (public domain)",
         "cite_url": "https://physics.nist.gov/cgi-bin/cuu/Results?search_for={name}",
@@ -33,6 +39,7 @@ FIXTURE_SOURCES = [
         {
             "name": f"pubchem_{use.split('-')[1]}_fixture",
             "use": use,
+            "domains": ["chemistry"],
             "dest": f"pubchem/{dest}",
             "license": "NCBI public data",
             "cite_url": "https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
@@ -52,6 +59,9 @@ def write_manifest(path: Path, sources=None) -> Path:
         {"layer": 1, "url": f"https://example.org/{s['dest']}", "sha256": "0" * 64, **s}
         for s in (FIXTURE_SOURCES if sources is None else sources)
     ]
+    for e in entries:
+        if e["use"] == "wikipedia-mini-zim":
+            e.setdefault("filter", MINI_FILTER)
     path.write_text(yaml.safe_dump({"sources": entries}), encoding="utf-8")
     return path
 

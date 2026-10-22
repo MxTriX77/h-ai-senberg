@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ingest.manifest import ManifestError, load_manifest
+from ingest.manifest import ManifestError, MiniFilter, load_manifest
+
+from .l1_helpers import MINI_FILTER
 
 REPO = Path(__file__).resolve().parents[2]
 SHIPPED = REPO / "config" / "sources.yaml"
@@ -29,6 +31,7 @@ def entry(**over) -> dict:
         "name": "x",
         "use": "codata",
         "layer": 1,
+        "domains": ["physics"],
         "url": "https://example.org/x.txt",
         "dest": "codata/x.txt",
         "sha256": "0" * 64,
@@ -77,6 +80,14 @@ def test_valid_entry(tmp_path):
         ({"url": "ftp://example.org/x"}, "url"),
         ({"licence": "typo"}, "licence"),
         ({"license": None}, "license"),
+        ({"domains": None}, "domains"),
+        ({"domains": []}, "domains"),
+        ({"domains": "physics"}, "domains"),
+        ({"domains": ["Physics"]}, "domains"),
+        ({"filter": MINI_FILTER}, "filter"),  # filter on a codata entry
+        ({"use": "wikipedia-mini-zim"}, "filter"),  # mini entry without its filter
+        ({"use": "wikipedia-mini-zim", "filter": MINI_FILTER}, "filter"),  # filter names chemistry, entry only physics
+        ({"use": "wikipedia-mini-zim", "domains": ["chemistry", "physics"], "filter": {**MINI_FILTER, "importance": "Top"}}, "filter"),
     ],
 )
 def test_invalid_entry_names_entry_and_field(tmp_path, over, field):
@@ -88,3 +99,12 @@ def test_invalid_entry_names_entry_and_field(tmp_path, over, field):
 def test_duplicate_name(tmp_path):
     with pytest.raises(ManifestError, match="duplicate"):
         load_manifest(write(tmp_path, entry(), entry(dest="codata/y.txt")))
+
+
+def test_shipped_manifest_domains_and_mini_filter():
+    by_name = {e.name: e for e in load_manifest(SHIPPED)}
+    assert all(e.domains for e in by_name.values())
+    assert by_name["codata_2022_allascii"].domains == ("physics", "chemistry")
+    mini = by_name["wikipedia_en_all_mini_2026-09"].filter
+    assert mini == MiniFilter(**{**MINI_FILTER, "importance": tuple(MINI_FILTER["importance"])})
+    assert all(e.filter is None for n, e in by_name.items() if n != "wikipedia_en_all_mini_2026-09")

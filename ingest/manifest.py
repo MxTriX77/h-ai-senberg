@@ -21,12 +21,24 @@ USES = {
 }
 CHECKSUM_FIELDS = ("sha256", "md5", "sha256_url", "md5_url")
 HEX_LEN = {"sha256": 64, "md5": 32}
-FIELDS = {"name", "use", "layer", "url", "dest", "license", "cite_url", *CHECKSUM_FIELDS}
-REQUIRED = ("name", "use", "layer", "url", "dest", "license")
+FIELDS = {"name", "use", "layer", "domains", "url", "dest", "license", "cite_url", "filter", *CHECKSUM_FIELDS}
+REQUIRED = ("name", "use", "layer", "domains", "url", "dest", "license")
+FILTER_USE = "wikipedia-mini-zim"  # the only kind whose entry carries a relevance filter
+FILTER_FIELDS = {"infoboxes", "projects", "importance"}
+_DOMAIN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class ManifestError(Exception):
     """The manifest is invalid; the message names the entry and the field."""
+
+
+@dataclass(frozen=True)
+class MiniFilter:
+    """Which all-articles mini ZIM pages fill gaps, and the domain each match gives the article."""
+
+    infoboxes: dict[str, str]  # infobox class (e.g. ib-chembox) -> domain
+    projects: dict[str, str]  # WikiProject name -> domain
+    importance: tuple[str, ...]  # WikiProject ratings that count (e.g. Top, High, Mid)
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,8 @@ class Entry:
     algo: str  # "sha256" or "md5"
     pinned: str | None  # pinned hex digest, or None for a checksum-URL entry
     checksum_url: str | None
+    domains: tuple[str, ...] = ()
+    filter: MiniFilter | None = None
 
     def path(self, raw_dir: Path) -> Path:
         return raw_dir / self.dest
@@ -113,6 +127,11 @@ def _entry(item: dict, label: str) -> Entry:
         if not isinstance(pinned, str) or not re.fullmatch(rf"[0-9a-f]{{{HEX_LEN[algo]}}}", pinned):
             raise bad(field, f"must be {HEX_LEN[algo]} lowercase hex digits")
 
+    domains = item["domains"]
+    if not isinstance(domains, list) or not domains or not all(isinstance(d, str) and _DOMAIN.match(d) for d in domains):
+        raise bad("domains", "must be a non-empty list of lowercase domain names")
+    mini_filter = _filter(item, domains, bad)
+
     cite_url = item.get("cite_url")
     if cite_url is not None and not isinstance(cite_url, str):
         raise bad("cite_url", "must be a string")
@@ -127,4 +146,28 @@ def _entry(item: dict, label: str) -> Entry:
         algo=algo,
         pinned=pinned,
         checksum_url=checksum_url,
+        domains=tuple(domains),
+        filter=mini_filter,
     )
+
+
+def _filter(item: dict, domains: list[str], bad) -> MiniFilter | None:
+    raw = item.get("filter")
+    if item["use"] != FILTER_USE:
+        if raw is not None:
+            raise bad("filter", f"is only allowed for use '{FILTER_USE}'")
+        return None
+    if not isinstance(raw, dict) or set(raw) != FILTER_FIELDS:
+        raise bad("filter", f"is required for use '{FILTER_USE}' with exactly {sorted(FILTER_FIELDS)}")
+    maps = {}
+    for key in ("infoboxes", "projects"):
+        m = raw[key]
+        if not isinstance(m, dict) or not all(isinstance(k, str) and k for k in m):
+            raise bad("filter", f"'{key}' must map names to domains")
+        if undeclared := sorted(str(d) for d in m.values() if d not in domains):
+            raise bad("filter", f"'{key}' names domains not in the entry's domains: {undeclared}")
+        maps[key] = dict(m)
+    importance = raw["importance"]
+    if not isinstance(importance, list) or not all(isinstance(r, str) and r for r in importance):
+        raise bad("filter", "'importance' must be a list of ratings")
+    return MiniFilter(maps["infoboxes"], maps["projects"], tuple(importance))

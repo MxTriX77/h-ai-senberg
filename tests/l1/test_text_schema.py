@@ -16,4 +16,4 @@ def test_schema_creates_with_fts5():
     con = sqlite3.connect(":memory:")
     con.executescript(DDL)
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"source", "article", "article_alias", "article_fts", "constant", "compound", "compound_name"} <= tables
+    assert {"source", "article", "article_alias", "article_domain", "article_fts", "constant", "compound", "compound_name"} <= tables

@@ -44,6 +44,7 @@ class ConstantRecord(Record):
     unit: str
     exact: bool
     truncated: bool
+    domains: list[str]
     citation: Citation
 
 
@@ -55,6 +56,7 @@ class ArticleRecord(Record):
     infobox: str
     snippet: str  # best-matching passage, matched words in [brackets]
     score: float  # BM25 (lower is better); 0.0 for an exact title or alias match
+    domains: list[str]
     citation: Citation
 
 
@@ -68,6 +70,7 @@ class CompoundRecord(Record):
     monoisotopic_mass: float
     synonyms: list[str]
     matched_by: str  # 'cid', 'name' or 'formula'
+    domains: list[str]
     citation: Citation
 
 
@@ -78,6 +81,15 @@ STOPWORDS = frozenset(
 )
 BM25_WEIGHTS = "10.0, 5.0, 2.0, 1.0"  # title, aliases, infobox, lead
 _WORD = re.compile(r"\w+")
+
+# Kind of knowledge each source use tag provides. `text` sources are searched together; every other
+# kind has one lookup (`lookup_<kind>`). A new kind = an ingest adapter + its lookup method + an entry here.
+KIND_BY_USE = {
+    "wikipedia-zim": "text",
+    "wikipedia-mini-zim": "text",
+    "pubchem-mass": "compound",
+    "codata": "constant",
+}
 
 MOLAR_MASS_NOTE = "molar mass computed from the PubChem formula with IUPAC standard atomic weights"
 _CID = re.compile(r"^\s*(?:cid\s*:?\s*)?(\d+)\s*$", re.I)
@@ -91,6 +103,7 @@ class _Source:
     version: str
     license: str
     cite_url: str
+    domains: str  # space-separated
 
     def cite(self, locator: dict, note: str = "") -> Citation:
         url = self.cite_url.format(**{k: quote(str(v), safe="") for k, v in locator.items()})
@@ -124,22 +137,49 @@ class L1Store:
         self.con.execute("PRAGMA mmap_size=268435456")
         self.sources = {
             row[0]: _Source(*row[1:])
-            for row in self.con.execute("SELECT id, name, use, file, version, license, cite_url FROM source")
+            for row in self.con.execute("SELECT id, name, use, file, version, license, cite_url, domains FROM source")
         }
 
     def close(self) -> None:
         self.con.close()
 
-    def search_encyclopedia(self, query: str, k: int | None = None) -> list[ArticleRecord]:
-        """Exact title/alias match first, then BM25 over articles with all words (any word if none)."""
+    def kinds(self) -> dict[str, list[str]]:
+        """Kinds of knowledge in the store (see KIND_BY_USE), each with the sorted domains of its sources."""
+        found: dict[str, set[str]] = {}
+        for s in self.sources.values():
+            if kind := KIND_BY_USE.get(s.use):
+                found.setdefault(kind, set()).update(s.domains.split())
+        return {kind: sorted(domains) for kind, domains in sorted(found.items())}
+
+    def lookup(self, kind: str, query: str, k: int = 5) -> list[Record]:
+        """The lookup of a structured kind by its name, e.g. lookup('compound', 'caffeine')."""
+        if kind == "text" or kind not in self.kinds():
+            raise L1Error(f"no lookup for kind '{kind}' in this store")
+        return getattr(self, f"lookup_{kind}")(query, k)
+
+    def search_encyclopedia(self, query: str, k: int | None = None, domain: str | None = None) -> list[ArticleRecord]:
+        """Exact title/alias match first, then BM25 over articles with all words (any word if none).
+
+        With a domain, only articles having that domain are considered."""
         k = k or self.top_k
         words = [w for w in _WORD.findall(query.lower()) if w not in STOPWORDS]
         if not words:
             return []
-        rows = self._fts(" ".join(f'"{w}"' for w in words), k)
+        rows = self._fts(" ".join(f'"{w}"' for w in words), k, domain)
         if not rows and len(words) > 1:
-            rows = self._fts(" OR ".join(f'"{w}"' for w in words), k)
-        exact = [r[0] for r in self.con.execute("SELECT article_id FROM article_alias WHERE alias = ?", (normalize(query),))]
+            rows = self._fts(" OR ".join(f'"{w}"' for w in words), k, domain)
+        in_domain = (
+            " AND EXISTS (SELECT 1 FROM article_domain d WHERE d.article_id = article_alias.article_id AND d.domain = ?)"
+            if domain
+            else ""
+        )
+        exact = [
+            r[0]
+            for r in self.con.execute(
+                f"SELECT article_id FROM article_alias WHERE alias = ?{in_domain}",
+                (normalize(query), domain) if domain else (normalize(query),),
+            )
+        ]
         if exact:
             found = {r[0]: r for r in rows}
             first = []
@@ -159,22 +199,34 @@ class L1Store:
                 infobox=infobox,
                 snippet=" | ".join(line for line in snippet.splitlines() if line.strip()),
                 score=round(score, 4),
+                domains=self._article_domains(article_id),
                 citation=self.sources[sid].cite({"path": path, "revision": rev or ""}),
             )
-            for _id, path, title, lead, infobox, rev, sid, score, snippet in rows[:k]
+            for article_id, path, title, lead, infobox, rev, sid, score, snippet in rows[:k]
         ]
 
-    def _fts(self, match: str, k: int) -> list[tuple]:
+    def _article_domains(self, article_id: int) -> list[str]:
+        sql = "SELECT domain FROM article_domain WHERE article_id = ? ORDER BY domain"
+        return [r[0] for r in self.con.execute(sql, (article_id,))]
+
+    def _fts(self, match: str, k: int, domain: str | None = None) -> list[tuple]:
         # Rank inside the FTS query first and join article rows only for the top k (10x faster).
+        # A domain filter applies inside the ranking query, before LIMIT; as a per-row EXISTS, because
+        # `rowid IN (...)` makes FTS5 look up every article of the domain (100x slower).
+        in_domain = (
+            " AND EXISTS (SELECT 1 FROM article_domain d WHERE d.article_id = article_fts.rowid AND d.domain = ?)"
+            if domain
+            else ""
+        )
         return self.con.execute(
             f"WITH top AS (SELECT rowid AS id, bm25(article_fts, {BM25_WEIGHTS}) AS score,"
             # passage from the lead (column 3), or from the infobox (column 2) when the lead is empty
             " coalesce(nullif(snippet(article_fts, 3, '[', ']', '…', 24), ''),"
             " snippet(article_fts, 2, '[', ']', '…', 24)) AS snip"
-            " FROM article_fts WHERE article_fts MATCH ? ORDER BY score LIMIT ?)"
+            f" FROM article_fts WHERE article_fts MATCH ?{in_domain} ORDER BY score LIMIT ?)"
             " SELECT a.id, a.path, a.title, a.lead, a.infobox, a.revision, a.source_id, top.score, top.snip"
             " FROM top JOIN article a ON a.id = top.id ORDER BY top.score",
-            (match, k),
+            (match, domain, k) if domain else (match, k),
         ).fetchall()
 
     def lookup_constant(self, query: str, k: int = 5) -> list[ConstantRecord]:
@@ -199,6 +251,7 @@ class L1Store:
                 unit=unit,
                 exact=bool(exact),
                 truncated=bool(truncated),
+                domains=self.sources[sid].domains.split(),
                 citation=self.sources[sid].cite({"name": name}),
             )
             for name, value, value_text, unc, unit, exact, truncated, sid in rows[:k]
@@ -241,6 +294,7 @@ class L1Store:
                 monoisotopic_mass=mono,
                 synonyms=syns.split("|") if syns else [],
                 matched_by=matched_by,
+                domains=source.domains.split(),
                 citation=source.cite({"cid": cid}, MOLAR_MASS_NOTE),
             )
             for cid, title, formula, mm, note, mono, syns in rows
@@ -258,8 +312,8 @@ def default_store() -> L1Store:
     return _default
 
 
-def search_encyclopedia(query: str, k: int | None = None) -> list[ArticleRecord]:
-    return default_store().search_encyclopedia(query, k)
+def search_encyclopedia(query: str, k: int | None = None, domain: str | None = None) -> list[ArticleRecord]:
+    return default_store().search_encyclopedia(query, k, domain)
 
 
 def lookup_constant(query: str, k: int = 5) -> list[ConstantRecord]:

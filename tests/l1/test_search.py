@@ -3,7 +3,9 @@ import os
 import subprocess
 import sys
 
-from haisenberg.l1.store import L1Store
+import pytest
+
+from haisenberg.l1.store import L1Error, L1Store
 
 
 def search(db, q, k=5):
@@ -62,3 +64,32 @@ def test_cli_search_prints_citation(built_store):
     text = out.stdout.decode("utf-8")
     assert out.returncode == 0 and text.startswith("Planck constant (Planck_constant)")
     assert "oldid=400" in text and "CC BY-SA 4.0" in text
+
+
+def test_domain_filter(built_store):
+    store = L1Store(built_store)
+    physics = store.search_encyclopedia("electron", 5, "physics")
+    assert physics and all("physics" in r.domains for r in physics)
+    assert store.search_encyclopedia("ethanol", 5, "chemistry")[0].path == "Ethanol"
+    assert store.search_encyclopedia("ethanol", 5, "physics") == []  # Ethanol is chemistry only
+    assert store.search_encyclopedia("electron", 5, "biology") == []
+    assert store.search_encyclopedia("Planck constant", 5, "chemistry") == []  # exact title, wrong domain
+
+
+def test_records_carry_source_and_domains(built_store):
+    store = L1Store(built_store)
+    assert store.search_encyclopedia("Electron")[0].domains == ["chemistry", "physics"]
+    caffeine = store.lookup_compound("caffeine")[0]
+    assert caffeine.citation.source == "pubchem_mass_fixture" and caffeine.domains == ["chemistry"]
+    assert store.lookup_constant("Planck constant")[0].domains == ["physics", "chemistry"]
+
+
+def test_kinds_and_lookup_by_kind(built_store):
+    store = L1Store(built_store)
+    assert store.kinds() == {"compound": ["chemistry"], "constant": ["chemistry", "physics"],
+                             "text": ["chemistry", "physics"]}
+    assert store.lookup("compound", "caffeine") == store.lookup_compound("caffeine")
+    assert store.lookup("constant", "electron mass", 2) == store.lookup_constant("electron mass", 2)
+    for kind in ("text", "nope"):
+        with pytest.raises(L1Error, match=kind):
+            store.lookup(kind, "x")

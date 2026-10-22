@@ -1,9 +1,10 @@
-"""Wikipedia articles from Kiwix ZIMs into `article`, `article_alias` and the FTS index.
+"""Wikipedia articles from Kiwix ZIMs into `article`, `article_alias`, `article_domain` and the FTS index.
 
-Topic ZIMs (use `wikipedia-zim`) contribute every article except person articles. The all-articles
-mini ZIM (use `wikipedia-mini-zim`) only fills gaps: articles not already stored that pass the
-relevance filter (`mini_relevant`). From each article we keep the first section only: the lead
-paragraphs and the infobox rows, as plain text. Redirects and meta-refresh stubs become aliases.
+Topic ZIMs (use `wikipedia-zim`) contribute every article except person articles; an article gets the
+domains of every topic ZIM entry that holds it. The all-articles mini ZIM (use `wikipedia-mini-zim`)
+only fills gaps: articles not already stored that pass the entry's relevance filter from the manifest
+(`mini_relevant`), with the domains of the rules they matched. From each article we keep the first
+section only: the lead paragraphs and the infobox rows, as plain text. Redirects and meta-refresh stubs become aliases.
 Infobox links to PubChem become `ctx.linked_cids` for the compound subset.
 """
 
@@ -18,12 +19,10 @@ from urllib.parse import unquote
 
 from haisenberg.l1.text import normalize
 from ingest.l1base import BuildContext
+from ingest.manifest import MiniFilter
 from ingest.zim import Zim
 
 STUB_MAX_BYTES = 2048
-CHEM_PHYS_PROJECTS = {"Chemistry", "Chemicals", "Physics", "Elements"}
-MINI_IMPORTANCE = {"Top", "High", "Mid"}  # WikiProject ratings kept from the mini ZIM
-RELEVANT_BOXES = (b"ib-chembox", b"ib-element")  # compound and element infoboxes
 
 _ASSESSMENTS = re.compile(rb'"wgPageAssessments":\{(.*?\})\}')
 _PROJECT = re.compile(rb'"([^"/]+)(?:/[^"]*)?":\{"class":"[^"]*","importance":"([^"]*)"')
@@ -58,12 +57,12 @@ def is_person(html: bytes, page_projects: dict[str, str]) -> bool:
     )
 
 
-def mini_relevant(html: bytes, page_projects: dict[str, str]) -> bool:
-    """Relevance filter for the all-articles mini ZIM (design D11): a compound or element infobox,
-    or a chemistry/physics WikiProject rating of Top, High or Mid importance."""
-    if any(box in html for box in RELEVANT_BOXES):
-        return True
-    return any(page_projects.get(p) in MINI_IMPORTANCE for p in CHEM_PHYS_PROJECTS)
+def mini_relevant(html: bytes, page_projects: dict[str, str], rules: MiniFilter) -> set[str]:
+    """Domains a mini ZIM page matches under the manifest filter (empty: not relevant): a listed
+    infobox class, or a listed WikiProject rating it with a listed importance."""
+    found = {d for box, d in rules.infoboxes.items() if box.encode() in html}
+    found |= {d for p, d in rules.projects.items() if page_projects.get(p) in rules.importance}
+    return found
 
 
 def stub_target(html: bytes) -> str | None:
@@ -186,6 +185,7 @@ class Page:
     infobox: str
     revision: int | None
     cids: list[int] = field(default_factory=list)
+    domains: list[str] = field(default_factory=list)  # mini pages only: domains of the matched rules
 
 
 def first_section(html: bytes) -> tuple[str, str, list[int]] | None:
@@ -203,11 +203,11 @@ def first_section(html: bytes) -> tuple[str, str, list[int]] | None:
 # --- scanning a ZIM (in worker processes) ------------------------------------------------------
 
 
-def scan(zim_path: str, ids: list[int], mini: bool, skip_paths: frozenset[str]):
+def scan(zim_path: str, ids: list[int], mini: MiniFilter | None, skip_paths: frozenset[str]):
     """Pages to store and (alias title, target path) stubs from the given entries.
 
-    Topic ZIMs keep every non-person article; the mini ZIM keeps relevant non-person articles
-    whose path is not in skip_paths. Counts of dropped pages come back in `dropped`.
+    Topic ZIMs (mini is None) keep every non-person article; the mini ZIM keeps non-person articles
+    relevant under its filter whose path is not in skip_paths. Counts of dropped pages come back in `dropped`.
     """
     pages: list[Page] = []
     stubs: list[tuple[str, str]] = []
@@ -219,7 +219,8 @@ def scan(zim_path: str, ids: list[int], mini: bool, skip_paths: frozenset[str]):
                 stubs.append((z.strings(i)[1], target))
                 continue
             page_projects = projects(html)
-            if mini and not mini_relevant(html, page_projects):
+            domains = mini_relevant(html, page_projects, mini) if mini else set()
+            if mini and not domains:
                 continue
             if is_person(html, page_projects):
                 dropped["skipped_person_articles"] += 1
@@ -233,7 +234,7 @@ def scan(zim_path: str, ids: list[int], mini: bool, skip_paths: frozenset[str]):
                 continue
             lead, infobox, cids = section
             rev = _REVISION.search(html, 0, _HEAD)
-            pages.append(Page(i, path, title, lead, infobox, int(rev.group(1)) if rev else None, cids))
+            pages.append(Page(i, path, title, lead, infobox, int(rev.group(1)) if rev else None, cids, sorted(domains)))
     return pages, stubs, dropped
 
 
@@ -241,7 +242,7 @@ def _scan_job(args):
     return scan(*args)
 
 
-def _scan_parallel(zim_path: str, ids: list[int], mini: bool, skip: frozenset[str]):
+def _scan_parallel(zim_path: str, ids: list[int], mini: MiniFilter | None, skip: frozenset[str]):
     workers = max(1, min(8, (os.cpu_count() or 2) - 1))
     size = max(1, -(-len(ids) // (workers * 4)))  # contiguous runs keep clusters together
     jobs = [(zim_path, ids[k : k + size], mini, skip) for k in range(0, len(ids), size)]
@@ -265,6 +266,7 @@ class _Article:
     source_id: int
     zims: list[str]
     cids: list[int]
+    domains: set[str]
     aliases: dict[str, str] = field(default_factory=dict)  # normalized -> display
 
 
@@ -273,7 +275,7 @@ def load(ctx: BuildContext) -> None:
     stubs: list[tuple[str, str]] = []
     zims: list[tuple[Zim, dict[int, str]]] = []  # open ZIMs with entry index -> stored path
 
-    def add_pages(entry, z: Zim, mini: bool) -> None:
+    def add_pages(entry, z: Zim, mini: MiniFilter | None) -> None:
         source_id = ctx.add_source(entry, z.metadata.get("Date", ""))
         stored: dict[int, str] = {}
         skip = frozenset(articles) if mini else frozenset()
@@ -284,12 +286,14 @@ def load(ctx: BuildContext) -> None:
             for p in pages:
                 stored[p.index] = p.path
                 old = articles.get(p.path)
+                domains = set(p.domains) if mini else set(entry.domains)
                 if old is None:
                     articles[p.path] = _Article(
-                        p.path, p.title, p.lead, p.infobox, p.revision, source_id, [entry.name], p.cids
+                        p.path, p.title, p.lead, p.infobox, p.revision, source_id, [entry.name], p.cids, domains
                     )
                     continue
                 old.zims.append(entry.name)
+                old.domains |= domains
                 if (p.revision or 0) > (old.revision or 0):
                     old.lead, old.infobox, old.revision, old.source_id, old.cids = (
                         p.lead, p.infobox, p.revision, source_id, p.cids
@@ -298,10 +302,10 @@ def load(ctx: BuildContext) -> None:
 
     try:
         for entry, path in ctx.files("wikipedia-zim"):
-            add_pages(entry, Zim(path), mini=False)
+            add_pages(entry, Zim(path), mini=None)
         for entry, path in ctx.files("wikipedia-mini-zim"):
             z = Zim(path)
-            add_pages(entry, z, mini=True)
+            add_pages(entry, z, mini=entry.filter)
             # the mini ZIM's redirects also name articles stored from the topic ZIMs
             stored = zims[-1][1]
             for p in articles:
@@ -334,6 +338,9 @@ def load(ctx: BuildContext) -> None:
         con.executemany(
             "INSERT OR IGNORE INTO article_alias(alias, article_id) VALUES (?, ?)",
             [(n, article_id) for n in a.aliases if n],
+        )
+        con.executemany(
+            "INSERT INTO article_domain(article_id, domain) VALUES (?, ?)", [(article_id, d) for d in sorted(a.domains)]
         )
         for cid in a.cids:
             ctx.linked_cids.setdefault(cid, article_id)
