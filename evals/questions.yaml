@@ -1,0 +1,123 @@
+# Eval set: chemistry and physics questions with known answers (run: uv run python -m evals.run).
+# Questions were written for this project. Known answers come from these sources only:
+sources:
+  codata: CODATA 2022 recommended values, NIST allascii.txt (US government work, public domain)
+  pubchem: PubChem compound data, NCBI (no restrictions on the data); molar masses computed from the formula
+  wikipedia: >-
+    Facts stated in the Wikipedia articles of the Layer 1 store (CC BY-SA 4.0); only the fact is used,
+    no text is copied
+#
+# answer kinds:
+#   number: value, with abs_tol or rel_tol    formula: Hill-order match    text: accepted words (any, whole word)
+# No questions about people (D-017).
+
+questions:
+  # --- CODATA 2022 ---------------------------------------------------------------------------------
+  - {id: codata-01, domain: physics, source: codata, question: "What is the speed of light in vacuum in m/s?", answer: {number: 299792458, rel_tol: 0.0001}}
+  - {id: codata-02, domain: physics, source: codata, question: "What is the value of the Planck constant in J s?", answer: {number: 6.62607015e-34, rel_tol: 0.001}}
+  - {id: codata-03, domain: physics, source: codata, question: "What is the elementary charge in coulombs?", answer: {number: 1.602176634e-19, rel_tol: 0.001}}
+  - {id: codata-04, domain: chemistry, source: codata, question: "What is the value of the Avogadro constant?", answer: {number: 6.02214076e23, rel_tol: 0.001}}
+  - {id: codata-05, domain: physics, source: codata, question: "What is the Boltzmann constant in J/K?", answer: {number: 1.380649e-23, rel_tol: 0.001}}
+  - {id: codata-06, domain: chemistry, source: codata, question: "What is the molar gas constant R in J/(mol K)?", answer: {number: 8.314462618, rel_tol: 0.001}}
+  - {id: codata-07, domain: chemistry, source: codata, question: "What is the Faraday constant in C/mol?", answer: {number: 96485.33212, rel_tol: 0.001}}
+  - {id: codata-08, domain: physics, source: codata, question: "What is the mass of the electron in kg?", answer: {number: 9.1093837139e-31, rel_tol: 0.001}}
+  - {id: codata-09, domain: physics, source: codata, question: "What is the mass of the proton in kg?", answer: {number: 1.67262192595e-27, rel_tol: 0.001}}
+  - {id: codata-10, domain: physics, source: codata, question: "What is the mass of the neutron in kg?", answer: {number: 1.67492750056e-27, rel_tol: 0.001}}
+  - {id: codata-11, domain: physics, source: codata, question: "What is the Newtonian constant of gravitation G in m^3 kg^-1 s^-2?", answer: {number: 6.6743e-11, rel_tol: 0.001}}
+  - {id: codata-12, domain: physics, source: codata, question: "What is the value of the inverse fine-structure constant?", answer: {number: 137.035999177, rel_tol: 0.0001}}
+  - {id: codata-13, domain: physics, source: codata, question: "What is the Rydberg constant in m^-1?", answer: {number: 10973731.568157, rel_tol: 0.0001}}
+  - {id: codata-14, domain: physics, source: codata, question: "What is the Bohr radius in metres?", answer: {number: 5.29177210544e-11, rel_tol: 0.001}}
+  - {id: codata-15, domain: physics, source: codata, question: "What is the vacuum electric permittivity in F/m?", answer: {number: 8.8541878188e-12, rel_tol: 0.001}}
+  - {id: codata-16, domain: physics, source: codata, question: "What is the vacuum magnetic permeability in N/A^2?", answer: {number: 1.25663706127e-6, rel_tol: 0.001}}
+  - {id: codata-17, domain: physics, source: codata, question: "What is the Stefan-Boltzmann constant in W m^-2 K^-4?", answer: {number: 5.670374419e-8, rel_tol: 0.001}}
+  - {id: codata-18, domain: physics, source: codata, question: "What is the standard acceleration of gravity in m/s^2?", answer: {number: 9.80665, rel_tol: 0.0001}}
+  - {id: codata-19, domain: chemistry, source: codata, question: "What is the atomic mass constant in kg?", answer: {number: 1.66053906892e-27, rel_tol: 0.001}}
+  - {id: codata-20, domain: physics, source: codata, question: "What is the rest energy of the electron in MeV?", answer: {number: 0.51099895069, rel_tol: 0.001}}
+  - {id: codata-21, domain: physics, source: codata, question: "What is the rest energy of the proton in MeV?", answer: {number: 938.27208943, rel_tol: 0.0001}}
+  - {id: codata-22, domain: chemistry, source: codata, question: "How many pascals is one standard atmosphere?", answer: {number: 101325, rel_tol: 0.0001}}
+  - {id: codata-23, domain: physics, source: codata, question: "What is the Wien wavelength displacement law constant in m K?", answer: {number: 2.897771955e-3, rel_tol: 0.001}}
+
+  # --- PubChem -------------------------------------------------------------------------------------
+  - {id: pubchem-01, domain: chemistry, source: pubchem, question: "What is the molar mass of water in g/mol?", answer: {number: 18.015, rel_tol: 0.002}}
+  - {id: pubchem-02, domain: chemistry, source: pubchem, question: "What is the molar mass of ethanol in g/mol?", answer: {number: 46.069, rel_tol: 0.002}}
+  - {id: pubchem-03, domain: chemistry, source: pubchem, question: "What is the molar mass of caffeine?", answer: {number: 194.194, rel_tol: 0.002}}
+  - {id: pubchem-04, domain: chemistry, source: pubchem, question: "What is the molar mass of glucose in g/mol?", answer: {number: 180.156, rel_tol: 0.002}}
+  - {id: pubchem-05, domain: chemistry, source: pubchem, question: "What is the molar mass of sodium chloride?", answer: {number: 58.4398, rel_tol: 0.002}}
+  - {id: pubchem-06, domain: chemistry, source: pubchem, question: "What is the molar mass of benzene in g/mol?", answer: {number: 78.114, rel_tol: 0.002}}
+  - {id: pubchem-07, domain: chemistry, source: pubchem, question: "What is the molar mass of acetic acid?", answer: {number: 60.052, rel_tol: 0.002}}
+  - {id: pubchem-08, domain: chemistry, source: pubchem, question: "What is the molar mass of ammonia in g/mol?", answer: {number: 17.031, rel_tol: 0.002}}
+  - {id: pubchem-09, domain: chemistry, source: pubchem, question: "What is the molar mass of methane?", answer: {number: 16.043, rel_tol: 0.002}}
+  - {id: pubchem-10, domain: chemistry, source: pubchem, question: "What is the molar mass of carbon dioxide in g/mol?", answer: {number: 44.009, rel_tol: 0.002}}
+  - {id: pubchem-11, domain: chemistry, source: pubchem, question: "What is the molar mass of sulfuric acid?", answer: {number: 98.072, rel_tol: 0.002}}
+  - {id: pubchem-12, domain: chemistry, source: pubchem, question: "What is the molar mass of aspirin in g/mol?", answer: {number: 180.159, rel_tol: 0.002}}
+  - {id: pubchem-13, domain: chemistry, source: pubchem, question: "What is the molar mass of sucrose?", answer: {number: 342.297, rel_tol: 0.002}}
+  - {id: pubchem-14, domain: chemistry, source: pubchem, question: "What is the molar mass of urea in g/mol?", answer: {number: 60.056, rel_tol: 0.002}}
+  - {id: pubchem-15, domain: chemistry, source: pubchem, question: "What is the molar mass of acetone?", answer: {number: 58.08, rel_tol: 0.002}}
+  - {id: pubchem-16, domain: chemistry, source: pubchem, question: "What is the molar mass of nitric acid in g/mol?", answer: {number: 63.012, rel_tol: 0.002}}
+  - {id: pubchem-17, domain: chemistry, source: pubchem, question: "What is the molecular formula of benzene?", answer: {formula: C6H6}}
+  - {id: pubchem-18, domain: chemistry, source: pubchem, question: "What is the molecular formula of ethanol?", answer: {formula: C2H6O}}
+  - {id: pubchem-19, domain: chemistry, source: pubchem, question: "What is the molecular formula of glucose?", answer: {formula: C6H12O6}}
+  - {id: pubchem-20, domain: chemistry, source: pubchem, question: "What is the molecular formula of aspirin?", answer: {formula: C9H8O4}}
+  - {id: pubchem-21, domain: chemistry, source: pubchem, question: "What is the molecular formula of caffeine?", answer: {formula: C8H10N4O2}}
+  - {id: pubchem-22, domain: chemistry, source: pubchem, question: "What is the molecular formula of acetic acid?", answer: {formula: C2H4O2}}
+  - {id: pubchem-23, domain: chemistry, source: pubchem, question: "What is the chemical formula of ammonia?", answer: {formula: H3N}}
+  - {id: pubchem-24, domain: chemistry, source: pubchem, question: "What is the chemical formula of sulfuric acid?", answer: {formula: H2O4S}}
+  - {id: pubchem-25, domain: chemistry, source: pubchem, question: "What is the molecular formula of urea?", answer: {formula: CH4N2O}}
+
+  # --- Wikipedia: chemistry ------------------------------------------------------------------------
+  - {id: wchem-01, domain: chemistry, source: wikipedia, question: "What is the boiling point of ethanol at atmospheric pressure in °C?", answer: {number: 78.23, abs_tol: 0.6}}
+  - {id: wchem-02, domain: chemistry, source: wikipedia, question: "What is the boiling point of benzene in °C?", answer: {number: 80.1, abs_tol: 0.5}}
+  - {id: wchem-03, domain: chemistry, source: wikipedia, question: "What is the boiling point of water at standard pressure in °C?", answer: {number: 99.98, abs_tol: 0.5}}
+  - {id: wchem-04, domain: chemistry, source: wikipedia, question: "What is the melting point of iron in °C?", answer: {number: 1538, abs_tol: 5}}
+  - {id: wchem-05, domain: chemistry, source: wikipedia, question: "What is the melting point of gold in °C?", answer: {number: 1064.18, abs_tol: 2}}
+  - {id: wchem-06, domain: chemistry, source: wikipedia, question: "What is the atomic number of uranium?", answer: {number: 92, abs_tol: 0}}
+  - {id: wchem-07, domain: chemistry, source: wikipedia, question: "What is the atomic number of neon?", answer: {number: 10, abs_tol: 0}}
+  - {id: wchem-08, domain: chemistry, source: wikipedia, question: "What is the atomic number of silver?", answer: {number: 47, abs_tol: 0}}
+  - {id: wchem-09, domain: chemistry, source: wikipedia, question: "What is the chemical symbol of silver?", answer: {text: [Ag]}}
+  - {id: wchem-10, domain: chemistry, source: wikipedia, question: "What is the chemical symbol of lead?", answer: {text: [Pb]}}
+  - {id: wchem-11, domain: chemistry, source: wikipedia, question: "Which element has the chemical symbol He?", answer: {text: [helium]}}
+  - {id: wchem-12, domain: chemistry, source: wikipedia, question: "Which element is the most electronegative?", answer: {text: [fluorine]}}
+  - {id: wchem-13, domain: chemistry, source: wikipedia, question: "What is the lightest chemical element?", answer: {text: [hydrogen]}}
+  - {id: wchem-14, domain: chemistry, source: wikipedia, question: "Which element has the highest melting point of all known elements?", answer: {text: [tungsten, wolfram]}}
+  - {id: wchem-15, domain: chemistry, source: wikipedia, question: "Which halogen is a liquid at room temperature?", answer: {text: [bromine]}}
+  - {id: wchem-16, domain: chemistry, source: wikipedia, question: "Which metal is liquid at standard temperature and pressure?", answer: {text: [mercury]}}
+  - {id: wchem-17, domain: chemistry, source: wikipedia, question: "What is the Pauling electronegativity of fluorine?", answer: {number: 3.98, abs_tol: 0.01}}
+  - {id: wchem-18, domain: chemistry, source: wikipedia, question: "What is the pH of a neutral aqueous solution at 25 °C?", answer: {number: 7, abs_tol: 0.05}}
+  - {id: wchem-19, domain: chemistry, source: wikipedia, question: "Which gas makes up most of dry air by mole fraction?", answer: {text: [nitrogen]}}
+  - {id: wchem-20, domain: chemistry, source: wikipedia, question: "What is the main component of natural gas?", answer: {text: [methane]}}
+  - {id: wchem-21, domain: chemistry, source: wikipedia, question: "What is the chemical formula of sodium chloride?", answer: {formula: ClNa}}
+  - {id: wchem-22, domain: chemistry, source: wikipedia, question: "What kind of chemical bond involves the sharing of electron pairs between atoms?", answer: {text: [covalent]}}
+  - {id: wchem-23, domain: chemistry, source: wikipedia, question: "What is the transition of a substance directly from solid to gas called?", answer: {text: [sublimation]}}
+  - {id: wchem-24, domain: chemistry, source: wikipedia, question: "What is the SI base unit for amount of substance?", answer: {text: [mole, mol]}}
+  - {id: wchem-25, domain: chemistry, source: wikipedia, question: "How many valence electrons does a carbon atom have?", answer: {number: 4, abs_tol: 0}}
+  - {id: wchem-26, domain: chemistry, source: wikipedia, question: "What percentage of dry air is oxygen by mole fraction?", answer: {number: 20.95, abs_tol: 0.1}}
+  - {id: wchem-27, domain: chemistry, source: wikipedia, question: "What is the chemical formula of methane?", answer: {formula: CH4}}
+
+  # --- Wikipedia: physics --------------------------------------------------------------------------
+  - {id: wphys-01, domain: physics, source: wikipedia, question: "What is the SI unit of force?", answer: {text: [newton, newtons]}}
+  - {id: wphys-02, domain: physics, source: wikipedia, question: "What is the SI unit of energy?", answer: {text: [joule, joules]}}
+  - {id: wphys-03, domain: physics, source: wikipedia, question: "What is the SI unit of power?", answer: {text: [watt, watts]}}
+  - {id: wphys-04, domain: physics, source: wikipedia, question: "What is the SI unit of electric charge?", answer: {text: [coulomb, coulombs]}}
+  - {id: wphys-05, domain: physics, source: wikipedia, question: "What is the SI unit of frequency?", answer: {text: [hertz]}}
+  - {id: wphys-06, domain: physics, source: wikipedia, question: "What is the SI unit of pressure?", answer: {text: [pascal, pascals]}}
+  - {id: wphys-07, domain: physics, source: wikipedia, question: "What is the SI unit of magnetic flux density?", answer: {text: [tesla, teslas]}}
+  - {id: wphys-08, domain: physics, source: wikipedia, question: "What is the SI unit of electrical resistance?", answer: {text: [ohm, ohms]}}
+  - {id: wphys-09, domain: physics, source: wikipedia, question: "What is the SI unit of inductance?", answer: {text: [henry, henries, henrys]}}
+  - {id: wphys-10, domain: physics, source: wikipedia, question: "What is the SI unit of radioactivity?", answer: {text: [becquerel, becquerels]}}
+  - {id: wphys-11, domain: physics, source: wikipedia, question: "What is the SI unit of capacitance?", answer: {text: [farad, farads]}}
+  - {id: wphys-12, domain: physics, source: wikipedia, question: "What is the SI unit of luminous intensity?", answer: {text: [candela, candelas]}}
+  - {id: wphys-13, domain: physics, source: wikipedia, question: "Which particle is the quantum of the electromagnetic field?", answer: {text: [photon, photons]}}
+  - {id: wphys-14, domain: physics, source: wikipedia, question: "What is absolute zero in degrees Celsius?", answer: {number: -273.15, abs_tol: 0.01}}
+  - {id: wphys-15, domain: physics, source: wikipedia, question: "What is the half-life of carbon-14 in years?", answer: {number: 5700, abs_tol: 60}}
+  - {id: wphys-16, domain: physics, source: wikipedia, question: "What is the spin of an electron, in units of the reduced Planck constant?", answer: {text: ["1/2", "½", one-half, one half]}}
+  - {id: wphys-17, domain: physics, source: wikipedia, question: "Which quarks make up a proton?", answer: {text: [two up quarks and one down quark, uud, "two up and one down"]}}
+  - {id: wphys-18, domain: physics, source: wikipedia, question: "What is the speed of sound in air at 20 °C in m/s?", answer: {number: 343, abs_tol: 3}}
+  - {id: wphys-19, domain: physics, source: wikipedia, question: "What is the boiling point of liquid nitrogen in kelvin?", answer: {number: 77, abs_tol: 1}}
+  - {id: wphys-20, domain: physics, source: wikipedia, question: "What is the refractive index of water at 20 °C?", answer: {number: 1.333, abs_tol: 0.002}}
+  - {id: wphys-21, domain: physics, source: wikipedia, question: "What is the antiparticle of the electron?", answer: {text: [positron, positrons]}}
+  - {id: wphys-22, domain: physics, source: wikipedia, question: "How many fundamental interactions of nature are known?", answer: {number: 4, abs_tol: 0}}
+  - {id: wphys-23, domain: physics, source: wikipedia, question: "Which fundamental interaction confines quarks inside protons and neutrons?", answer: {text: [strong]}}
+  - {id: wphys-24, domain: physics, source: wikipedia, question: "Which gas law says that the pressure of a gas is inversely proportional to its volume at constant temperature?", answer: {text: [Boyle]}}
+  - {id: wphys-25, domain: physics, source: wikipedia, question: "What is the electric charge of a neutron?", answer: {text: [zero, no electric charge, neutral, "0"]}}
+  - {id: wphys-26, domain: physics, source: wikipedia, question: "Which temperature scale starts at absolute zero, written 0 K?", answer: {text: [kelvin]}}
+  - {id: wphys-27, domain: physics, source: wikipedia, question: "What is the escape velocity from the surface of the Earth in km/s?", answer: {number: 11.186, abs_tol: 0.2}}

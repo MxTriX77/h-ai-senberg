@@ -150,13 +150,14 @@ def read_numbers(text: str) -> list[Number]:
     return out
 
 
-def read_formulas(text: str) -> list[tuple[str, int, int]]:
-    """(Hill formula, start, end) of every token with a digit that parses as a formula (H2O, CH3CH2OH)."""
+def read_formulas(text: str, need_digit: bool = True) -> list[tuple[str, int, int]]:
+    """(Hill formula, start, end) of every token that parses as a formula (H2O, CH3CH2OH); tokens without
+    a digit (NaCl, but also SI or He) only when need_digit is False."""
     norm = text.translate(_NORM)
     out = []
     for m in _FORMULA.finditer(norm):
         token = m.group(1)
-        if re.search(r"\d", token) and parse_formula(token) and (hill := to_hill(token)):
+        if (re.search(r"\d", token) or not need_digit) and parse_formula(token) and (hill := to_hill(token)):
             out.append((hill, m.start(), m.end()))
     return out
 
