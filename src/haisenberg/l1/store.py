@@ -168,7 +168,11 @@ class L1Store:
         rows = self._fts(" ".join(f'"{w}"' for w in words), k, domain)
         if not rows and len(words) > 1:
             rows = self._fts(" OR ".join(f'"{w}"' for w in words), k, domain)
-        in_domain = " AND article_id IN (SELECT article_id FROM article_domain WHERE domain = ?)" if domain else ""
+        in_domain = (
+            " AND EXISTS (SELECT 1 FROM article_domain d WHERE d.article_id = article_alias.article_id AND d.domain = ?)"
+            if domain
+            else ""
+        )
         exact = [
             r[0]
             for r in self.con.execute(
@@ -207,8 +211,13 @@ class L1Store:
 
     def _fts(self, match: str, k: int, domain: str | None = None) -> list[tuple]:
         # Rank inside the FTS query first and join article rows only for the top k (10x faster).
-        # A domain filter applies inside the ranking query, before LIMIT.
-        in_domain = " AND rowid IN (SELECT article_id FROM article_domain WHERE domain = ?)" if domain else ""
+        # A domain filter applies inside the ranking query, before LIMIT; as a per-row EXISTS, because
+        # `rowid IN (...)` makes FTS5 look up every article of the domain (100x slower).
+        in_domain = (
+            " AND EXISTS (SELECT 1 FROM article_domain d WHERE d.article_id = article_fts.rowid AND d.domain = ?)"
+            if domain
+            else ""
+        )
         return self.con.execute(
             f"WITH top AS (SELECT rowid AS id, bm25(article_fts, {BM25_WEIGHTS}) AS score,"
             # passage from the lead (column 3), or from the infobox (column 2) when the lead is empty

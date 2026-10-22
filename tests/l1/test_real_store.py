@@ -52,6 +52,12 @@ def test_latency_p95_under_10ms(store, lookup, queries):
     assert p95 < 10
 
 
+def test_domain_search_latency_p95_under_10ms(store):
+    p95 = p95_ms(lambda q: store.search_encyclopedia(q, None, "physics"), SEARCH)
+    print(f"search_encyclopedia(domain=physics): p95 {p95:.2f} ms over {len(SEARCH)} queries")
+    assert p95 < 10
+
+
 def test_known_facts(store):
     (caffeine, *_) = store.lookup_compound("caffeine")
     assert caffeine.cid == 2519 and caffeine.molar_mass == pytest.approx(194.19, abs=0.01)
