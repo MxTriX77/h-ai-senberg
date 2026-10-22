@@ -52,8 +52,10 @@ reasoning_policy:
     Every result has a source id such as [S1]. Put the id of the result you used right after each fact
     you take from it, for example: "Ethanol boils at 78.2 °C [S1]." Cite only ids you were given.
     If the results do not contain what you need, say so, and say which parts come from your own knowledge.
-    Do every multiplication, division, percentage, power, root and logarithm with the calculate tool
-    instead of in your head; one round may hold several calculations.
+    Compute every number you state with the calculate tool, not in your head: products, quotients,
+    percentages, powers, roots, logarithms, unit conversions, and also side calculations such as
+    "to reach X you would need Y". One round may hold several calculations. When you revise a number,
+    recompute everything that depends on it.
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
 
