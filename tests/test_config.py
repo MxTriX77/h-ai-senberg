@@ -347,3 +347,15 @@ def test_checker_plugins(tmp_path):
     data["verifier"]["checkers"] = ["astrology"]
     with pytest.raises(ConfigError, match="verifier.checkers"):
         load_config(write(tmp_path, data))
+
+
+def test_router_settings(tmp_path):
+    cfg = load_config(write(tmp_path))
+    r = cfg.router
+    assert r.enabled and (r.casual_max_chars, r.casual_max_other_words, r.analytic_min_chars, r.analytic_min_items) == (80, 3, 600, 2)
+    assert "hello" in r.casual_cues and "привет" in r.casual_cues and "verif" in r.analytic_cues and "провер" in r.analytic_cues
+    assert cfg.reasoning_policy.casual_prompt.strip()
+    data = base()
+    data["reasoning_policy"]["casual_prompt"] = " "
+    with pytest.raises(ConfigError, match="reasoning_policy.casual_prompt"):
+        load_config(write(tmp_path, data))

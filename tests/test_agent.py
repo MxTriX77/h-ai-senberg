@@ -224,6 +224,7 @@ async def test_stop_closes_upstream_and_makes_no_more_calls(cfg, fake, knowledge
     fake.scripts = [lookup_round()]
     agent = Agent(cfg, fake.client(cfg.model_backend), knowledge)
     run = agent.run([{"role": "user", "content": "hi"}])
+    assert await anext(run) == {"route": "factual"}
     assert await anext(run) == {"reasoning_content": "need data"}
     await run.aclose()
     assert fake.streams[0].closed and len(fake.requests) == 1
