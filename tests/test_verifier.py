@@ -16,6 +16,7 @@ from haisenberg.verifier import (
     SUPPORTED,
     UNVERIFIED,
     code_check,
+    parse_fixes,
     parse_verdicts,
     read_formulas,
     read_numbers,
@@ -359,3 +360,75 @@ async def test_judge_leaves_out_passages_that_do_not_fit(cfg, fake, knowledge):
     assert "S3 left out of the judge call" in lines and "S2 left out of the judge call" in lines
     assert estimate_tokens(fake.bodies[0]["messages"], cfg.model_backend.chars_per_token) <= v.budget
     assert (claims[0].outcome, claims[1].outcome) == (SUPPORTED, "")  # S2 was not given: not supported
+
+
+# --- consistency review -------------------------------------------------------------------------------
+
+DRAFT = "The theoretical yield is 23.75 g, so 23.4 g is a 98.6 % yield.\n\n| Check | Result |\n|---|---|\n| Yield | 85 % (consistent) |"
+REVIEW = "OLD: 85 % (consistent)\nNEW: 98.6 % (implausibly high)\nWHY: the calculation above gives 98.6 %"
+
+
+@pytest.fixture
+def reviewing(cfg, fake, knowledge):
+    """A plain-answer client with the consistency review on; the draft cites nothing, so the only judge
+    call is the re-search one, answered not_said."""
+    cfg.verifier.consistency_check = True
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        yield c
+
+
+def test_parse_fixes():
+    assert parse_fixes("OK") == []
+    assert parse_fixes('**OLD:** "a | b"\n**NEW**: c\nWHY: d\nOLD: lone') == [{"old": "a | b", "new": "c", "why": "d"}]
+
+
+def test_conclusion_fixed(reviewing, fake, cfg):
+    fake.chunks = [content("C1: not_said\nC2: not_said")]
+    fake.scripts = [[content(DRAFT)], [content("C1: not_said\nC2: not_said")], [content(REVIEW)]]
+    r = chat(reviewing, [{"role": "user", "content": "Check the report."}])
+    assert answer(r).endswith("| Yield | 98.6 % (implausibly high) |")
+    review = fake.bodies[-1]["messages"]
+    assert review[0]["content"] == cfg.verifier.consistency_prompt
+    assert review[1]["content"].startswith("Task:\nCheck the report.")
+    assert "'85 % (consistent)' → '98.6 % (implausibly high)' (the calculation above gives 98.6 %)" in reasoning_text(r)
+
+
+@pytest.mark.parametrize("old, why", [("98.6", "found 2 times"), ("90 % yield", "not in the answer")])
+def test_ambiguous_or_invented_quote_skipped(reviewing, fake, old, why):
+    fake.chunks = [content("C1: not_said\nC2: not_said")]
+    draft = DRAFT.replace("85 %", "98.6 %")
+    fake.scripts = [[content(draft)], [content("C1: not_said")], [content(f"OLD: {old}\nNEW: x")]]
+    r = chat(reviewing)
+    assert answer(r) == draft and f"skipped {old!r} ({why})" in reasoning_text(r)
+
+
+@pytest.mark.anyio
+async def test_nothing_to_fix_and_report(cfg, fake, knowledge):
+    cfg.verifier.consistency_check = True
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(DRAFT)], [content("C1: not_said")], [content("OK")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
+    assert next(i["verification"] for i in items if "verification" in i)["consistency"] == []
+    assert next(i["content"] for i in items if "content" in i) == DRAFT
+
+
+def test_switched_off_makes_no_review_call(client, fake, cfg):
+    fake.scripts = [[content("Benzene boils at 80.1 °C.")], [content("C1: supports S1")]]
+    chat(client)
+    assert len(fake.requests) == 2 and not cfg.verifier.consistency_check
+
+
+def test_failed_review_leaves_the_answer(reviewing, fake):
+    fake.scripts = [[content(DRAFT)], [content("C1: not_said")], CONNECT_ERROR]
+    r = chat(reviewing)
+    assert answer(r) == DRAFT and "Consistency review failed" in reasoning_text(r)
+
+
+def test_review_skipped_when_too_long(cfg, fake, knowledge):
+    cfg.verifier.consistency_check = True
+    cfg.verifier.request["max_tokens"] = cfg.context_tokens - 50  # leaves no room for the answer under review
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(DRAFT)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert "Consistency review skipped" in reasoning_text(r) and answer(r) == DRAFT

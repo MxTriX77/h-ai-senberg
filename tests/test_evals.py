@@ -208,3 +208,10 @@ async def test_reasoning_problem_end_to_end(cfg, fake, built_store, tmp_path):
     assert set(s["by_category"]) == {"facts", "reasoning"}
     assert s["by_category"]["reasoning"]["parts_pct"] == 50.0 and s["by_category"]["facts"]["correct_pct"] == 100.0
     assert score_parts("A1: 2.61\nA2: true", problem) == [True, True]
+
+
+def test_consistency_fixes_counted():
+    r = {"correct": True, "unmarked_contradiction": False, "seconds": 1.0, "error": None,
+         "verification": {"counts": {}, "consistency": [{"old": "a", "new": "b", "why": ""}]}}
+    s = summarize([r])
+    assert s["consistency_fixes"] == 1 and s["by_category"]["facts"]["consistency_fixes"] == 1
