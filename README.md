@@ -41,3 +41,15 @@ API_BASE_URL=https://example.com/v1
 API_KEY=your-key
 MODEL_ID=model-name
 ```
+
+## WebUI
+
+`ui/` is the [llama.cpp](https://github.com/ggml-org/llama.cpp) WebUI from tag `b10173` (MIT, see `ui/LICENSE`), stripped down: no attachments, model picker, regenerate/delete, system-prompt or thinking controls. The app serves the built UI at http://127.0.0.1:8000; the model's thinking shows in the collapsible Reasoning block above each answer.
+
+Build it once (and after UI changes); needs [Node.js](https://nodejs.org/):
+
+```bash
+uv run python scripts/build_ui.py
+```
+
+The build goes to `ui/dist/` (not committed).

@@ -1,0 +1,6 @@
+upstream project: https://github.com/ggml-org/llama.cpp
+tag: b10173
+commit: e9fa0781f1c25fc4fe8c86be1edc6970661ad6f0
+path: tools/ui
+license: MIT (see LICENSE)
+strip reference: https://github.com/MxTriX77/Qwen-llm-suite at fa6016c (webui-source), visual removals only
