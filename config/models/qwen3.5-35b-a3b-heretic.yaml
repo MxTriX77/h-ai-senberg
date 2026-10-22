@@ -1,0 +1,19 @@
+# Qwen3.5-35B-A3B-uncensored-heretic (llmfan46): Qwen3.5-35B-A3B with refusals removed (heretic abliteration).
+# UGI leaderboard: willingness 10/10, NatInt 35.6 vs 33.1 for its base, so no measured intelligence loss.
+# MoE, 35B parameters, 3B active per token. Same Qwen3.5 chat and tool template as the default model.
+# GGUF: mradermacher/Qwen3.5-35B-A3B-uncensored-heretic-i1-GGUF, i1-IQ3_XS (14.5 GB): the largest quant
+# that still runs from memory on a 6 GB GPU with ~13 GB RAM. License: Apache-2.0.
+# Fit: attention and KV cache on the GPU, most expert layers in RAM (~10.8 GB).
+# Use: MODEL_PROFILE=qwen3.5-35b-a3b-heretic
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-35b-a3b-heretic}"
+  # Sampling: the precise Qwen3.5 settings from config.yaml (temperature 0.6, presence_penalty 0).
+  # The base card's general thinking mode would be temperature 1.0, presence_penalty 1.5.
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-35B-A3B-uncensored-heretic.i1-IQ3_XS.gguf}"
+  ctx_size: "${CTX_SIZE:-32768}"
+  flags:
+    n-cpu-moe: "${N_CPU_MOE:-32}"           # expert layers kept in RAM; raise if CUDA runs out of memory
+    reasoning-budget: "${REASONING_BUDGET:-4096}"   # it thinks ~3.7k tokens; quality over speed
