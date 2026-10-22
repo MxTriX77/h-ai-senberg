@@ -45,6 +45,8 @@ The server owns the policy: the system prompt from `config/config.yaml` replaces
 
 When the Layer 1 store exists, the model looks facts up before it answers. The tools are generated from the sources in the store: `search_knowledge(query, domain?)` searches every text source (today the Wikipedia articles; `domain` is one of the domains the sources declare, e.g. `chemistry`, `physics`), and there is one lookup per kind of structured data (`lookup_compound` for PubChem, `lookup_constant` for CODATA). Their descriptions, the extra instructions for tool use (`reasoning_policy.tool_prompt`) and the number of tool rounds per answer (`reasoning_policy.max_search_depth`; `0` turns tools off) are in `config/config.yaml`. Tools are sent as standard OpenAI `tools`, so the backend must support tool calls (llama-server does with `--jinja`, which the launcher sets).
 
+Weak search hits are dropped before the model sees them. A hit is kept only when its title and passage contain at least `retrieval.min_term_share` (half) of the query's content words, or when the store matched its title or alias. Dropped hits show as "weak match, not used" in the Reasoning block. Without the filter, a query whose words no single article holds gets articles that share just one of them. Set `0` to turn the filter off.
+
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
 ### Verification

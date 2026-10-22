@@ -1,5 +1,6 @@
 """Agent tools generated from the fixture store (agent-tools spec)."""
 
+import dataclasses
 import json
 import logging
 
@@ -7,7 +8,7 @@ import pytest
 
 from haisenberg.config import ConfigError
 from haisenberg.l1.store import L1Store
-from haisenberg.tools import Knowledge, Sources
+from haisenberg.tools import Knowledge, Sources, term_share
 
 
 @pytest.fixture
@@ -148,3 +149,67 @@ def test_record_count_and_ids(knowledge):
     text, lines, ids = knowledge.run("lookup_constant", json.dumps({"query": "electron mass"}), sources, 2)
     assert ids == ["S1", "S2"] and len(lines) == 2
     assert sources.get("S2") is sources.items[1] and sources.get("S3") is None and sources.get("x") is None
+
+
+# --- relevance of search hits --------------------------------------------------------------------------
+
+
+def hits(knowledge, *records):
+    """Make the store's search return these (title, lead, score) records, built on a real fixture record."""
+    template = knowledge.store.search_encyclopedia("ethanol", 1)[0]
+    made = [dataclasses.replace(template, title=t, lead=lead, infobox="", snippet="", score=score,
+                                citation=dataclasses.replace(template.citation, url=f"https://x/{t}"))
+            for t, lead, score in records]
+    knowledge.store.search_encyclopedia = lambda query, k=None, domain=None: made
+
+
+@pytest.fixture
+def relevant(cfg, built_store):
+    cfg.retrieval.min_term_share = 0.5
+    return Knowledge(L1Store(built_store), cfg)
+
+
+def test_one_shared_word_is_not_enough(relevant):
+    hits(relevant, ("Journal of Optics", "Journal of Optics is a journal about light.", -3.2))
+    text, lines, ids = relevant.run("search_knowledge", json.dumps({"query": "journal publisher not given"}), Sources())
+    assert text == "Nothing relevant found for 'journal publisher not given'." and ids == []
+    assert lines == ["weak match, not used: Journal of Optics", "nothing relevant found"]
+
+
+def test_weak_hit_dropped_strong_hit_kept(relevant):
+    hits(relevant, ("Ethanol", "Ethanol boils at 78 °C at normal pressure.", -5.0),
+         ("Boiling", "Boiling is a phase change.", -2.0))
+    text, lines, ids = relevant.run("search_knowledge", json.dumps({"query": "ethanol boiling point pressure"}), Sources())
+    assert ids == ["S1"] and "Ethanol" in text and "Boiling is a phase" not in text
+    assert lines == ["[S1] Ethanol", "weak match, not used: Boiling"]
+
+
+def test_named_article_kept(relevant):
+    hits(relevant, ("Gold", "A precious metal.", 0.0))
+    assert relevant.run("search_knowledge", json.dumps({"query": "gold standard economics"}), Sources())[2] == ["S1"]
+
+
+def test_filter_off(knowledge):
+    hits(knowledge, ("Journal of Optics", "Journal of Optics is a journal about light.", -3.2))
+    assert knowledge.run("search_knowledge", json.dumps({"query": "journal publisher not given"}), Sources())[2] == ["S1"]
+
+
+def test_term_share():
+    assert term_share("boiling point of ethanol", "Ethanol boils at 78 °C") == pytest.approx(2 / 3)
+    assert term_share("half-life of carbon-14", "Carbon-14 has a half-life of 5730 years") == 1.0
+    assert term_share("the of", "anything") == 1.0
+
+
+def test_real_store_keeps_the_ranked_first_hit(cfg):
+    from haisenberg.config import load_config
+    from l1.l1_helpers import real_path
+
+    db = real_path("layer1_encyclopedia_db")
+    real = load_config()
+    real.retrieval.min_term_share = 0.5
+    knowledge = Knowledge(L1Store(db), real)
+    for query, title in [("boiling point of ethanol", "Ethanol"), ("melting point of iron", "Iron"),
+                         ("molar mass of caffeine", "Caffeine"), ("half-life of carbon-14", "Carbon-14"),
+                         ("ionization energy of hydrogen", "Hydrogen")]:
+        _, lines, _ = knowledge.run("search_knowledge", json.dumps({"query": query}), Sources())
+        assert lines[0] == f"[S1] {title}", (query, lines)

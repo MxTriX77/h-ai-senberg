@@ -442,7 +442,7 @@ def render(draft: str, claims: list[Claim], annotated: bool = True) -> str:
 
 def _render(c: Claim) -> str:
     if c.outcome == NO_CLAIM:
-        return c.text
+        return _CITES.sub("", c.text)  # a sentence that states nothing is supported by nothing
     if c.outcome == REMOVED:
         return ""
     body = _CITES.sub("", c.fixed if c.outcome == CORRECTED and c.fixed else c.text).rstrip()

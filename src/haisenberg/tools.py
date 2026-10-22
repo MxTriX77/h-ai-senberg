@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import Config, ConfigError
-from .l1.store import L1Error, L1Store, Record
+from .l1.store import STOPWORDS, L1Error, L1Store, Record
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ class Knowledge:
         self.store = store
         self.top_k = cfg.retrieval.top_k_proofs
         self.passage_chars = cfg.retrieval.passage_chars
+        self.min_share = cfg.retrieval.min_term_share
         kinds = store.kinds() if store is not None and cfg.reasoning_policy.max_search_depth > 0 else {}
         self.domains = kinds.get(TEXT, [])
         self._kind_of: dict[str, str] = {}  # tool name -> kind
@@ -102,6 +103,15 @@ class Knowledge:
             return f"Error: {e}", [f"error: {e}"], []
         if not records:
             return f"Nothing found for {query!r}.", ["nothing found"], []
+        weak: list[str] = []
+        if kind == TEXT and self.min_share > 0:  # drop hits that share little more than a word with the query
+            relevant = [getattr(r, "score", None) == 0  # the store matched its title or alias
+                        or term_share(query, f"{r.label()} {r.passage(query, self.passage_chars)}") >= self.min_share
+                        for r in records]
+            weak = [f"weak match, not used: {r.label()}" for r, ok in zip(records, relevant) if not ok]
+            records = [r for r, ok in zip(records, relevant) if ok]
+            if not records:
+                return f"Nothing relevant found for {query!r}.", [*weak, "nothing relevant found"], []
         blocks, lines, ids = [], [], []
         for record in records:
             src, new = sources.add(kind, record, record.passage(query, self.passage_chars))
@@ -112,7 +122,7 @@ class Knowledge:
                 blocks.append(f"[{src.id}] {record.label()} (shown above)")
                 lines.append(f"[{src.id}] {record.label()} (shown above)")
             ids.append(src.id)
-        return "\n\n".join(blocks), lines, ids
+        return "\n\n".join(blocks), lines + weak, ids
 
     def _call(self, name: str, arguments: str, k: int) -> tuple[str, str, list[Record]]:
         kind = self._kind_of.get(name)
@@ -140,6 +150,17 @@ class Knowledge:
 
 class _BadCall(Exception):
     pass
+
+
+def term_share(query: str, text: str) -> float:
+    """Share of the query's content words found in the text; words of 4+ letters match on their first four
+    letters (close to the store's stemming), shorter ones exactly."""
+    words = [w for w in re.findall(r"\w+", query.lower()) if w not in STOPWORDS]
+    if not words:
+        return 1.0
+    have = set(re.findall(r"\w+", text.lower()))
+    stems = {h[:4] for h in have if len(h) >= 4}
+    return sum((w[:4] in stems) if len(w) >= 4 else (w in have) for w in words) / len(words)
 
 
 def _tool(name: str, domains: list[str] | None, cfg: Config) -> dict[str, Any]:
