@@ -14,12 +14,14 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from . import calc
 from .config import Config, ConfigError
 from .l1.store import STOPWORDS, L1Error, L1Store, Record
 
 log = logging.getLogger(__name__)
 
 SEARCH = "search_knowledge"
+CALCULATE = "calculate"  # built-in arithmetic tool, offered next to the knowledge tools
 TEXT = "text"  # the kind searched by SEARCH
 _CITE = re.compile(r"\[S(\d+)\]")
 
@@ -84,6 +86,9 @@ class Knowledge:
             name = SEARCH if kind == TEXT else f"lookup_{kind}"
             self._kind_of[name] = kind
             self.tools.append(_tool(name, self.domains if kind == TEXT else None, cfg))
+        self.calculator = bool(self.tools) and CALCULATE in cfg.tools  # built in, next to the knowledge tools
+        if self.calculator:
+            self.tools.append(_tool(CALCULATE, None, cfg, param="expression"))
 
     @classmethod
     def open(cls, cfg: Config) -> Knowledge:
@@ -97,6 +102,8 @@ class Knowledge:
     def run(self, name: str, arguments: str, sources: Sources, k: int | None = None) -> tuple[str, list[str], list[str]]:
         """Run one tool call returning at most k records (default retrieval.top_k_proofs):
         (result text for the model, one line per result for the reasoning, the records' source ids)."""
+        if name == CALCULATE and self.calculator:
+            return (*calc.run_tool(arguments), [])
         try:
             kind, query, records = self._call(name, arguments, k or self.top_k)
         except _BadCall as e:
@@ -163,23 +170,23 @@ def term_share(query: str, text: str) -> float:
     return sum((w[:4] in stems) if len(w) >= 4 else (w in have) for w in words) / len(words)
 
 
-def _tool(name: str, domains: list[str] | None, cfg: Config) -> dict[str, Any]:
+def _tool(name: str, domains: list[str] | None, cfg: Config, param: str = "query") -> dict[str, Any]:
     """OpenAI function tool: parameters from code, texts from tools.<name> in the config."""
     text = cfg.tools.get(name)
     if text is None:
         raise ConfigError(f"tools.{name}: the store offers this tool but the config has no text for it")
-    properties: dict[str, dict[str, Any]] = {"query": {"type": "string"}}
+    properties: dict[str, dict[str, Any]] = {param: {"type": "string"}}
     if domains is not None:
         properties["domain"] = {"type": "string", "enum": domains}
-    for param, schema in properties.items():
-        if param not in text.parameters:
-            raise ConfigError(f"tools.{name}.parameters.{param}: missing description")
-        schema["description"] = text.parameters[param]
+    for key, schema in properties.items():
+        if key not in text.parameters:
+            raise ConfigError(f"tools.{name}.parameters.{key}: missing description")
+        schema["description"] = text.parameters[key]
     return {
         "type": "function",
         "function": {
             "name": name,
             "description": text.description,
-            "parameters": {"type": "object", "properties": properties, "required": ["query"]},
+            "parameters": {"type": "object", "properties": properties, "required": [param]},
         },
     }

@@ -16,6 +16,7 @@ from haisenberg.verifier import (
     SUPPORTED,
     UNVERIFIED,
     code_check,
+    fix_arithmetic,
     parse_fixes,
     parse_verdicts,
     read_formulas,
@@ -439,3 +440,58 @@ def test_annotated_no_claim_loses_its_citation(client, fake):
                     [content("C1: supports S1\nC2: no_claim")]]
     text = answer(chat(client))
     assert text.startswith("Ethanol is a liquid [S1]. Let me know if you need more.")
+# --- arithmetic ---------------------------------------------------------------------------------------
+
+
+def test_wrong_product_fixed_in_place():
+    draft = "The mass of CaO is 0.0500 × 56.08 = 3.80 g, so 5.00 − 2.80 = 2.20 g of CO2 leaves."
+    fixed, fixes, checked = fix_arithmetic(draft, 0.005)
+    assert fixed == "The mass of CaO is 0.0500 × 56.08 = 2.80 g, so 5.00 − 2.80 = 2.20 g of CO2 leaves."
+    assert fixes == [{"expression": "0.0500 * 56.08", "stated": "3.80", "fixed": "2.80"}] and checked == 2
+
+
+@pytest.mark.parametrize("draft", [
+    "n = 2.00 g / 138.12 g/mol = 0.01448 mol",
+    r"$$\frac{2.10}{2.609} \times 100\% = 80.5\%$$",
+    "1 atm = 101.325 kPa",
+    "E = mc^2 = 9.0 × 10^16 J",
+    "The yield is 2.10 / 2.609 × 100 % ≈ 80 %.",
+])
+def test_right_or_not_arithmetic_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
+def test_scientific_and_russian_results():
+    fixed, fixes, _ = fix_arithmetic("N = 0.0555 × 6.022 × 10^23 = 3.00 × 10^22 молекул", 0.005)
+    assert fixes[0]["fixed"] == "3.342 × 10^22" and "= 3.342 × 10^22 молекул" in fixed
+    fixed, fixes, _ = fix_arithmetic("m = 0,0500 моль × 56,08 г/моль = 3,80 г", 0.005)
+    assert fixes[0]["stated"] == "3,80" and fixed.endswith("= 2.80 г")
+
+
+def test_plain_answer_shows_the_fixed_result(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("The mass of CaO is 0.0500 × 56.08 = 3.80 g.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "The mass of CaO is 0.0500 × 56.08 = 2.80 g."
+    assert "Arithmetic: 1 calculation recomputed, 1 fixed" in reasoning_text(r)
+    assert "0.0500 * 56.08 = 3.80 → 2.80" in reasoning_text(r)
+
+
+def test_arithmetic_check_switched_off(cfg, fake, knowledge):
+    cfg.verifier.arithmetic_check = False
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("It is 2 × 3 = 7.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "It is 2 × 3 = 7." and "Arithmetic:" not in reasoning_text(r)
+
+
+@pytest.mark.anyio
+async def test_report_lists_arithmetic_fixes(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("It is 2 × 3 = 7.")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
+    report = next(i["verification"] for i in items if "verification" in i)
+    assert report["arithmetic"] == [{"expression": "2 * 3", "stated": "7", "fixed": "6"}]

@@ -266,7 +266,9 @@ def test_tool_and_search_settings_validated(tmp_path, section, key, value, named
 
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
-    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant"}
+    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate"}
+    assert set(cfg.tools["calculate"].parameters) == {"expression"}
+    assert cfg.verifier.arithmetic_rel_tol == 0.005
     assert set(cfg.tools["search_knowledge"].parameters) == {"query", "domain"}
     data = base()
     data["tools"]["search_knowledge"]["description"] = ""

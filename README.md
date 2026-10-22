@@ -47,12 +47,15 @@ When the Layer 1 store exists, the model looks facts up before it answers. The t
 
 Weak search hits are dropped before the model sees them. A hit is kept only when its title and passage contain at least `retrieval.min_term_share` (half) of the query's content words, or when the store matched its title or alias. Dropped hits show as "weak match, not used" in the Reasoning block. Without the filter, a query whose words no single article holds gets articles that share just one of them. Set `0` to turn the filter off.
 
+Next to the knowledge tools there is a built-in `calculate(expression)` tool. It evaluates plain arithmetic exactly: numbers in any common notation, `+ - * / ^`, parentheses, `sqrt`, `exp`, `ln`, `log`, trigonometry, `pi` and `e`. It parses the expression and runs no code. The tool prompt asks the model to use it for every calculation. Its text is `tools.calculate` in the config; remove that entry (and the calculator sentence of the tool prompt) to turn the tool off.
+
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
 ### Verification
 
 Before the answer is shown, the draft is checked claim by claim (sentences and list items) against the local sources only:
 
+- Arithmetic first: every `a × b = c` in the draft (also with units after the numbers, `%`, roots, logs, powers and LaTeX such as `\frac{a}{b}`) is recomputed in code. A result that is off by more than its rounding and `verifier.arithmetic_rel_tol` (0.5 %) is replaced by the right value. Switch: `verifier.arithmetic_check`.
 - Numbers and formulas are compared in code with the structured records (PubChem molar masses and formulas, CODATA values), within the claim's own rounding or `verifier.rel_tol`. A wrong number or formula next to a cited record is replaced by the record's value.
 - Everything else is checked by one extra model call, the judge (`verifier.judge_prompt`, without thinking), which reads the cited passages and says per claim: supports, contradicts (with a fix), not said, or no claim.
 - A claim no source supports gets one more search with its own text and a second judge call.

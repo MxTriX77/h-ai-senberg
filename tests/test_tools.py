@@ -21,7 +21,7 @@ def names(k):
 
 
 def test_tools_from_the_shipped_kinds(knowledge, cfg):
-    assert names(knowledge) == ["search_knowledge", "lookup_compound", "lookup_constant"]
+    assert names(knowledge) == ["search_knowledge", "lookup_compound", "lookup_constant", "calculate"]
     search = knowledge.tools[0]
     assert search["type"] == "function"
     params = search["function"]["parameters"]
@@ -213,3 +213,17 @@ def test_real_store_keeps_the_ranked_first_hit(cfg):
                          ("ionization energy of hydrogen", "Hydrogen")]:
         _, lines, _ = knowledge.run("search_knowledge", json.dumps({"query": query}), Sources())
         assert lines[0] == f"[S1] {title}", (query, lines)
+
+
+def test_calculator_next_to_the_knowledge_tools(knowledge, cfg):
+    calc_tool = knowledge.tools[-1]["function"]
+    assert calc_tool["description"] == cfg.tools["calculate"].description
+    assert calc_tool["parameters"]["required"] == ["expression"]
+    sources = Sources()
+    text, lines, ids = knowledge.run("calculate", json.dumps({"expression": "0.0500 * 56.08"}), sources)
+    assert text == "0.0500 * 56.08 = 2.804" and lines == [text] and ids == [] and not sources.items
+    assert knowledge.run("calculate", '{"expression": "__import__(1)"}', sources)[0].startswith("Error: not allowed")
+
+
+def test_no_calculator_without_the_store(cfg):
+    assert Knowledge(None, cfg).tools == []

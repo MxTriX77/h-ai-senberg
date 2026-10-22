@@ -104,6 +104,8 @@ class ToolText(_Section):
 class VerifierConfig(_Section):
     judge_prompt: str
     rel_tol: NonNegativeFloat
+    arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
+    arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
