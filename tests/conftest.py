@@ -1,6 +1,7 @@
 """Shared fixtures: a scripted fake upstream (no GPU, no network), a temp copy of the shipped config,
 and a Layer 1 store built from the test fixtures."""
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -12,7 +13,9 @@ from haisenberg.config import load_config
 from haisenberg.llm import LLMClient
 
 REPO = Path(__file__).resolve().parents[1]
-CONNECT_ERROR = "connect_error"  # a FakeUpstream script entry: refuse that request
+CONNECT_ERROR = "connect_error"  # FakeUpstream script entries: refuse that request,
+DISCONNECT = "disconnect"  # close the connection without a response (a WSL relay with nothing behind it),
+UNAVAILABLE = "unavailable"  # or answer 503 (llama-server loading)
 
 
 @pytest.fixture
@@ -43,15 +46,17 @@ def finish(reason):
 
 
 class ScriptedStream(httpx.AsyncByteStream):
-    """SSE body that can drop the connection after `fail_after` events."""
+    """SSE body that can drop the connection after `fail_after` events, or pause `gap_s` between events."""
 
-    def __init__(self, events: list[bytes], fail_after: int | None = None):
-        self.events, self.fail_after, self.closed = events, fail_after, False
+    def __init__(self, events: list[bytes], fail_after: int | None = None, gap_s: float = 0.0):
+        self.events, self.fail_after, self.gap_s, self.closed = events, fail_after, gap_s, False
 
     async def __aiter__(self):
         for i, e in enumerate(self.events):
             if i == self.fail_after:
                 raise httpx.ReadError("connection dropped")
+            if i and self.gap_s:
+                await asyncio.sleep(self.gap_s)
             yield e
 
     async def aclose(self):
@@ -61,7 +66,9 @@ class ScriptedStream(httpx.AsyncByteStream):
 class FakeUpstream:
     """Records every request and answers with scripted chunks, an HTTP error, or a connect error.
 
-    `scripts` answers requests in order (a chunk list, or CONNECT_ERROR); once it is empty, `chunks` answers.
+    `scripts` answers requests in order (a chunk list, CONNECT_ERROR, DISCONNECT or UNAVAILABLE); once it is
+    empty, `chunks` answers. `delay_s`: silence before each answer starts (a queued or slow backend);
+    `gap_s`: silence between the events of an answer.
     """
 
     def __init__(self):
@@ -73,16 +80,23 @@ class FakeUpstream:
         self.error_body: dict | None = None
         self.connect_error = False
         self.fail_after: int | None = None
+        self.delay_s = 0.0
+        self.gap_s = 0.0
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
+    async def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         chunks = self.scripts.pop(0) if self.scripts else self.chunks
         if self.connect_error or chunks == CONNECT_ERROR:
             raise httpx.ConnectError("connection refused", request=request)
+        if chunks == DISCONNECT:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+        if chunks == UNAVAILABLE:
+            return httpx.Response(503, json={"error": {"message": "Loading model"}})
+        await asyncio.sleep(self.delay_s)
         if self.status != 200:
             return httpx.Response(self.status, json=self.error_body or {"error": {"message": "bad"}})
         events = [f"data: {json.dumps(c)}\n\n".encode() for c in chunks] + [b"data: [DONE]\n\n"]
-        stream = ScriptedStream(events, self.fail_after)
+        stream = ScriptedStream(events, self.fail_after, self.gap_s)
         self.streams.append(stream)
         return httpx.Response(200, stream=stream, headers={"content-type": "text/event-stream"})
 
@@ -111,6 +125,7 @@ def cfg(tmp_path):
     dest.parent.mkdir(parents=True)
     shutil.copy(REPO / "config" / "config.yaml", dest)
     c = load_config(dest)
+    c.model_backend.wait_s = 0  # fail fast; the retry tests set their own
     c.ui.dist_dir = tmp_path / "dist"
     c.retrieval.layer1_encyclopedia_db = tmp_path / "no-store.db"
     return c

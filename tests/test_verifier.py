@@ -7,7 +7,8 @@ from conftest import CONNECT_ERROR, content, finish, tool_call
 from haisenberg.agent import Agent
 from haisenberg.l1.store import L1Store
 from haisenberg.server import create_app
-from haisenberg.tools import Knowledge, Sources
+from haisenberg.llm import estimate_tokens
+from haisenberg.tools import Knowledge, Source, Sources
 from haisenberg.verifier import (
     CORRECTED,
     NO_CLAIM,
@@ -19,6 +20,7 @@ from haisenberg.verifier import (
     read_formulas,
     read_numbers,
     render,
+    Verifier,
     split_claims,
 )
 from test_server import chat, events
@@ -331,3 +333,29 @@ def test_report_not_on_the_wire(client, fake):
     body = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "q"}]}).json()
     assert "verification" not in body["choices"][0]["message"]
 
+
+
+class _Rec:
+    def __init__(self, name):
+        self.name = name
+
+    def label(self):
+        return self.name
+
+
+@pytest.mark.anyio
+async def test_judge_leaves_out_passages_that_do_not_fit(cfg, fake, knowledge):
+    v = Verifier(cfg, fake.client(cfg.model_backend), knowledge)
+    claims = split_claims("Ethanol is a liquid [S1]. It boils at 78 degrees [S2].")
+    passages = [Source(f"S{i}", "text", _Rec(f"P{i}"), "y" * 2000) for i in (1, 2, 3)]
+    nl = chr(10)
+    bare = f"Question: q{nl}{nl}Passages:{nl}{nl}{nl}Claims:{nl}" + nl.join(f"C{c.n}: x" for c in claims)
+    v.budget = estimate_tokens([{"role": "system", "content": cfg.verifier.judge_prompt},
+                                {"role": "user", "content": bare}], cfg.model_backend.chars_per_token) + 1500
+    fake.scripts = [[content("C1: supports S1" + nl + "C2: supports S2")]]
+    lines = "".join([item["reasoning_content"] async for item in v._judge("q", claims, passages)])
+    user = fake.bodies[0]["messages"][1]["content"]
+    assert "[S1] P1" in user and "[S2] P2" not in user and "[S3] P3" not in user
+    assert "S3 left out of the judge call" in lines and "S2 left out of the judge call" in lines
+    assert estimate_tokens(fake.bodies[0]["messages"], cfg.model_backend.chars_per_token) <= v.budget
+    assert (claims[0].outcome, claims[1].outcome) == (SUPPORTED, "")  # S2 was not given: not supported

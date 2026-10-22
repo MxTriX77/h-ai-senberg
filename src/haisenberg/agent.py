@@ -14,11 +14,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config
-from .llm import LLMClient
+from .llm import LLMClient, estimate_tokens
 from .tools import Knowledge, Sources
 from .verifier import Verification, Verifier, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
+CUT_NOTE = "\n[... shortened: context budget]"
 
 
 def _question(history: list[dict[str, Any]]) -> str:
@@ -65,20 +66,45 @@ class Agent:
         verify = self.policy.enable_multi_hop_verification and knowledge.tools
         self.verifier = Verifier(cfg, llm, knowledge) if verify else None
         self.annotated = cfg.verifier.answer_style == "annotated"
+        self.context = cfg.context_tokens
+        self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
+        self.chars_per_token = cfg.model_backend.chars_per_token
+
+    def _estimate(self, messages: list[dict[str, Any]]) -> int:
+        return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
+
+    def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop the oldest turns until system + history use at most half of the prompt budget (the rest is
+        for tool results); what remains starts with a user message, and the last message is always kept."""
+        history = list(history)
+        while len(history) > 1 and self._estimate([system, *history]) > self.budget // 2:
+            history.pop(0)
+            while len(history) > 1 and history[0]["role"] != "user":
+                history.pop(0)
+        return history
 
     async def run(self, history: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         tools = self.knowledge.tools
         system = self.policy.system_prompt
         if tools:
             system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}, *history]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        messages += self._fit_history(messages[0], history)
+        if (need := self._estimate(messages)) > self.budget:
+            yield {"content": f"The question is too long for the model's context (about {need} tokens; at most"
+                              f" {self.budget} fit). Please shorten it."}
+            yield {"verification": {}}
+            yield {"finish_reason": "stop"}
+            return
         sources = Sources()
-        rounds = 0
+        rounds, room_left = 0, True
         while True:
-            may_call = bool(tools) and rounds < self.policy.max_search_depth
+            may_call = bool(tools) and rounds < self.policy.max_search_depth and room_left
             fields: dict[str, Any] = {"tools": tools} if tools else {}
             if tools and not may_call:
                 fields["tool_choice"] = "none"
+            if (prompt := self._estimate(messages)) > self.budget:  # only by the few chars of a cut note
+                fields["max_tokens"] = self.context - prompt
             reply = _Reply()
             call = self._call(messages, fields, reply)
             try:
@@ -96,7 +122,12 @@ class Agent:
                 yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
                 result, lines, _ = self.knowledge.run(fn["name"], fn["arguments"], sources)
                 yield {"reasoning_content": "".join(f"- {line}\n" for line in lines) + "\n"}
-                messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+                message = {"role": "tool", "tool_call_id": c["id"], "content": ""}
+                room = int((self.budget - self._estimate([*messages, message])) * self.chars_per_token)
+                if len(result) > room:  # keep within the context; no further tool rounds after this one
+                    result, room_left = result[: max(0, room - len(CUT_NOTE))] + CUT_NOTE, False
+                    yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
+                messages.append({**message, "content": result})
         answer = draft = reply.content.strip()
         report: dict[str, Any] = {}
         if self.verifier and draft:

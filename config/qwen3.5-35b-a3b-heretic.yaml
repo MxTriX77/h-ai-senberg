@@ -8,6 +8,7 @@
 
 model_backend:
   model_id: "${MODEL_ID:-qwen3.5-35b-a3b-heretic}"
+  max_tokens: 8192                         # thinking up to 4096 + answer; prompt budget 32768 - 8192
   # Sampling: the precise Qwen3.5 settings from config.yaml (temperature 0.6, presence_penalty 0).
   # The base card's general thinking mode would be temperature 1.0, presence_penalty 1.5.
 

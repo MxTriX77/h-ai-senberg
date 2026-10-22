@@ -1,4 +1,5 @@
-"""Start (or reuse) the local llama-server from config, wait until it is ready, stop it on exit."""
+"""Start (or reuse) the local llama-server from config, wait until it is ready, restart it if it dies,
+stop it on exit."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -36,7 +38,7 @@ def build_command(cfg: Config) -> list[str]:
     for name, value in ls.flags.items():
         if value is True:
             cmd.append(f"--{name}")
-        elif value is not False and value is not None:
+        elif value is not False and value is not None and value != "":
             cmd += [f"--{name}", str(value)]
     return cmd
 
@@ -87,6 +89,72 @@ def ensure_llama_server(
             stop(proc)
             raise LauncherError(f"llama-server was not ready after {ls.startup_timeout_s:g} s")
         time.sleep(poll_s)
+
+
+class Supervisor:
+    """Runs the llama-server this app starts: restarts it when it exits on its own (crash, kill),
+    with a growing pause between failed attempts, until `stop()`."""
+
+    def __init__(self, cfg: Config, start=None, pause_s: float = 5.0, max_pause_s: float = 60.0):
+        self.cfg = cfg
+        self._start = start or (lambda: ensure_llama_server(cfg))
+        self.pause_s, self.max_pause_s = pause_s, max_pause_s
+        self.proc: subprocess.Popen | None = None
+        self.restarts = 0
+        self._stopping = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start (or reuse) llama-server and wait until it is ready; raises LauncherError. Only a process
+        started here is watched. The watcher thread lives as long as the app: on Linux a child started by
+        it gets SIGTERM when the thread ends (PR_SET_PDEATHSIG is per thread)."""
+        self.proc = self._start()
+        if self.proc is not None:
+            self._thread = threading.Thread(target=self._watch, name="llama-server-watch", daemon=True)
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stopping.set()
+        stop(self.proc)
+        if self._thread is not None:
+            self._thread.join(15)
+
+    def _watch(self) -> None:
+        pause = self.pause_s
+        while not self._stopping.is_set():
+            proc = self.proc
+            code = proc.wait() if proc is not None else None
+            if self._stopping.is_set():
+                return
+            if proc is not None:
+                log.error("llama-server exited with %s; restarting it", describe_exit(code))
+            try:
+                self.proc = self._start()
+                if self._stopping.is_set():  # stop() came while it was loading
+                    stop(self.proc)
+                    return
+                self.restarts += 1
+                pause = self.pause_s
+                if self.proc is None:
+                    log.warning("another llama-server answers on the port now; not watching it")
+                    return
+                log.info("llama-server restarted (restart %d)", self.restarts)
+            except Exception as e:  # never let the watcher die: llama-server must come back
+                self.proc = None
+                log.error("restarting llama-server failed: %s; next try in %g s", e, pause)
+                if self._stopping.wait(pause):
+                    return
+                pause = min(pause * 2, self.max_pause_s)
+
+
+def describe_exit(code: int | None) -> str:
+    """'code 1' or, for a process killed by a signal (negative code on POSIX), 'signal SIGKILL'."""
+    if code is not None and code < 0:
+        try:
+            return f"signal {signal.Signals(-code).name}"
+        except ValueError:
+            return f"signal {-code}"
+    return f"code {code}"
 
 
 def stop(proc: subprocess.Popen | None) -> None:

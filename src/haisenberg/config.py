@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     NonNegativeFloat,
     NonNegativeInt,
+    PositiveFloat,
     PositiveInt,
     PrivateAttr,
     ValidationError,
@@ -38,6 +39,7 @@ class AppConfig(_Section):
     host: str
     port: int
     debug: bool
+    keepalive_s: PositiveFloat  # streamed responses: seconds of silence before an SSE keep-alive comment
 
 
 class ModelBackendConfig(_Section):
@@ -47,7 +49,10 @@ class ModelBackendConfig(_Section):
     model_id: str
     temperature: float
     max_tokens: int
-    timeout_s: float
+    timeout_s: PositiveFloat | None  # read limit; None = wait as long as the backend needs
+    wait_s: NonNegativeFloat  # retry a backend that refuses connections or answers 503 this long
+    context_tokens: PositiveInt | None = None  # None = llama_server.ctx_size
+    chars_per_token: PositiveFloat  # token estimate for the context budget
     extra_body: dict[str, Any] = {}
 
 
@@ -143,6 +148,11 @@ class Config(_Section):
     def root(self) -> Path:
         """Project root: the parent of the folder that holds the config file."""
         return self._root
+
+    @property
+    def context_tokens(self) -> int:
+        """The backend's context size in tokens: model_backend.context_tokens, else llama_server.ctx_size."""
+        return self.model_backend.context_tokens or self.llama_server.ctx_size
 
 
 # (section, field) pairs resolved against the project root when relative.
