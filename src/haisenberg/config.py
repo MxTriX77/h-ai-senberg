@@ -145,6 +145,33 @@ class VerifierConfig(_Section):
         return v
 
 
+class EvidenceConfig(_Section):
+    """Evidence protocol for analytic requests (D-032); see haisenberg.evidence."""
+
+    enabled: bool
+    strong_words: list[str]  # trigger words of strong claims, matched at a word start
+    ledger_prompt: str
+    repair_prompt: str  # {missing}: the listed ids without an entry
+    writer_prompt: str
+    review_prompt: str
+    ledger_request: dict[str, Any] = {}  # fields merged into the ledger and repair calls
+    request: dict[str, Any] = {}  # fields merged into the writer and review calls
+
+    @field_validator("ledger_prompt", "repair_prompt", "writer_prompt", "review_prompt")
+    @classmethod
+    def _not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+    @field_validator("repair_prompt")
+    @classmethod
+    def _names_missing(cls, v: str) -> str:
+        if "{missing}" not in v:
+            raise ValueError("must contain {missing}")
+        return v
+
+
 class LlamaServerConfig(_Section):
     enabled: bool
     executable: str
@@ -170,6 +197,7 @@ class Config(_Section):
     retrieval: RetrievalConfig
     tools: dict[str, ToolText]
     verifier: VerifierConfig
+    evidence: EvidenceConfig
     llama_server: LlamaServerConfig
     ui: UiConfig
 

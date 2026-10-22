@@ -342,8 +342,11 @@ class Verifier:
         self.budget = cfg.context_tokens - judge_max  # prompt tokens a judge call may use
         self.chars_per_token = cfg.model_backend.chars_per_token
 
-    async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
-        """Yield reasoning deltas while checking, then the Verification."""
+    async def verify(
+        self, question: str, draft: str, sources: Sources, review: bool = True
+    ) -> AsyncIterator[dict | Verification]:
+        """Yield reasoning deltas while checking, then the Verification. `review=False` leaves out the
+        consistency review (the evidence protocol reviews analytic answers against its ledger instead)."""
         arithmetic, checked = [], 0
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol)
@@ -399,45 +402,25 @@ class Verifier:
             elif c.outcome == REMOVED:
                 yield _say(f"- C{c.n} removed (contradicted by {', '.join(c.ids)})\n")
         answer, fixes = render(draft, claims, self.cfg.answer_style == "annotated"), []
-        if self.cfg.consistency_check:
-            review = self._consistency(question, answer)
+        if review and self.cfg.consistency_check:
+            check = self.consistency_review(question, answer)
             try:
-                async for item in review:
+                async for item in check:
                     if isinstance(item, tuple):
                         answer, fixes = item
                     else:
                         yield item
             finally:
-                await review.aclose()
+                await check.aclose()
         yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks)
 
-    async def _consistency(self, question: str, answer: str):
+    async def consistency_review(self, question: str, answer: str):
         """One review call over the whole answer and the task. Yields reasoning lines, then (answer, fixes)."""
         messages = [{"role": "system", "content": self.cfg.consistency_prompt},
                     {"role": "user", "content": f"Task:\n{question}\n\nAnswer:\n{answer}"}]
-        if estimate_tokens(messages, self.chars_per_token) > self.budget:
-            yield _say("\n\nConsistency review skipped: the answer is too long for the context\n")
-            yield answer, []
-            return
-        try:
-            reply = await self._complete(messages)
-        except (UpstreamError, httpx.HTTPError) as e:
-            log.error("consistency review failed: %s", e)
-            yield _say(f"\n\nConsistency review failed: {e}\n")
-            yield answer, []
-            return
-        blocks, applied = parse_fixes(reply), []
-        yield _say(f"\n\nConsistency review: {len(blocks)} fix{'es' if len(blocks) != 1 else ''} proposed\n")
-        for f in blocks:
-            count = answer.count(f["old"]) if f["old"] else 0
-            if count == 1 and f["new"] != f["old"]:
-                answer = answer.replace(f["old"], f["new"])
-                applied.append(f)
-                yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
-            else:
-                why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
-                yield _say(f"- skipped {f['old']!r} ({why})\n")
-        yield answer, applied
+        async for item in apply_review(self.llm, self.cfg.request, self.budget, self.chars_per_token, messages,
+                                       answer, "Consistency review"):
+            yield item
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
         """One judge call for these claims; sets their outcome. Yields reasoning lines."""
@@ -455,7 +438,7 @@ class Verifier:
             yield _say(f"- {passages.pop().id} left out of the judge call (context budget)\n")
         given = {s.id for s in passages}
         try:
-            reply = await self._complete(messages)
+            reply = await complete(self.llm, messages, self.cfg.request)
         except (UpstreamError, httpx.HTTPError) as e:
             log.error("judge call failed: %s", e)
             yield _say(f"- judge failed: {e}\n")
@@ -472,16 +455,46 @@ class Verifier:
                 c.outcome = NO_CLAIM
             yield _say(f"- C{c.n} {c.note}\n")
 
-    async def _complete(self, messages: list[dict[str, Any]]) -> str:
-        """The judge's answer text; its reasoning tokens, if any, are ignored."""
-        parts: list[str] = []
-        stream = self.llm.stream_chat(messages, **self.cfg.request)
-        try:
-            async for chunk in stream:
-                parts.append(((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content") or "")
-        finally:
-            await stream.aclose()
-        return "".join(parts)
+
+async def complete(llm: LLMClient, messages: list[dict[str, Any]], request: dict[str, Any]) -> str:
+    """A judge-style call's answer text; its reasoning tokens, if any, are ignored."""
+    parts: list[str] = []
+    stream = llm.stream_chat(messages, **request)
+    try:
+        async for chunk in stream:
+            parts.append(((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content") or "")
+    finally:
+        await stream.aclose()
+    return "".join(parts)
+
+
+async def apply_review(llm: LLMClient, request: dict[str, Any], budget: int, chars_per_token: float,
+                       messages: list[dict[str, Any]], answer: str, title: str):
+    """One review call that replies with exact OLD/NEW replacements for `answer`; a replacement is applied only
+    when its text occurs exactly once. Yields reasoning lines, then (answer, applied fixes)."""
+    if estimate_tokens(messages, chars_per_token) > budget:
+        yield _say(f"\n\n{title} skipped: the answer is too long for the context\n")
+        yield answer, []
+        return
+    try:
+        reply = await complete(llm, messages, request)
+    except (UpstreamError, httpx.HTTPError) as e:
+        log.error("%s failed: %s", title, e)
+        yield _say(f"\n\n{title} failed: {e}\n")
+        yield answer, []
+        return
+    blocks, applied = parse_fixes(reply), []
+    yield _say(f"\n\n{title}: {len(blocks)} fix{'es' if len(blocks) != 1 else ''} proposed\n")
+    for f in blocks:
+        count = answer.count(f["old"]) if f["old"] else 0
+        if count == 1 and f["new"] != f["old"]:
+            answer = answer.replace(f["old"], f["new"])
+            applied.append(f)
+            yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
+        else:
+            why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
+            yield _say(f"- skipped {f['old']!r} ({why})\n")
+    yield answer, applied
 
 
 # --- answer -----------------------------------------------------------------------------------------

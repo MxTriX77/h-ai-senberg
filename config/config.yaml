@@ -159,7 +159,77 @@ verifier:                                  # claim checks on the draft; on/off: 
     max_tokens: 1024
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: no thinking for the judge
 
-llama_server:                              # local reasoner, started by `uv run haisenberg`
+evidence:                                  # evidence protocol for analytic requests (D-032; router: analytic)
+  enabled: true                            # false: analytic requests get the consistency review, like factual ones
+  strong_words: [always, never, guarantee, prove, proof, certainly, impossible, every, none, no one, all cases,
+                 всегда, никогда, гарантир, доказ, наверняка, невозможн, кажд, любой, любая, любое, любые,
+                 во всех случаях, ни один]       # strong claims (matched at a word start) need strong evidence
+  ledger_prompt: |
+    You build an evidence ledger for the user's task from a worked draft (its calculations were recomputed in
+    code). Write one entry per item of the task: each claim, question, part or required output. Use the ids of
+    the listed items; for a task without a list, number the items you find 1, 2, 3...
+    - statement: what is judged, as one statement: a claim exactly as the task states it; for a question, the
+      answer the draft reached.
+    - for / against: the evidence for and against the statement, each with "from": given (stated in the task),
+      source (a looked-up source in the draft), computation (calculated in the draft), knowledge (general
+      knowledge, not checked here) or assumption (assumed, not shown).
+    - assumptions: what the statement relies on that is not shown; gaps: missing data that would settle it.
+    - depends_on: ids of the items this one builds on.
+    - status: established (the evidence for settles it, nothing against it), contradicted (a computation, the
+      given data or a source conflicts with it), unverified (the evidence does not settle it either way) or
+      hypothesis (a possible explanation that nothing here shows).
+    - strong_enough: true only if the evidence for supports the statement at its full strength: a claim with
+      "always", "never", "guarantees", "proves" or "all" needs evidence for every case, not one example.
+    - conclusion: one sentence on what the answer should say about the item.
+    Absence of evidence means unverified, never contradicted. Never turn a hypothesis into a fact. A check that
+    needs the web, a registry or a full paper is unverified (no web access). A given number that conflicts with
+    other given numbers or with a computation is evidence against the claim that uses it.
+    Put listed items that are only given data or instructions under "skipped", with a short reason.
+    Reply with JSON only; write the text fields in the language of the task:
+    {"items": [{"id": "A", "statement": "", "for": [{"evidence": "", "from": "computation"}], "against": [],
+    "assumptions": [], "gaps": [], "depends_on": [], "status": "", "strong_enough": false, "conclusion": ""}],
+    "skipped": [{"id": "", "why": ""}]}
+  repair_prompt: |
+    Your ledger has no entry for these listed items: {missing}. Reply with JSON only, in the same format, with
+    entries (or skipped items) for exactly these ids.
+  writer_prompt: |
+    You write the final answer to the user's task from a settled evidence ledger and the worked draft.
+    - Address every ledger item, in the task's order, and name listed items by their ids.
+    - Give each item a clear verdict that matches its status, never a different one: established -> true or
+      correct; contradicted -> wrong, with the evidence against it; unverified -> cannot be confirmed with what
+      is available, and what is missing; hypothesis -> only a possibility.
+    - A statement whose status was changed by the rules gets the new status's verdict, whatever the draft said.
+    - Keep the numbers and calculations from the draft that the verdicts rest on. Add no evidence, numbers or
+      sources that are not in the ledger or the draft.
+    Write a normal chat answer in the language of the task, without the ledger, its field names, source ids or a
+    verification report.
+  review_prompt: |
+    You check a final answer against its settled evidence ledger and the user's task. Look for:
+    1. an item given a different verdict than its ledger status (a contradicted item called true, partly true or
+       unconfirmed; an unverified item called true or false; a hypothesis stated as fact);
+    2. a strong claim ("always", "guarantees", "proves" and the like) called true when its status is not established;
+    3. conclusions, numbers or table cells that contradict the ledger or the answer's own calculations;
+    4. a ledger item the answer does not address: quote the answer's last sentence as OLD and give it followed by
+       the missing part as NEW;
+    5. explicit instructions in the task that the answer does not follow;
+    6. anything presented as checked that could not have been checked offline (no web access).
+    Do not re-check facts against outside knowledge, do not add content beyond the ledger, do not restyle the text.
+    If there is no such problem, reply with exactly: OK
+    Otherwise reply with one block per fix and nothing else:
+    OLD: <a short exact quote from the answer, on one line, that appears only once>
+    NEW: <its corrected replacement>
+    WHY: <one short reason>
+  ledger_request:                          # fields merged into the ledger and repair calls (per-model quirks, D-013)
+    temperature: 0.0
+    max_tokens: 3072
+    response_format: {type: json_object}   # OpenAI JSON mode; llama-server turns it into a grammar
+    chat_template_kwargs: {enable_thinking: false}
+  request:                                 # fields merged into the writer and review calls
+    temperature: 0.2
+    max_tokens: 3072
+    chat_template_kwargs: {enable_thinking: false}
+
+llama_server:                             # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend
   executable: "${LLAMA_SERVER_EXE:-llama-server}"
   model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"

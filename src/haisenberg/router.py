@@ -11,15 +11,19 @@ from .config import RouterConfig
 CASUAL, FACTUAL, ANALYTIC = "casual", "factual", "analytic"
 
 # A listed item: a line starting with a number, a letter or a bullet, or an inline label such as "Claim A:".
-_LINE_ITEM = re.compile(r"(?m)^\s*(?:\(?(?:\d{1,2}|[A-Za-zА-Яа-я])[.)]|[-*•])\s+\S")
+_LINE_ITEM = re.compile(r"(?m)^[ \t]*(?:\(?(\d{1,2}|[A-Za-zА-Яа-я])[.)]|[-*•])[ \t]+(\S.*)$")
 _LABEL_ITEM = re.compile(r"(?i)\b(?:claim|statement|item|part|question|утверждение|пункт|вопрос|часть)\s+(\w{1,3})\s*[:.)]")
 
 
-def request_items(text: str) -> list[str]:
-    """Labels of the items a message lists (numbered, lettered, bulleted lines or "Claim A:" labels)."""
-    lines = [m.group().strip() for m in _LINE_ITEM.finditer(text)]
-    labels = [f"{m.group(1)}" for m in _LABEL_ITEM.finditer(text)]
-    return lines if len(lines) >= len(labels) else labels
+def request_items(text: str) -> list[tuple[str, str]]:
+    """(id, text) of the items a message lists: numbered, lettered or bulleted lines (bullets are numbered in
+    order), or labels such as "Claim A:" (the text up to the next label). Ids are upper case."""
+    lines = [(m.group(1) or str(i), m.group(2).strip()) for i, m in enumerate(_LINE_ITEM.finditer(text), 1)]
+    labels = list(_LABEL_ITEM.finditer(text))
+    if len(lines) >= len(labels):
+        return [(i.upper(), t) for i, t in lines]
+    ends = [m.start() for m in labels[1:]] + [len(text)]
+    return [(m.group(1).upper(), text[m.end() : end].strip()) for m, end in zip(labels, ends)]
 
 
 def route(text: str, cfg: RouterConfig) -> tuple[str, str]:

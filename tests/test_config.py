@@ -359,3 +359,15 @@ def test_router_settings(tmp_path):
     data["reasoning_policy"]["casual_prompt"] = " "
     with pytest.raises(ConfigError, match="reasoning_policy.casual_prompt"):
         load_config(write(tmp_path, data))
+
+
+def test_evidence_settings(tmp_path):
+    e = load_config(write(tmp_path)).evidence
+    assert e.enabled and "always" in e.strong_words and "гарантир" in e.strong_words
+    assert "{missing}" in e.repair_prompt and e.ledger_request["response_format"] == {"type": "json_object"}
+    for key, value, match in [("repair_prompt", "Add the missing items.", "must contain {missing}"),
+                              ("writer_prompt", " ", "evidence.writer_prompt")]:
+        data = base()
+        data["evidence"][key] = value
+        with pytest.raises(ConfigError, match=match):
+            load_config(write(tmp_path, data))

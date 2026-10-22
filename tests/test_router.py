@@ -42,8 +42,10 @@ def test_router_off(cfg):
 
 
 def test_request_items():
-    assert len(request_items("Please:\n1. compute the yield\n2. check the purity\n- and the price")) == 3
-    assert request_items("Claim A: x. Claim B: y.") == ["A", "B"]
+    assert request_items("Please:\n1. compute the yield\n2. check the purity\n- and the price") == [
+        ("1", "compute the yield"), ("2", "check the purity"), ("3", "and the price")]
+    assert request_items("Claim A: x. Claim b: y.") == [("A", "x."), ("B", "y.")]
+    assert request_items("а) первое\nб) второе") == [("А", "первое"), ("Б", "второе")]
 
 
 def test_greeting_streams_a_direct_answer(cfg, fake, router):

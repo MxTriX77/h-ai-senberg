@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config
+from .evidence import EvidenceProtocol, Ledger
 from .llm import LLMClient, estimate_tokens
-from .router import CASUAL, route
+from .router import ANALYTIC, CASUAL, route
 from .tools import Knowledge, Sources
 from .verifier import Verification, Verifier, strip_cites
 
@@ -71,6 +72,7 @@ class Agent:
         self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
         self.chars_per_token = cfg.model_backend.chars_per_token
         self.router = cfg.router
+        self.protocol = EvidenceProtocol(cfg, llm) if cfg.evidence.enabled else None
 
     async def _casual(self, messages: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         """Small talk (router): one call, no tools, no checks; the answer streams straight as content."""
@@ -157,9 +159,10 @@ class Agent:
                     yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
                 messages.append({**message, "content": result})
         answer = draft = reply.content.strip()
-        report: dict[str, Any] = {}
+        question, report = _question(history), {}
+        analytic = depth == ANALYTIC and self.protocol is not None and bool(draft)
         if self.verifier and draft:
-            check = self.verifier.verify(_question(history), draft, sources)
+            check = self.verifier.verify(question, draft, sources, review=not analytic)
             try:
                 async for item in check:
                     if isinstance(item, Verification):
@@ -168,6 +171,28 @@ class Agent:
                         yield item
             finally:
                 await check.aclose()
+        if analytic:  # the evidence protocol replaces the consistency review (D-032)
+            ledger, run = None, self.protocol.run(question, answer)
+            try:
+                async for item in run:
+                    if isinstance(item, Ledger):
+                        ledger = item
+                    else:
+                        yield item
+            finally:
+                await run.aclose()
+            if ledger:
+                answer, report["ledger"] = ledger.answer, ledger.report()
+            elif self.verifier and self.verifier.cfg.consistency_check:  # no readable ledger: the usual review
+                review = self.verifier.consistency_review(question, answer)
+                try:
+                    async for item in review:
+                        if isinstance(item, tuple):
+                            answer, report["consistency"] = item
+                        else:
+                            yield item
+                finally:
+                    await review.aclose()
         if self.annotated:
             yield {"content": answer + sources.source_list(answer)}
         else:  # a plain chat answer: the ids and the checks stay in the reasoning block

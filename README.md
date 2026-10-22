@@ -46,7 +46,7 @@ The server owns the policy: the system prompt from `config/config.yaml` replaces
 A router picks the depth of each message by rules in code, without a model call (`router` in the config):
 
 - **Casual** (small talk such as "hi, how are you?", "thanks!", "tell me a joke"): one short model call with `reasoning_policy.casual_prompt`, no tools, no checks, no thinking (`router.casual_request`). The answer streams straight back. A message counts as casual only when it is short (`casual_max_chars`), has no digits, and holds a casual cue (`casual_cues`) with at most `casual_max_other_words` other words, so "is it ok to mix bleach and ammonia?" is not casual.
-- **Analytic** (listed items such as `A) … B) …` or `Claim 1: …`, long messages, or a request to check, verify, compare or audit something that comes with numbers or several sentences): today's full path; the evidence protocol builds on it.
+- **Analytic** (listed items such as `A) … B) …` or `Claim 1: …`, long messages, or a request to check, verify, compare or audit something that comes with numbers or several sentences): lookups and claim checks, then the evidence protocol (below).
 - **Factual**: everything else, with lookups and claim checks. Anything the rules are unsure about lands here.
 
 The Reasoning block starts with the route and why (`Route: analytic (3 listed items)`). Cue words are in English and Russian; add more languages in `casual_cues` and `analytic_cues`. `router.enabled: false` sends every message down the factual path.
@@ -73,6 +73,24 @@ Before the answer is shown, the draft is checked claim by claim (sentences and l
 - Last, a consistency review reads the whole answer with the user's task (one judge call, `verifier.consistency_prompt`). It looks for conclusions, verdicts or table cells that contradict the answer's own calculations, labels that conflict with their reasons, implausible results presented as fine, ignored instructions, and parts that contradict each other. It replies with exact `OLD`/`NEW` replacements. A replacement is applied only when its text occurs exactly once in the answer. Switch: `verifier.consistency_check`.
 
 The checks only make the answer better; they are not shown in it. The answer reads like a normal chat answer: contradicted claims are replaced by the corrected text or dropped when there is no fix, everything else stays as the model wrote it, and the `[S#]` ids are removed. Every check, fix and source is listed in the Reasoning block. For debugging, `verifier.answer_style: annotated` shows the outcome of every claim in the answer instead: supported claims with their source ids, *(unverified)*, *(corrected from [S2])*, a summary line counting the outcomes, and the list of cited sources with license and URL. Turn verification off with `reasoning_policy.enable_multi_hop_verification: false`; settings are in the `verifier` section of `config/config.yaml`.
+
+### Evidence protocol (analytic requests)
+
+On the analytic route (see "How much checking a message gets"), the evidence protocol takes the place of the consistency review. It also runs without the Layer 1 store, since a logic or planning question needs no lookups:
+
+1. **Ledger.** One call (JSON mode, `evidence.ledger_prompt`) turns the task and the checked draft into a ledger. Each item of the task gets one entry: the claims, questions, parts and required outputs, under the ids the task lists. An entry holds the statement being judged; evidence for and against, each tagged with where it comes from (given in the task, a source, a computation, general knowledge, an assumption); assumptions; gaps; the items it depends on; a status (established, contradicted, unverified, hypothesis); and whether the evidence supports the statement at its full strength.
+2. **Rules in code.** The statuses are then settled in code, whatever the model said:
+   - evidence against from a computation, the given data or a source makes an item contradicted;
+   - "contradicted" with nothing against it becomes unverified (absence of evidence is not disproof);
+   - "established" with no evidence becomes unverified, and with only assumptions behind it, a hypothesis;
+   - a strong claim (a word from `evidence.strong_words`, such as "always", "guarantees", "всегда") is only established when the evidence covers its full strength;
+   - an item that builds on one that is not established cannot be established either.
+
+   The rules only lower a status, so a hypothesis is never promoted.
+3. **Coverage.** Every item the task lists (`A)`, `1.`, `Claim B:`…) must have an entry, or be skipped as given data. Missing ones are asked for once (`evidence.repair_prompt`).
+4. **Answer from the ledger.** A writer call (`evidence.writer_prompt`) writes the answer from the settled ledger and the draft's calculations. Its arithmetic and domain checks run again in code, then a review call (`evidence.review_prompt`) compares the answer with the ledger: verdicts that differ from a status, strong claims called true, numbers that contradict the ledger, items left out, ignored instructions. It fixes them with the same exact `OLD`/`NEW` replacements as the consistency review.
+
+The ledger, every rule that changed a status and every fix are shown in the Reasoning block, and the eval report keeps them (`verification.ledger`). If no readable ledger comes back, the answer gets the usual consistency review. `evidence.enabled: false` turns the protocol off. The ledger calls send `response_format: {type: json_object}` (`evidence.ledger_request`); remove it for a backend without JSON mode.
 
 To use another backend (an already running server or any OpenAI-compatible API), set in `.env`:
 
