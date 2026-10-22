@@ -13,3 +13,7 @@ __pycache__/
 
 # model weights
 /models/
+
+# WebUI build output and dependencies
+/ui/node_modules/
+/ui/dist/
