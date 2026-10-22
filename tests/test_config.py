@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from haisenberg.config import CONFIG_ENV, ConfigError, load_config
+from haisenberg.config import CONFIG_ENV, PROFILE_ENV, ConfigError, load_config
 
 REPO = Path(__file__).resolve().parents[1]
 SHIPPED = REPO / "config" / "config.yaml"
@@ -20,11 +20,14 @@ def _strings(v):
         yield v
 
 
-# Variables referenced in config values (comments excluded).
+PROFILES = sorted((REPO / "config" / "models").glob("*.yaml"))
+
+# Variables referenced in config and profile values (comments excluded).
 VARS = sorted(
     {
         name
-        for s in _strings(yaml.safe_load(SHIPPED.read_text(encoding="utf-8")))
+        for f in [SHIPPED, *PROFILES]
+        for s in _strings(yaml.safe_load(f.read_text(encoding="utf-8")))
         for name in re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", s)
     }
 )
@@ -34,7 +37,7 @@ VARS = sorted(
 def clean_env(monkeypatch):
     """Isolate every test: no config vars set, and undo whatever load_dotenv adds."""
     saved = dict(os.environ)
-    for name in VARS + [CONFIG_ENV]:
+    for name in VARS + [CONFIG_ENV, PROFILE_ENV]:
         monkeypatch.delenv(name, raising=False)
     yield
     os.environ.clear()
@@ -192,3 +195,54 @@ def test_machine_knobs_from_environment(tmp_path, monkeypatch):
     assert _arg(cmd, "--ctx-size") == "65536" and _arg(cmd, "--gpu-layers") == "40"
     assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "4096"
     assert _arg(cmd, "--port") == "9090"
+
+
+def write_profile(root: Path, name: str, data: dict) -> None:
+    path = root / "config" / "models" / f"{name}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def test_profile_overlays_model_settings(tmp_path, monkeypatch):
+    path = write(tmp_path)
+    write_profile(tmp_path, "big", {
+        "model_backend": {"model_id": "big-model", "extra_body": {"top_k": 40}},
+        "llama_server": {"model_path": "${MODEL_PATH:-models/big.gguf}", "flags": {"n-cpu-moe": 20}},
+    })
+    monkeypatch.setenv(PROFILE_ENV, "big")
+    cfg = load_config(path)
+    assert cfg.model_backend.model_id == "big-model"
+    assert cfg.model_backend.extra_body == {**base()["model_backend"]["extra_body"], "top_k": 40}
+    assert cfg.llama_server.model_path == tmp_path.resolve() / "models" / "big.gguf"
+    assert cfg.llama_server.flags["n-cpu-moe"] == 20 and cfg.llama_server.flags["jinja"] is True
+    assert cfg.model_backend.temperature == base()["model_backend"]["temperature"]
+
+
+def test_no_profile_keeps_base(tmp_path):
+    write_profile(tmp_path, "big", {"model_backend": {"model_id": "big-model"}})
+    assert load_config(write(tmp_path)).model_backend.model_id != "big-model"
+
+
+def test_missing_profile_lists_available(tmp_path, monkeypatch):
+    path = write(tmp_path)
+    write_profile(tmp_path, "one", {})
+    monkeypatch.setenv(PROFILE_ENV, "two")
+    with pytest.raises(ConfigError, match=r"'two' not found.*available: one"):
+        load_config(path)
+
+
+def test_profile_typo_named(tmp_path, monkeypatch):
+    path = write(tmp_path)
+    write_profile(tmp_path, "bad", {"model_backend": {"modle_id": "x"}})
+    monkeypatch.setenv(PROFILE_ENV, "bad")
+    with pytest.raises(ConfigError, match=r"bad\.yaml.*model_backend\.modle_id"):
+        load_config(path)
+
+
+def test_shipped_profiles_load(tmp_path, monkeypatch):
+    for profile in PROFILES:
+        root = tmp_path / profile.stem
+        path = write(root)
+        write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
+        monkeypatch.setenv(PROFILE_ENV, profile.stem)
+        assert load_config(path).model_backend.model_id
