@@ -52,11 +52,11 @@ llama_server:                              # local reasoner, started by `uv run 
     jinja: true                            # use the GGUF's own chat template (tool calls later)
     reasoning: "on"
     reasoning-format: deepseek             # thinking arrives as reasoning_content
-    reasoning-budget: 4096
+    reasoning-budget: 1024                 # thinking-token cap: Qwen3.5 otherwise thinks ~4k tokens (~6 min at 11 t/s)
     parallel: 1
     n-predict: 8192
-    gpu-layers: auto
-    fit: "on"
+    gpu-layers: 99                         # all layers on the GPU: 9B Q4_K_M just fits in 6 GB
+    fit: "off"                             # auto-fit keeps 1 GB free and pushes most layers to the CPU (5x slower)
     flash-attn: auto
     cache-type-k: q8_0
     cache-type-v: q8_0
