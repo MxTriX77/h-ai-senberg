@@ -189,6 +189,19 @@ def test_mixed_answer_rendering():
     assert out.endswith("*Verification: 4 claims: 1 supported, 1 unverified, 1 corrected, 1 removed.*")
 
 
+def test_plain_mixed_answer_rendering():
+    draft = "Caffeine is a stimulant [S2]. It is bitter.\n- Its mass is 180 g/mol [S1].\n- It is blue [S3].\nHope this helps."
+    c = split_claims(draft)
+    c[0].outcome, c[0].ids = SUPPORTED, ["S2"]
+    c[1].outcome = UNVERIFIED
+    c[2].outcome, c[2].ids, c[2].fixed = CORRECTED, ["S1"], "Its mass is 194.19 g/mol [S1]."
+    c[3].outcome, c[3].ids = REMOVED, ["S3"]
+    c[4].outcome = NO_CLAIM
+    assert render(draft, c, annotated=False) == (
+        "Caffeine is a stimulant. It is bitter.\n- Its mass is 194.19 g/mol.\nHope this helps."
+    )
+
+
 # --- through the loop -------------------------------------------------------------------------------
 
 
@@ -199,6 +212,8 @@ def knowledge(cfg, built_store):
 
 @pytest.fixture
 def client(cfg, fake, knowledge):
+    """Annotated answers: these tests read the labels (the plain default is tested below)."""
+    cfg.verifier.answer_style = "annotated"
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         yield c
 
@@ -251,6 +266,19 @@ def test_batched_judge_and_order_of_the_stream(client, fake, cfg):
     assert kinds[-1] == "content" and kinds.count("content") == 1
     steps = reasoning_text(r)
     assert "Verification: 3 claims" in steps and "C2 judge: contradicts S1" in steps
+
+
+def test_plain_answer_is_silent(cfg, fake, knowledge):
+    fake.scripts = [
+        SEARCH_ETHANOL,
+        [content("Ethanol is a volatile, flammable, colorless liquid [S1]. It is blue [S1]. Let me know more.")],
+        [content("C1: supports S1\nC2: contradicts S1 | Ethanol is colorless.\nC3: no_claim")],
+    ]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "Ethanol is a volatile, flammable, colorless liquid. Ethanol is colorless. Let me know more."
+    steps = reasoning_text(r)  # the trace stays in the reasoning block
+    assert "C2 judge: contradicts S1" in steps and "C2 corrected from S1" in steps
 
 
 def test_found_on_re_search(client, fake):

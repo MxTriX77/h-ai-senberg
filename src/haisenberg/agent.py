@@ -16,7 +16,7 @@ from typing import Any
 from .config import Config
 from .llm import LLMClient
 from .tools import Knowledge, Sources
-from .verifier import Verification, Verifier
+from .verifier import Verification, Verifier, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 
@@ -64,6 +64,7 @@ class Agent:
         self.knowledge = knowledge
         verify = self.policy.enable_multi_hop_verification and knowledge.tools
         self.verifier = Verifier(cfg, llm, knowledge) if verify else None
+        self.annotated = cfg.verifier.answer_style == "annotated"
 
     async def run(self, history: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         tools = self.knowledge.tools
@@ -108,7 +109,10 @@ class Agent:
                         yield item
             finally:
                 await check.aclose()
-        yield {"content": answer + sources.source_list(answer)}
+        if self.annotated:
+            yield {"content": answer + sources.source_list(answer)}
+        else:  # a plain chat answer: the ids and the checks stay in the reasoning block
+            yield {"content": strip_cites(answer)}
         yield {"verification": report}  # for in-process callers (evals); the server forwards only text fields
         yield {"finish_reason": reply.finish or "stop"}
 

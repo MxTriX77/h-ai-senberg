@@ -37,7 +37,7 @@ The server owns the policy: the system prompt from `config/config.yaml` replaces
 
 When the Layer 1 store exists, the model looks facts up before it answers. The tools are generated from the sources in the store: `search_knowledge(query, domain?)` searches every text source (today the Wikipedia articles; `domain` is one of the domains the sources declare, e.g. `chemistry`, `physics`), and there is one lookup per kind of structured data (`lookup_compound` for PubChem, `lookup_constant` for CODATA). Their descriptions, the extra instructions for tool use (`reasoning_policy.tool_prompt`) and the number of tool rounds per answer (`reasoning_policy.max_search_depth`; `0` turns tools off) are in `config/config.yaml`. Tools are sent as standard OpenAI `tools`, so the backend must support tool calls (llama-server does with `--jinja`, which the launcher sets).
 
-The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft. The answer follows once the model is done: it cites sources as `[S1]` and ends with a list of the cited sources with their license and URL.
+The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
 ### Verification
 
@@ -47,7 +47,7 @@ Before the answer is shown, the draft is checked claim by claim (sentences and l
 - Everything else is checked by one extra model call, the judge (`verifier.judge_prompt`, without thinking), which reads the cited passages and says per claim: supports, contradicts (with a fix), not said, or no claim.
 - A claim no source supports gets one more search with its own text and a second judge call.
 
-In the answer, supported claims carry the ids of the sources that support them, the rest are marked *(unverified)*, contradicted claims are fixed (*(corrected from [S2])*) or removed, and a summary line counts the outcomes. Every check is listed in the Reasoning block. Turn it off with `reasoning_policy.enable_multi_hop_verification: false`; settings are in the `verifier` section of `config/config.yaml`.
+The checks only make the answer better; they are not shown in it. The answer reads like a normal chat answer: contradicted claims are replaced by the corrected text or dropped when there is no fix, everything else stays as the model wrote it, and the `[S#]` ids are removed. Every check, fix and source is listed in the Reasoning block. For debugging, `verifier.answer_style: annotated` shows the outcome of every claim in the answer instead: supported claims with their source ids, *(unverified)*, *(corrected from [S2])*, a summary line counting the outcomes, and the list of cited sources with license and URL. Turn verification off with `reasoning_policy.enable_multi_hop_verification: false`; settings are in the `verifier` section of `config/config.yaml`.
 
 To use another backend (an already running server or any OpenAI-compatible API), set in `.env`:
 
@@ -153,4 +153,4 @@ uv run python -m evals.run                 # all of them (hours with a local 9B 
 uv run python -m evals.run --ids codata-01,wchem-01
 ```
 
-It prints one line per question and a summary: % correct answers, % of claims supported, unmarked contradictions (wrong answers shown with every claim marked supported, target 0), unverified/corrected/removed claims and seconds per question. The full report goes to `data/evals/run-<timestamp>.json` (or `--out FILE`).
+It prints one line per question and a summary: % correct answers, % of claims supported, unmarked contradictions (wrong answers whose every claim the verifier rated supported, target 0), unverified/corrected/removed claims and seconds per question. Outcomes come from the verification report, so the score is the same in both answer styles. The full report goes to `data/evals/run-<timestamp>.json` (or `--out FILE`).

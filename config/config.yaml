@@ -84,6 +84,8 @@ verifier:                                  # claim checks on the draft; on/off: 
   rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer
+  answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the
+                                           # reasoning block); annotated: [S#], labels, summary, source list (debugging)
   request:                                 # fields merged into every judge call (per-model quirks, D-013)
     temperature: 0.0
     max_tokens: 1024

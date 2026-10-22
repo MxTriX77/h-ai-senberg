@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
@@ -100,6 +100,7 @@ class VerifierConfig(_Section):
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
+    answer_style: Literal["plain", "annotated"]  # plain chat answer, or labels + ids + sources (debugging)
 
     @field_validator("judge_prompt")
     @classmethod

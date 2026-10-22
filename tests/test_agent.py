@@ -27,6 +27,14 @@ def client(cfg, fake, knowledge):
         yield c
 
 
+@pytest.fixture
+def annotated(cfg, fake, knowledge):
+    """A client whose answers keep the [S#] ids and the source list (verifier.answer_style: annotated)."""
+    cfg.verifier.answer_style = "annotated"
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        yield c
+
+
 def deltas(r):
     return [e["choices"][0]["delta"] for e in events(r.text) if e != "[DONE]"]
 
@@ -54,9 +62,8 @@ def test_one_lookup_then_the_answer(client, fake, cfg):
         {"id": "c1", "type": "function", "function": {"name": "lookup_compound", "arguments": CAFFEINE}}]}
     assert result["role"] == "tool" and result["tool_call_id"] == "c1"
     assert result["content"].startswith("[S1] Caffeine (CID 2519) (compound; chemistry)\nCID 2519")
-    text = answer(r)
-    assert text.startswith("Caffeine is 194.19 g/mol [S1].\n\nSources:\n- [S1] Caffeine (CID 2519): ")
-    assert text.endswith("https://pubchem.ncbi.nlm.nih.gov/compound/2519")
+    assert answer(r) == "Caffeine is 194.19 g/mol."  # plain: no ids, no source list
+    assert "[S1] Caffeine" in reasoning_text(r)  # the lookup stays in the reasoning block
     assert events(r.text)[-2]["choices"][0]["finish_reason"] == "stop"
 
 
@@ -113,15 +120,27 @@ def test_tool_call_visible_before_the_answer(client, fake):
     assert kinds.index("content") > max(i for i, k in enumerate(kinds) if k == "reasoning_content")
 
 
-def test_invented_id_not_listed(client, fake):
+def test_cited_sources_listed_when_annotated(annotated, fake):
+    fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1]."), finish("stop")]]
+    text = answer(chat(annotated))
+    assert text.startswith("Caffeine is 194.19 g/mol [S1].\n\nSources:\n- [S1] Caffeine (CID 2519): ")
+    assert text.endswith("https://pubchem.ncbi.nlm.nih.gov/compound/2519")
+
+
+def test_invented_id_not_listed(annotated, fake):
     fake.scripts = [lookup_round(), [content("Caffeine [S1], but also [S7].")]]
-    text = answer(chat(client))
+    text = answer(chat(annotated))
     assert "- [S1] Caffeine" in text and "- [S7]" not in text
 
 
-def test_uncited_draft_has_no_source_list(client, fake):
+def test_plain_answer_drops_every_id(client, fake):
+    fake.scripts = [lookup_round(), [content("Caffeine [S1], but also [S7] and [S1, S2].\n[S1]\nDone.")]]
+    assert answer(chat(client)) == "Caffeine, but also and.\n\nDone."
+
+
+def test_uncited_draft_has_no_source_list(annotated, fake):
     fake.scripts = [lookup_round(), [content("No sources used.")]]
-    assert answer(chat(client)) == "No sources used."
+    assert answer(chat(annotated)) == "No sources used."
 
 
 def test_depth_zero(cfg, fake, built_store):

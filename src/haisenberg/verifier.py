@@ -36,6 +36,7 @@ _NUM = re.compile(
 )
 _FORMULA = re.compile(r"(?<![\w()\[\]-])((?:[A-Z][a-z]?\d*)+)(?![\w()\[\]-])")
 _CITES = re.compile(r"\s*\[S\d+(?:\s*[,;]\s*S?\d+)*\]")
+_CITE_MARKS = re.compile(r"[ \t]*\[S\d+(?:\s*[,;]\s*S?\d+)*\]")  # the same, never across a line break
 _END = re.compile(r"[.!?]+(?:\s*\[S\d+(?:\s*[,;]\s*S?\d+)*\])*(?=\s|$)")
 _ABBREV = {"e.g", "i.e", "approx", "ca", "vs", "etc", "cf", "fig", "eq", "no", "al"}
 _MARKERS = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+|>\s*)*")
@@ -57,7 +58,7 @@ class Claim:
 
 @dataclass
 class Verification:
-    answer: str  # the draft with every claim labelled, fixed or removed, plus the summary line
+    answer: str  # the draft rendered by verifier.answer_style (see render)
     claims: list[Claim]
 
     def report(self) -> dict[str, Any]:
@@ -301,7 +302,7 @@ class Verifier:
                 yield _say(f"- C{c.n} corrected from {', '.join(c.ids)}: {plain(c.fixed or '')}\n")
             elif c.outcome == REMOVED:
                 yield _say(f"- C{c.n} removed (contradicted by {', '.join(c.ids)})\n")
-        yield Verification(render(draft, claims), claims)
+        yield Verification(render(draft, claims, self.cfg.answer_style == "annotated"), claims)
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
         """One judge call for these claims; sets their outcome. Yields reasoning lines."""
@@ -346,13 +347,21 @@ class Verifier:
 # --- answer -----------------------------------------------------------------------------------------
 
 
-def render(draft: str, claims: list[Claim]) -> str:
-    """The draft with every claim rewritten by its outcome, then the summary line."""
+def strip_cites(text: str) -> str:
+    """The text without `[S#]` citation markers."""
+    return _CITE_MARKS.sub("", text)
+
+
+def render(draft: str, claims: list[Claim], annotated: bool = True) -> str:
+    """The draft with every claim rewritten by its outcome. Annotated: labels, ids and the summary line.
+    Plain: fixes applied and contradicted claims without a fix dropped, silently; no ids, no summary."""
     out = draft
     for c in sorted(claims, key=lambda c: c.start, reverse=True):
         end = c.end + (1 if c.outcome == REMOVED and out[c.end : c.end + 1] == " " else 0)
-        out = out[: c.start] + _render(c) + out[end:]
+        out = out[: c.start] + (_render(c) if annotated else _plain(c)) + out[end:]
     out = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]*(?:\r?\n|$)", "", out)  # list items left empty by removals
+    if not annotated:
+        return strip_cites(out).rstrip()
     counted = [c for c in claims if c.outcome != NO_CLAIM]
     if not counted:
         return f"{out.rstrip()}\n\n*Verification: no checkable claims.*"
@@ -378,6 +387,12 @@ def _render(c: Claim) -> str:
     if c.outcome == CORRECTED:
         return f"{core} *(corrected from {tags})*{punct}"
     return f"{core} *(unverified)*{punct}"
+
+
+def _plain(c: Claim) -> str:
+    if c.outcome == REMOVED:
+        return ""
+    return c.fixed if c.outcome == CORRECTED and c.fixed else c.text
 
 
 def _say(text: str) -> dict[str, str]:
