@@ -1,0 +1,13 @@
+# Qwen3.5-9B-heretic-v2 (trohrbaugh; mirrored as ansulev/Qwen3.5-9B-heretic-v2, identical weights):
+# Qwen3.5-9B with refusals removed (Heretic v1.2.0 abliteration).
+# UGI leaderboard: willingness 9.5/10, NatInt 24.2 vs 30.98 for plain Qwen3.5-9B: the best small
+# uncensored model measured, but it is less smart than the default model.
+# Same architecture, chat and tool template as the default model; fits the 6 GB GPU fully.
+# GGUF: mradermacher/Qwen3.5-9B-heretic-v2-i1-GGUF, i1-Q4_K_M (5.6 GB). License: Apache-2.0.
+# Use: MODEL_PROFILE=qwen3.5-9b-heretic-v2
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b-heretic-v2}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-heretic-v2.i1-Q4_K_M.gguf}"
