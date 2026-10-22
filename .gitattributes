@@ -1,0 +1,2 @@
+# Test fixtures are byte-exact copies of real source files: no line-ending conversion.
+tests/fixtures/** -text

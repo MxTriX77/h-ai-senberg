@@ -23,6 +23,7 @@ import zlib
 from datetime import datetime
 from pathlib import Path
 
+from haisenberg.config import ConfigError, load_config
 from ingest.manifest import HEX_LEN, Entry, ManifestError, load_manifest
 
 CHUNK = 1 << 20
@@ -196,8 +197,6 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_dir, manifest = args.raw_dir, args.manifest
     if raw_dir is None or manifest is None:
-        from haisenberg.config import ConfigError, load_config
-
         try:
             cfg = load_config()
         except ConfigError as e:

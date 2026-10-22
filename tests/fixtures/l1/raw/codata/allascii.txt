@@ -1,0 +1,23 @@
+
+             Fundamental Physical Constants --- Complete Listing
+             2022 CODATA adjustment
+
+
+  From:  http://physics.nist.gov/constants
+
+
+
+  Quantity                                                       Value                 Uncertainty           Unit
+-----------------------------------------------------------------------------------------------------------------------------
+Avogadro constant                                           6.022 140 76 e23         (exact)                  mol^-1
+electron mass                                               9.109 383 7139 e-31      0.000 000 0028 e-31      kg
+electron mass energy equivalent                             8.187 105 7880 e-14      0.000 000 0026 e-14      J
+electron mass energy equivalent in MeV                      0.510 998 950 69         0.000 000 000 16         MeV
+fine-structure constant                                     7.297 352 5643 e-3       0.000 000 0011 e-3       
+molar gas constant                                          8.314 462 618...         (exact)                  J mol^-1 K^-1
+Newtonian constant of gravitation                           6.674 30 e-11            0.000 15 e-11            m^3 kg^-1 s^-2
+Planck constant                                             6.626 070 15 e-34        (exact)                  J Hz^-1
+Planck constant in eV/Hz                                    4.135 667 696... e-15    (exact)                  eV Hz^-1
+proton-electron mass ratio                                  1836.152 673 426         0.000 000 032            
+reduced Planck constant                                     1.054 571 817... e-34    (exact)                  J s
+speed of light in vacuum                                    299 792 458              (exact)                  m s^-1

@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 haisenberg = "haisenberg.cli:main"
+haisenberg-l1 = "haisenberg.l1.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14"]
