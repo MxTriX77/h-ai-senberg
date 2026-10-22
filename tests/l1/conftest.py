@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from .l1_helpers import FIXTURES, write_manifest
+from .wiki_fixtures import make_zims
 
 
 class FileServer:
@@ -75,6 +76,7 @@ def make_raw(root: Path) -> Path:
     for txt in (raw / "pubchem").glob("*.txt"):
         txt.with_suffix(".gz").write_bytes(gzip.compress(txt.read_bytes()))
         txt.unlink()
+    make_zims(raw)
     return raw
 
 

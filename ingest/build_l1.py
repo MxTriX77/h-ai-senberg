@@ -18,13 +18,14 @@ from pathlib import Path
 
 from haisenberg.config import ConfigError, load_config
 from haisenberg.l1.schema import DDL, SCHEMA_VERSION
-from ingest import codata, pubchem
+from ingest import codata, pubchem, wikipedia
 from ingest.l1base import BuildContext, BuildError
 from ingest.manifest import ManifestError, load_manifest
 
 # (use tags the step needs, loader). Order matters: later steps read what earlier ones stored.
 STEPS = [
     (("codata",), codata.load),
+    (("wikipedia-zim", "wikipedia-mini-zim"), wikipedia.load),  # before PubChem: linked CIDs
     (("pubchem-mesh", "pubchem-mass", "pubchem-title", "pubchem-synonyms"), pubchem.load),
 ]
 

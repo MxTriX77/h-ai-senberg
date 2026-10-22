@@ -1,5 +1,6 @@
 """Query the Layer 1 store from the command line.
 
+    uv run haisenberg-l1 search "planck constant" [-k 5] [--db FILE] [--json]
     uv run haisenberg-l1 compound caffeine [-k 5] [--db FILE] [--json]
     uv run haisenberg-l1 constant "Planck constant" [-k 5] [--db FILE] [--json]
 """
@@ -11,12 +12,16 @@ import json
 import sys
 
 from haisenberg.config import ConfigError
-from haisenberg.l1.store import CompoundRecord, ConstantRecord, L1Error, L1Store
+from haisenberg.l1.store import ArticleRecord, CompoundRecord, ConstantRecord, L1Error, L1Store
 
 
 def _show_constant(r: ConstantRecord) -> str:
     flags = " (exact)" if r.exact else f" ± {r.uncertainty:g}"
     return f"{r.name} = {r.value_text} {r.unit}".rstrip() + flags
+
+
+def _show_article(r: ArticleRecord) -> str:
+    return f"{r.title} ({r.path})\n    {r.snippet}"
 
 
 def _show_compound(r: CompoundRecord) -> str:
@@ -34,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="haisenberg-l1", description="Query the Layer 1 store.")
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_ in [
+        ("search", "Wikipedia chemistry/physics articles by keywords"),
         ("compound", "PubChem compound by CID, name, CAS number or formula"),
         ("constant", "CODATA constant by name"),
     ]:
@@ -46,7 +52,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         store = L1Store(args.db)
-        lookup = {"compound": store.lookup_compound, "constant": store.lookup_constant}[args.command]
+        lookup = {
+            "search": store.search_encyclopedia,
+            "compound": store.lookup_compound,
+            "constant": store.lookup_constant,
+        }[args.command]
         records = lookup(args.query, args.k)
     except (L1Error, ConfigError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -57,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     elif not records:
         print("no results")
     else:
-        show = {"compound": _show_compound, "constant": _show_constant}[args.command]
+        show = {"search": _show_article, "compound": _show_compound, "constant": _show_constant}[args.command]
         for r in records:
             print(show(r))
             print(_citation_line(r.citation))

@@ -48,6 +48,17 @@ class ConstantRecord(Record):
 
 
 @dataclass
+class ArticleRecord(Record):
+    title: str
+    path: str
+    lead: str
+    infobox: str
+    snippet: str  # best-matching passage, matched words in [brackets]
+    score: float  # BM25 (lower is better); 0.0 for an exact title or alias match
+    citation: Citation
+
+
+@dataclass
 class CompoundRecord(Record):
     cid: int
     title: str
@@ -59,6 +70,14 @@ class CompoundRecord(Record):
     matched_by: str  # 'cid', 'name' or 'formula'
     citation: Citation
 
+
+# Ignored in encyclopedia queries: they match nearly every article and slow BM25 down.
+STOPWORDS = frozenset(
+    "a an and are as at be by can do does for from has have how in is it its of on or "
+    "that the their this to was were what when where which who why with".split()
+)
+BM25_WEIGHTS = "10.0, 5.0, 2.0, 1.0"  # title, aliases, infobox, lead
+_WORD = re.compile(r"\w+")
 
 MOLAR_MASS_NOTE = "molar mass computed from the PubChem formula with IUPAC standard atomic weights"
 _CID = re.compile(r"^\s*(?:cid\s*:?\s*)?(\d+)\s*$", re.I)
@@ -81,11 +100,14 @@ class _Source:
 class L1Store:
     """One read-only connection to the store. Create one per thread."""
 
-    def __init__(self, path: Path | str | None = None):
+    def __init__(self, path: Path | str | None = None, top_k: int = 5):
+        """Open the store at path, or at retrieval.layer1_encyclopedia_db (then top_k is retrieval.top_k_proofs)."""
+        self.top_k = top_k
         if path is None:
             from haisenberg.config import load_config
 
-            path = load_config().retrieval.layer1_encyclopedia_db
+            retrieval = load_config().retrieval
+            path, self.top_k = retrieval.layer1_encyclopedia_db, retrieval.top_k_proofs
         path = Path(path).resolve()
         if not path.is_file():
             raise L1Error(f"Layer 1 store not found at {path}; build it with: {REBUILD_COMMAND}")
@@ -107,6 +129,53 @@ class L1Store:
 
     def close(self) -> None:
         self.con.close()
+
+    def search_encyclopedia(self, query: str, k: int | None = None) -> list[ArticleRecord]:
+        """Exact title/alias match first, then BM25 over articles with all words (any word if none)."""
+        k = k or self.top_k
+        words = [w for w in _WORD.findall(query.lower()) if w not in STOPWORDS]
+        if not words:
+            return []
+        rows = self._fts(" ".join(f'"{w}"' for w in words), k)
+        if not rows and len(words) > 1:
+            rows = self._fts(" OR ".join(f'"{w}"' for w in words), k)
+        exact = [r[0] for r in self.con.execute("SELECT article_id FROM article_alias WHERE alias = ?", (normalize(query),))]
+        if exact:
+            found = {r[0]: r for r in rows}
+            first = []
+            for article_id in exact:
+                row = found.pop(article_id, None) or self.con.execute(
+                    "SELECT id, path, title, lead, infobox, revision, source_id, 0.0, substr(lead, 1, 200)"
+                    " FROM article WHERE id = ?",
+                    (article_id,),
+                ).fetchone()
+                first.append(row[:7] + (0.0,) + row[8:])
+            rows = first + [r for r in rows if r[0] in found]
+        return [
+            ArticleRecord(
+                title=title,
+                path=path,
+                lead=lead,
+                infobox=infobox,
+                snippet=" | ".join(line for line in snippet.splitlines() if line.strip()),
+                score=round(score, 4),
+                citation=self.sources[sid].cite({"path": path, "revision": rev or ""}),
+            )
+            for _id, path, title, lead, infobox, rev, sid, score, snippet in rows[:k]
+        ]
+
+    def _fts(self, match: str, k: int) -> list[tuple]:
+        # Rank inside the FTS query first and join article rows only for the top k (10x faster).
+        return self.con.execute(
+            f"WITH top AS (SELECT rowid AS id, bm25(article_fts, {BM25_WEIGHTS}) AS score,"
+            # passage from the lead (column 3), or from the infobox (column 2) when the lead is empty
+            " coalesce(nullif(snippet(article_fts, 3, '[', ']', '…', 24), ''),"
+            " snippet(article_fts, 2, '[', ']', '…', 24)) AS snip"
+            " FROM article_fts WHERE article_fts MATCH ? ORDER BY score LIMIT ?)"
+            " SELECT a.id, a.path, a.title, a.lead, a.infobox, a.revision, a.source_id, top.score, top.snip"
+            " FROM top JOIN article a ON a.id = top.id ORDER BY top.score",
+            (match, k),
+        ).fetchall()
 
     def lookup_constant(self, query: str, k: int = 5) -> list[ConstantRecord]:
         """Exact (case-insensitive) name first, then names containing every query word, shortest first."""
@@ -187,6 +256,10 @@ def default_store() -> L1Store:
     if _default is None:
         _default = L1Store()
     return _default
+
+
+def search_encyclopedia(query: str, k: int | None = None) -> list[ArticleRecord]:
+    return default_store().search_encyclopedia(query, k)
 
 
 def lookup_constant(query: str, k: int = 5) -> list[ConstantRecord]:
