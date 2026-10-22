@@ -1,0 +1,10 @@
+# Qwen3.5-9B (official, Apache-2.0): the default model; its settings are also the defaults in
+# config/config.yaml, so this profile applies when MODEL_PROFILE is unset too.
+# GGUF: unsloth/Qwen3.5-9B-GGUF, Q4_K_M (5.3 GB). Fits a 6 GB GPU fully (all 33 layers).
+# Use: MODEL_PROFILE=qwen3.5-9b
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"

@@ -11,7 +11,7 @@ __pycache__/
 # local data and indexes (large, rebuilt from scripts)
 /data/
 
-# model weights
+# model weights (their profiles live in config/<name>.yaml)
 /models/
 
 # WebUI build output and dependencies

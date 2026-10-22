@@ -20,7 +20,8 @@ from pydantic import (
 )
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
-PROFILE_ENV = "MODEL_PROFILE"  # selects config/models/<name>.yaml, merged over config.yaml
+PROFILE_ENV = "MODEL_PROFILE"  # selects config/<name>.yaml, merged over config/config.yaml
+_NOT_PROFILES = {"config", "sources"}  # the other YAML files in config/
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -151,9 +152,9 @@ def load_config(path: Path | str | None = None) -> Config:
     source = str(path)
     profile = os.environ.get(PROFILE_ENV)
     if profile:
-        profile_path = path.parent / "models" / f"{profile}.yaml"
-        if not profile_path.is_file():
-            available = sorted(p.stem for p in (path.parent / "models").glob("*.yaml"))
+        profile_path = path.parent / f"{profile}.yaml"
+        if profile in _NOT_PROFILES or not profile_path.is_file():
+            available = sorted(p.stem for p in path.parent.glob("*.yaml") if p.stem not in _NOT_PROFILES)
             raise ConfigError(
                 f"model profile '{profile}' not found: {profile_path} (available: {', '.join(available) or 'none'})"
             )
