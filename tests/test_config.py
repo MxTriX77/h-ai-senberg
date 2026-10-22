@@ -98,6 +98,19 @@ def test_variable_inside_longer_string_and_absolute_path(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", other.as_posix())
     cfg = load_config(write(tmp_path / "proj"))
     assert cfg.retrieval.layer1_encyclopedia_db == other / "encyclopedia_fts.db"
+    assert cfg.retrieval.raw_dir == other / "raw"
+
+
+def test_raw_dir_default(tmp_path):
+    cfg = load_config(write(tmp_path))
+    assert cfg.retrieval.raw_dir == tmp_path.resolve() / "data" / "raw"
+
+
+def test_top_k_proofs_must_be_positive(tmp_path):
+    data = base()
+    data["retrieval"]["top_k_proofs"] = 0
+    with pytest.raises(ConfigError, match=r"retrieval\.top_k_proofs"):
+        load_config(write(tmp_path, data))
 
 
 def test_required_variable_missing(tmp_path):

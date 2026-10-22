@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, PositiveInt, PrivateAttr, ValidationError, field_validator
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -54,9 +54,10 @@ class ReasoningPolicyConfig(_Section):
 
 
 class RetrievalConfig(_Section):
+    raw_dir: Path
     layer1_encyclopedia_db: Path
     layer2_literature_index: Path
-    top_k_proofs: int
+    top_k_proofs: PositiveInt
 
 
 class LlamaServerConfig(_Section):
@@ -94,6 +95,7 @@ class Config(_Section):
 
 # (section, field) pairs resolved against the project root when relative.
 _PATH_FIELDS = [
+    ("retrieval", "raw_dir"),
     ("retrieval", "layer1_encyclopedia_db"),
     ("retrieval", "layer2_literature_index"),
     ("llama_server", "model_path"),
