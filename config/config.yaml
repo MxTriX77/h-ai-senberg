@@ -107,6 +107,7 @@ verifier:                                  # claim checks on the draft; on/off: 
   rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
   arithmetic_check: true                   # recompute every "a × b = c" in the draft and fix wrong results
   arithmetic_rel_tol: 0.005                # ... when c is off by more than its rounding and this share
+  checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the

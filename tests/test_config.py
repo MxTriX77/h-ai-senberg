@@ -339,3 +339,11 @@ def test_relevance_threshold(tmp_path):
     data["retrieval"]["min_term_share"] = 1.5
     with pytest.raises(ConfigError, match="retrieval.min_term_share"):
         load_config(write(tmp_path, data))
+
+
+def test_checker_plugins(tmp_path):
+    assert load_config(write(tmp_path)).verifier.checkers == ["element_balance"]
+    data = base()
+    data["verifier"]["checkers"] = ["astrology"]
+    with pytest.raises(ConfigError, match="verifier.checkers"):
+        load_config(write(tmp_path, data))
