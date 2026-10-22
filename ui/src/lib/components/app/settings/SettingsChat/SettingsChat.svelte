@@ -12,7 +12,8 @@
 		NUMERIC_FIELDS,
 		POSITIVE_INTEGER_FIELDS,
 		SETTINGS_CHAT_SECTIONS,
-		SETTINGS_SECTION_TITLES
+		SETTINGS_SECTION_TITLES,
+		SETTINGS_KEYS
 	} from '$lib/constants';
 	import type { SettingsSection } from '$lib/types';
 	import { RouterService } from '$lib/services/router.service';
@@ -27,6 +28,18 @@
 	import { settingsReferrer } from '$lib/stores/settings-referrer.svelte';
 	import { modelsStore } from '$lib/stores/models.svelte';
 	import { isRouterMode } from '$lib/stores/server.svelte';
+
+	const VISIBLE_GENERAL_SETTING_KEYS = new Set<string>([
+		SETTINGS_KEYS.THEME,
+		SETTINGS_KEYS.SEND_ON_ENTER
+	]);
+	const VISIBLE_SETTINGS_SECTIONS = SETTINGS_CHAT_SECTIONS.filter(
+		(section) => section.title === SETTINGS_SECTION_TITLES.GENERAL
+	).map((section) => ({
+		...section,
+		fields: section.fields?.filter((field) => VISIBLE_GENERAL_SETTING_KEYS.has(field.key))
+	}));
+
 	interface Props {
 		initialSection?: string;
 		getSectionHref?: (section: SettingsSection) => string;
@@ -39,8 +52,8 @@
 	);
 
 	let currentSection = $derived(
-		SETTINGS_CHAT_SECTIONS.find((section) => section.slug === activeSlug) ||
-			SETTINGS_CHAT_SECTIONS[0]
+		VISIBLE_SETTINGS_SECTIONS.find((section) => section.slug === activeSlug) ||
+			VISIBLE_SETTINGS_SECTIONS[0]
 	);
 
 	let localConfig: SettingsConfigType = $state({ ...config() });
@@ -129,14 +142,14 @@
 <div class="mx-auto flex h-full w-full flex-col md:pl-8" in:fade={{ duration: 150 }}>
 	<div class="flex flex-1 flex-col gap-4 md:flex-row">
 		<SettingsChatDesktopSidebar
-			sections={SETTINGS_CHAT_SECTIONS}
+			sections={VISIBLE_SETTINGS_SECTIONS}
 			isActive={(section: SettingsSection) => section.slug === activeSlug}
 			getHref={getSectionHref ??
 				((section: SettingsSection) => RouterService.settings(section.slug))}
 		/>
 
 		<SettingsChatMobileHeader
-			sections={SETTINGS_CHAT_SECTIONS}
+			sections={VISIBLE_SETTINGS_SECTIONS}
 			isActive={(section: SettingsSection) => section.slug === activeSlug}
 			getHref={getSectionHref ??
 				((section: SettingsSection) => RouterService.settings(section.slug))}

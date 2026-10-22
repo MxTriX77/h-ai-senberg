@@ -1,11 +1,10 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { PanelLeftClose, PanelLeftOpen, X } from '@lucide/svelte';
+	import { PanelLeftClose, X } from '@lucide/svelte';
 	import {
 		ActionIcon,
 		DialogConversationRename,
-		Logo,
 		SidebarNavigationConversationList,
 		SidebarNavigationActions
 	} from '$lib/components/app';
@@ -41,7 +40,6 @@
 
 	let isExpandedMode = $state(false);
 	let hoveredTooltip = $state<string | null>(null);
-	let logoHovered = $state(false);
 
 	const isStripExpanded = $derived(isExpandedMode || hoveredTooltip !== null);
 	const isOnMobile = $derived(isMobile.current);
@@ -303,30 +301,8 @@
 			isExpandedMode && 'is-expanded'
 		]}
 	>
-		<div class="px-2 flex items-center justify-between">
-			<div
-				role="button"
-				tabindex="0"
-				class="relative"
-				onmouseenter={() => (logoHovered = true)}
-				onmouseleave={() => (logoHovered = false)}
-			>
-				<ActionIcon
-					icon={!isExpandedMode && logoHovered && innerWidth > 768 ? PanelLeftOpen : Logo}
-					size="lg"
-					iconSize="h-4.5 w-4.5 md:h-4 md:w-4"
-					class="{isExpandedMode
-						? 'bg-muted! md:bg-foreground/5!'
-						: 'bg-transparent!'} md:h-9 md:w-9 h-10 w-10 rounded-full md:hover:bg-foreground/10! pointer-events-auto"
-					href={isExpandedMode ? ROUTES.START : undefined}
-					onclick={isExpandedMode ? undefined : toggleExpandedMode}
-					tooltip={isExpandedMode ? undefined : 'Open Sidebar'}
-					tooltipSide={TooltipSide.RIGHT}
-					ariaLabel={isExpandedMode ? 'Go to start' : 'Expand navigation'}
-				/>
-			</div>
-
-			{#if isOnMobile || (isExpandedMode && !alwaysShowOnDesktop)}
+		{#if isOnMobile || (isExpandedMode && !alwaysShowOnDesktop)}
+			<div class="px-2 flex items-center justify-end">
 				<div
 					class="flex items-center transition-all duration-150 ease-out {isMobile.current &&
 					!isExpandedMode
@@ -346,8 +322,8 @@
 						ariaLabel="Collapse navigation"
 					/>
 				</div>
-			{/if}
-		</div>
+			</div>
+		{/if}
 
 		<div
 			class="mt-2 flex min-h-0 flex-1 flex-col gap-4 md:gap-1 {isMobile.current

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { X } from '@lucide/svelte';
+	import { ArrowLeft } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
@@ -27,8 +27,8 @@
 	}
 </script>
 
-<div class="fixed top-4.5 right-4 z-50 md:hidden">
-	<ActionIcon icon={X} tooltip="Close" onclick={handleClose} />
+<div class="fixed top-4.5 right-4 z-50">
+	<ActionIcon icon={ArrowLeft} tooltip="Back to chat" onclick={handleClose} />
 </div>
 
 <div class="min-h-full">

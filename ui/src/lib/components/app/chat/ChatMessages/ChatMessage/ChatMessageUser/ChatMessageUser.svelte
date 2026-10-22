@@ -41,10 +41,8 @@
 		isLastUserMessage = false,
 		nextAssistantMessage = null,
 		showDeleteDialog,
-		onEdit,
 		onDelete,
 		onConfirmDelete,
-		onForkConversation,
 		onShowDeleteDialogChange,
 		onNavigateToSibling,
 		onCopy
@@ -139,8 +137,6 @@
 					{onConfirmDelete}
 					{onCopy}
 					{onDelete}
-					{onEdit}
-					{onForkConversation}
 					{onNavigateToSibling}
 					{onShowDeleteDialogChange}
 					{siblingInfo}

@@ -108,7 +108,6 @@
 		onValueChange={editCtx.setContent}
 		onAttachmentRemove={handleAttachmentRemove}
 		onUploadedFileRemove={handleUploadedFileRemove}
-		onFilesAdd={handleFilesAdd}
 		onSubmit={handleSubmit}
 	/>
 </div>

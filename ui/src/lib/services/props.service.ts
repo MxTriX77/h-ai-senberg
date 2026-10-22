@@ -24,7 +24,11 @@ export class PropsService {
 			params.autoload = 'false';
 		}
 
-		return apiFetchWithParams<ApiLlamaCppServerProps>('./props', params, { authOnly: true });
+		return apiFetchWithParams<ApiLlamaCppServerProps>('./props', params, {
+			authOnly: true,
+			cache: 'no-store',
+			headers: { 'Cache-Control': 'no-cache' }
+		});
 	}
 
 	/**

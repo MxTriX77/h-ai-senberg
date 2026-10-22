@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ActionIcon, ChatMessageEditForm, ChatMessageUserBubble } from '$lib/components/app';
-	import { ArrowUp, Edit, Trash2 } from '@lucide/svelte';
+	import { ArrowUp, Edit } from '@lucide/svelte';
 	import { useMessageEditContext } from '$lib/hooks/use-message-edit-context.svelte';
 
 	interface Props {
@@ -12,14 +12,7 @@
 		onDelete: () => void;
 	}
 
-	let {
-		class: className = '',
-		content,
-		extras = [],
-		onSendImmediately,
-		onEdit,
-		onDelete
-	}: Props = $props();
+	let { class: className = '', content, extras = [], onSendImmediately, onEdit }: Props = $props();
 
 	const editCtx = useMessageEditContext({
 		getContent: () => content,
@@ -51,7 +44,6 @@
 						class="pointer-events-auto inset-0 flex items-center gap-1 opacity-0 transition-all duration-150 group-hover:opacity-100"
 					>
 						<ActionIcon icon={Edit} tooltip="Edit" onclick={editCtx.handleEdit} />
-						<ActionIcon icon={Trash2} tooltip="Delete" onclick={onDelete} />
 						<ActionIcon icon={ArrowUp} tooltip="Send immediately" onclick={onSendImmediately} />
 					</div>
 				</div>

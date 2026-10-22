@@ -12,7 +12,6 @@
 		initialMessage?: string;
 		isLoading?: boolean;
 		onFileRemove?: (fileId: string) => void;
-		onFileUpload?: (files: File[]) => void;
 		onSend?: (message: string, files?: ChatUploadedFile[]) => Promise<boolean>;
 		onStop?: () => void;
 		onSystemPromptAdd?: (draft: { message: string; files: ChatUploadedFile[] }) => void;
@@ -25,7 +24,6 @@
 		initialMessage = '',
 		isLoading = false,
 		onFileRemove,
-		onFileUpload,
 		onSend,
 		onStop,
 		onSystemPromptAdd,
@@ -70,10 +68,6 @@
 		setFiles: (f) => (uploadedFiles = f),
 		getInitialMessage: () => initialMessage
 	});
-
-	function handleFilesAdd(files: File[]) {
-		onFileUpload?.(files);
-	}
 
 	async function handleSubmit() {
 		if ((!message.trim() && uploadedFiles.length === 0) || disabled || hasLoadingAttachments)
@@ -143,7 +137,7 @@
 		{disabled}
 		{isLoading}
 		showMcpPromptButton
-		onFilesAdd={handleFilesAdd}
+		showModelSelector={false}
 		{onStop}
 		onSubmit={handleSubmit}
 		onSystemPromptClick={handleSystemPromptClick}

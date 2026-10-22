@@ -2,16 +2,13 @@
 	import {
 		ChatAttachmentsList,
 		ChatFormActions,
-		ChatFormFileInputInvisible,
 		ChatFormMcpResourcesList,
 		ChatFormPickers,
 		ChatFormTextarea,
 		DialogMcpResourcesBrowser
 	} from '$lib/components/app';
 	import {
-		CLIPBOARD_CONTENT_QUOTE_PREFIX,
 		INPUT_CLASSES,
-		SETTING_CONFIG_DEFAULT,
 		INITIAL_FILE_SIZE,
 		PROMPT_CONTENT_SEPARATOR,
 		PROMPT_TRIGGER_PREFIX,
@@ -33,14 +30,7 @@
 	import { mcpHasResourceAttachments } from '$lib/stores/mcp-resources.svelte';
 	import { conversationsStore, activeMessages } from '$lib/stores/conversations.svelte';
 	import type { GetPromptResult, MCPPromptInfo, MCPResourceInfo, PromptMessage } from '$lib/types';
-	import { isIMEComposing, parseClipboardContent, uuid } from '$lib/utils';
-	import {
-		AudioRecorder,
-		convertToWav,
-		createAudioFile,
-		isAudioRecordingSupported
-	} from '$lib/utils/browser-only';
-	import { onMount } from 'svelte';
+	import { isIMEComposing } from '$lib/utils';
 
 	interface Props {
 		// Data
@@ -59,7 +49,6 @@
 
 		// Event Handlers
 		onAttachmentRemove?: (index: number) => void;
-		onFilesAdd?: (files: File[]) => void;
 		onStop?: () => void;
 		onSubmit?: () => void;
 		onSystemPromptClick?: (draft: { message: string; files: ChatUploadedFile[] }) => void;
@@ -80,7 +69,6 @@
 		uploadedFiles = $bindable([]),
 		value = $bindable(''),
 		onAttachmentRemove,
-		onFilesAdd,
 		onStop,
 		onSubmit,
 		onSystemPromptClick,
@@ -90,16 +78,10 @@
 	}: Props = $props();
 
 	// Component References
-	let audioRecorder: AudioRecorder | undefined;
 	let chatFormActionsRef: ChatFormActions | undefined = $state(undefined);
-	let fileInputRef: ChatFormFileInputInvisible | undefined = $state(undefined);
 	let pickersRef: { handleKeydown: (event: KeyboardEvent) => boolean } | undefined =
 		$state(undefined);
 	let textareaRef: ChatFormTextarea | undefined = $state(undefined);
-
-	// Audio Recording State
-	let isRecording = $state(false);
-	let recordingSupported = $state(false);
 
 	// Picker State
 	let isPromptPickerOpen = $state(false);
@@ -112,11 +94,6 @@
 	let preSelectedResourceUri = $state<string | undefined>(undefined);
 
 	let currentConfig = $derived(config());
-
-	let pasteLongTextToFileLength = $derived.by(() => {
-		const n = Number(currentConfig.pasteLongTextToFileLen);
-		return Number.isNaN(n) ? Number(SETTING_CONFIG_DEFAULT.pasteLongTextToFileLen) : n;
-	});
 
 	let isRouter = $derived(isRouterMode());
 	let conversationModel = $derived(
@@ -150,11 +127,6 @@
 	);
 	let canSubmit = $derived(value.trim().length > 0 || hasAttachments);
 
-	onMount(() => {
-		recordingSupported = isAudioRecordingSupported();
-		audioRecorder = new AudioRecorder();
-	});
-
 	export function focus() {
 		textareaRef?.focus();
 	}
@@ -173,14 +145,6 @@
 			return false;
 		}
 		return true;
-	}
-
-	function handleFileSelect(files: File[]) {
-		onFilesAdd?.(files);
-	}
-
-	function handleFileUpload() {
-		fileInputRef?.click();
 	}
 
 	function handleFileRemove(fileId: string) {
@@ -248,87 +212,6 @@
 
 				onSubmit?.();
 			}
-		}
-	}
-
-	function handlePaste(event: ClipboardEvent) {
-		if (!event.clipboardData) return;
-
-		const files = Array.from(event.clipboardData.items)
-			.filter((item) => item.kind === 'file')
-			.map((item) => item.getAsFile())
-			.filter((file): file is File => file !== null);
-
-		if (files.length > 0) {
-			event.preventDefault();
-			onFilesAdd?.(files);
-			return;
-		}
-
-		const text = event.clipboardData.getData(MimeTypeText.PLAIN);
-
-		if (text.startsWith(CLIPBOARD_CONTENT_QUOTE_PREFIX)) {
-			const parsed = parseClipboardContent(text);
-
-			if (parsed.textAttachments.length > 0 || parsed.mcpPromptAttachments.length > 0) {
-				event.preventDefault();
-				value = parsed.message;
-				onValueChange?.(parsed.message);
-
-				// Handle text attachments as files
-				if (parsed.textAttachments.length > 0) {
-					const attachmentFiles = parsed.textAttachments.map(
-						(att) =>
-							new File([att.content], att.name, {
-								type: MimeTypeText.PLAIN
-							})
-					);
-					onFilesAdd?.(attachmentFiles);
-				}
-
-				// Handle MCP prompt attachments as ChatUploadedFile with mcpPrompt data
-				if (parsed.mcpPromptAttachments.length > 0) {
-					const mcpPromptFiles: ChatUploadedFile[] = parsed.mcpPromptAttachments.map((att) => ({
-						id: uuid(),
-						name: att.name,
-						size: att.content.length,
-						type: SpecialFileType.MCP_PROMPT,
-						file: new File([att.content], `${att.name}${FileExtensionText.TXT}`, {
-							type: MimeTypeText.PLAIN
-						}),
-						isLoading: false,
-						textContent: att.content,
-						mcpPrompt: {
-							serverName: att.serverName,
-							promptName: att.promptName,
-							arguments: att.arguments
-						}
-					}));
-
-					uploadedFiles = [...uploadedFiles, ...mcpPromptFiles];
-					onUploadedFilesChange?.(uploadedFiles);
-				}
-
-				setTimeout(() => {
-					textareaRef?.focus();
-				}, 10);
-
-				return;
-			}
-		}
-
-		if (
-			text.length > 0 &&
-			pasteLongTextToFileLength > 0 &&
-			text.length > pasteLongTextToFileLength
-		) {
-			event.preventDefault();
-
-			const textFile = new File([text], 'Pasted', {
-				type: MimeTypeText.PLAIN
-			});
-
-			onFilesAdd?.([textFile]);
 		}
 	}
 
@@ -438,36 +321,7 @@
 
 		isResourceDialogOpen = true;
 	}
-
-	async function handleMicClick() {
-		if (!audioRecorder || !recordingSupported) {
-			console.warn('Audio recording not supported');
-			return;
-		}
-
-		if (isRecording) {
-			isRecording = false;
-			try {
-				const audioBlob = await audioRecorder.stopRecording();
-				const wavBlob = await convertToWav(audioBlob);
-				const audioFile = createAudioFile(wavBlob);
-
-				onFilesAdd?.([audioFile]);
-			} catch (error) {
-				console.error('Failed to stop recording:', error);
-			}
-		} else {
-			try {
-				await audioRecorder.startRecording();
-				isRecording = true;
-			} catch (error) {
-				console.error('Failed to start recording:', error);
-			}
-		}
-	}
 </script>
-
-<ChatFormFileInputInvisible bind:this={fileInputRef} onFileSelect={handleFileSelect} />
 
 <form
 	class="relative {className}"
@@ -512,7 +366,6 @@
 
 		<div
 			class="flex-column relative min-h-12 items-center rounded-4xl md:rounded-3xl py-2 pb-2.25 shadow-sm transition-all focus-within:shadow-md md:py-3!"
-			onpaste={handlePaste}
 		>
 			<ChatFormTextarea
 				class="px-5 py-1.5 md:pt-0"
@@ -544,12 +397,8 @@
 				{disabled}
 				{isLoading}
 				isReasoning={chatStore.isReasoning}
-				{isRecording}
 				{showAddButton}
 				{showModelSelector}
-				{uploadedFiles}
-				onFileUpload={handleFileUpload}
-				onMicClick={handleMicClick}
 				{onStop}
 				onSystemPromptClick={() => onSystemPromptClick?.({ message: value, files: uploadedFiles })}
 				onMcpPromptClick={showMcpPromptButton ? () => (isPromptPickerOpen = true) : undefined}

@@ -3,14 +3,12 @@
 	import {
 		ChatScreenForm,
 		ChatMessages,
-		ChatScreenDragOverlay,
 		ChatScreenStreamResumeStatus,
 		ServerLoadingSplash,
 		ChatScreenServerError
 	} from '$lib/components/app';
 	import { createAutoScrollController } from '$lib/hooks/use-auto-scroll.svelte';
 	import { useChatScreenActiveModel } from '$lib/hooks/use-chat-screen-active-model.svelte';
-	import { useChatScreenDragAndDrop } from '$lib/hooks/use-chat-screen-drag-and-drop.svelte';
 	import { useChatScreenFileUpload } from '$lib/hooks/use-chat-screen-file-upload.svelte';
 	import { useChatScreenScroll } from '$lib/hooks/use-chat-screen-scroll.svelte';
 	import { useKeyboardShortcuts } from '$lib/hooks/use-keyboard-shortcuts.svelte';
@@ -71,9 +69,6 @@
 			hasVideo: activeModel.hasVideoModality
 		}),
 		activeModelId: () => activeModel.activeModelId
-	});
-	const dragAndDrop = useChatScreenDragAndDrop({
-		onDrop: fileUpload.handleFileUpload
 	});
 	const { handleKeydown } = useKeyboardShortcuts({
 		deleteActiveConversation: () => {
@@ -251,10 +246,6 @@
 	onDestroy(() => autoScroll.destroy());
 </script>
 
-{#if dragAndDrop.isDragOver}
-	<ChatScreenDragOverlay />
-{/if}
-
 <svelte:window
 	onkeydown={handleKeydown}
 	onscroll={(e) => {
@@ -272,10 +263,6 @@
 	<div
 		class="chat-screen flex grow flex-col min-h-[calc(100dvh-1rem)] md:min-h-full px-4 md:py-0 pt-12 pb-48 md:pb-4"
 		style:--chat-form-bottom-position={chatFormBottomPosition}
-		ondragenter={dragAndDrop.dragHandlers.dragenter}
-		ondragleave={dragAndDrop.dragHandlers.dragleave}
-		ondragover={dragAndDrop.dragHandlers.dragover}
-		ondrop={dragAndDrop.dragHandlers.drop}
 		role="main"
 	>
 		{#if !isEmpty}
@@ -328,7 +315,6 @@
 				{initialMessage}
 				isLoading={isCurrentConversationLoading}
 				onFileRemove={fileUpload.handleFileRemove}
-				onFileUpload={fileUpload.handleFileUpload}
 				onSend={handleSendMessage}
 				onStop={() => chatStore.stopGeneration()}
 				onSystemPromptAdd={handleSystemPromptAdd}

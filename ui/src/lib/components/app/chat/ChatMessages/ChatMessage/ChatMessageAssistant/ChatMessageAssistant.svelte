@@ -2,7 +2,6 @@
 	import {
 		ChatMessageAgenticContent,
 		ChatMessageActionIcons,
-		ChatMessageAssistantModel,
 		ChatMessageAssistantProcessingInfo,
 		ChatMessageAssistantRawOutput,
 		ChatMessageAssistantStatistics,
@@ -51,14 +50,12 @@
 		message,
 		toolMessages = [],
 		onConfirmDelete,
-		onContinue,
-		onCopy,
+			onCopy,
 		onDelete,
 		onEdit,
 		onForkConversation,
 		onNavigateToSibling,
-		onRegenerate,
-		onShowDeleteDialogChange,
+			onShowDeleteDialogChange,
 		showDeleteDialog,
 		siblingInfo = null,
 		textareaElement = $bindable()
@@ -74,8 +71,6 @@
 	let isRouter = $derived(isRouterMode());
 
 	let showRawOutput = $state(false);
-
-	let displayedModel = $derived(message.model ?? null);
 
 	let isCurrentlyLoading = $derived(isLoading());
 	let isStreaming = $derived(isChatStreaming());
@@ -183,16 +178,9 @@
 		<ChatMessageAssistantProcessingInfo {modelLoadingText} {processingState} position="bottom" />
 	{/if}
 
-	<div class="info my-6 grid gap-4 tabular-nums">
-		{#if displayedModel}
+	{#if currentConfig.showMessageStats}
+		<div class="info my-6 grid gap-4 tabular-nums">
 			<div class="inline-flex flex-wrap items-start gap-2 text-xs text-muted-foreground">
-				<ChatMessageAssistantModel
-					{displayedModel}
-					isLoading={isLoading()}
-					{isRouter}
-					{onRegenerate}
-				/>
-
 				<ChatMessageAssistantStatistics
 					{message}
 					isLoading={isLoading()}
@@ -200,8 +188,8 @@
 					showMessageStats={currentConfig.showMessageStats}
 				/>
 			</div>
-		{/if}
-	</div>
+		</div>
+	{/if}
 
 	{#if message.timestamp && !editCtx.isEditing}
 		<ChatMessageActionIcons
@@ -213,8 +201,6 @@
 			{deletionInfo}
 			{onCopy}
 			{onEdit}
-			{onRegenerate}
-			onContinue={currentConfig.enableContinueGeneration ? onContinue : undefined}
 			{onForkConversation}
 			{onDelete}
 			{onConfirmDelete}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Edit, Copy, RefreshCw, Trash2, ArrowRight, GitBranch } from '@lucide/svelte';
+	import { Edit, Copy, GitBranch } from '@lucide/svelte';
 	import {
 		ActionIcon,
 		ChatMessageActionIconsBranchingControls,
@@ -26,8 +26,6 @@
 		} | null;
 		onCopy: () => void;
 		onEdit?: () => void;
-		onRegenerate?: () => void;
-		onContinue?: () => void;
 		onForkConversation?: (options: { name: string; includeAttachments: boolean }) => void;
 		onDelete: () => void;
 		onConfirmDelete: () => void;
@@ -40,20 +38,13 @@
 
 	let {
 		actionsPosition,
-		deletionInfo,
 		justify,
 		onCopy,
 		onEdit,
-		onConfirmDelete,
-		onContinue,
-		onDelete,
 		onForkConversation,
 		onNavigateToSibling,
-		onShowDeleteDialogChange,
-		onRegenerate,
 		role,
 		siblingInfo = null,
-		showDeleteDialog,
 		showRawOutputSwitch = false,
 		rawOutputEnabled = false,
 		onRawOutputToggle
@@ -62,11 +53,6 @@
 	let showForkDialog = $state(false);
 	let forkName = $state('');
 	let forkIncludeAttachments = $state(true);
-
-	function handleConfirmDelete() {
-		onConfirmDelete();
-		onShowDeleteDialogChange(false);
-	}
 
 	function handleOpenForkDialog() {
 		const conv = activeConversation();
@@ -97,23 +83,13 @@
 		>
 			<ActionIcon icon={Copy} tooltip="Copy" onclick={onCopy} />
 
-			{#if onEdit}
+			{#if role === MessageRole.USER && onEdit}
 				<ActionIcon icon={Edit} tooltip="Edit" onclick={onEdit} />
 			{/if}
 
-			{#if role === MessageRole.ASSISTANT && onRegenerate}
-				<ActionIcon icon={RefreshCw} tooltip="Regenerate" onclick={() => onRegenerate()} />
-			{/if}
-
-			{#if role === MessageRole.ASSISTANT && onContinue}
-				<ActionIcon icon={ArrowRight} tooltip="Continue" onclick={onContinue} />
-			{/if}
-
-			{#if onForkConversation}
+			{#if role === MessageRole.USER && onForkConversation}
 				<ActionIcon icon={GitBranch} tooltip="Fork conversation" onclick={handleOpenForkDialog} />
 			{/if}
-
-			<ActionIcon icon={Trash2} tooltip="Delete" onclick={onDelete} />
 		</div>
 	</div>
 
@@ -127,22 +103,6 @@
 		</div>
 	{/if}
 </div>
-
-<DialogConfirmation
-	bind:open={showDeleteDialog}
-	title="Delete Message"
-	description={deletionInfo && deletionInfo.totalCount > 1
-		? `This will delete ${deletionInfo.totalCount} messages including: ${deletionInfo.userMessages} user message${deletionInfo.userMessages > 1 ? 's' : ''} and ${deletionInfo.assistantMessages} assistant response${deletionInfo.assistantMessages > 1 ? 's' : ''}. All messages in this branch and their responses will be permanently removed. This action cannot be undone.`
-		: 'Are you sure you want to delete this message? This action cannot be undone.'}
-	confirmText={deletionInfo && deletionInfo.totalCount > 1
-		? `Delete ${deletionInfo.totalCount} Messages`
-		: 'Delete'}
-	cancelText="Cancel"
-	variant="destructive"
-	icon={Trash2}
-	onConfirm={handleConfirmDelete}
-	onCancel={() => onShowDeleteDialogChange(false)}
-/>
 
 <DialogConfirmation
 	bind:open={showForkDialog}

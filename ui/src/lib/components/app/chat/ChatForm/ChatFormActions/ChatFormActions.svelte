@@ -1,10 +1,7 @@
 <script lang="ts">
-	import { ICON_CLASS_DEFAULT } from '$lib/constants/css-classes';
-	import { Square, SkipForward } from '@lucide/svelte';
+	import { Square } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { ChatService } from '$lib/services';
 	import {
-		ChatFormActionsAdd,
 		ChatFormActionModels,
 		ChatFormActionRecord,
 		ChatFormActionSubmit,
@@ -20,9 +17,7 @@
 		isLoading as chatIsLoading
 	} from '$lib/stores/chat.svelte';
 	import { getFileTypeCategory } from '$lib/utils';
-	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { ROUTES } from '$lib/constants/routes';
 
 	interface Props {
 		canSend?: boolean;
@@ -95,11 +90,6 @@
 	export function openModelSelector() {
 		selectorModelRef?.open();
 	}
-	// the streaming assistant message carries both the completion id and the model that
-	// produced it, targeting reasoning control from the same source keeps them consistent
-	let activeMessage = $derived(
-		conversationsStore.activeMessages[conversationsStore.activeMessages.length - 1]
-	);
 
 	let hasProcessedTokens = $derived.by(() => {
 		if (!page.params.id) return false;
@@ -133,27 +123,9 @@
 </script>
 
 <div
-	class="flex w-full items-center gap-3 {className} {showAddButton ? '' : 'justify-end'}"
+	class="flex w-full items-center gap-3 {className} justify-end"
 	style="container-type: inline-size"
 >
-	{#if showAddButton}
-		<div class="mr-auto flex items-center gap-2">
-			<ChatFormActionsAdd
-				{disabled}
-				{hasAudioModality}
-				{hasVideoModality}
-				{hasVisionModality}
-				{hasMcpPromptsSupport}
-				{hasMcpResourcesSupport}
-				{onFileUpload}
-				{onSystemPromptClick}
-				{onMcpPromptClick}
-				{onMcpResourcesClick}
-				onMcpSettingsClick={() => goto(ROUTES.MCP_SERVERS)}
-			/>
-		</div>
-	{/if}
-
 	<div class="flex items-center gap-1.5">
 		{#if hasProcessedTokens}
 			<ChatFormContextGauge />
@@ -174,23 +146,6 @@
 			/>
 		{/if}
 	</div>
-
-	{#if isReasoning}
-		<Button
-			type="button"
-			variant="secondary"
-			onclick={() =>
-				ChatService.stopReasoning(activeMessage?.completionId ?? '', activeMessage?.model)}
-			class="group h-8 w-8 rounded-full p-0"
-			title="Skip reasoning"
-		>
-			<span class="sr-only">Skip reasoning</span>
-
-			<SkipForward
-				class="{ICON_CLASS_DEFAULT} stroke-muted-foreground group-hover:stroke-foreground"
-			/>
-		</Button>
-	{/if}
 
 	{#if isLoading && !canSubmit}
 		<Button
