@@ -168,3 +168,27 @@ def test_every_variable_documented():
     text = (REPO / ".env.example").read_text(encoding="utf-8")
     documented = set(re.findall(r"^#?\s*([A-Z_][A-Z0-9_]*)=", text, re.M))
     assert set(VARS) <= documented, set(VARS) - documented
+
+
+def _arg(cmd, flag):
+    return cmd[cmd.index(flag) + 1]
+
+
+def test_machine_knob_defaults_unchanged(tmp_path):
+    from haisenberg.launcher import build_command
+
+    cmd = build_command(load_config(write(tmp_path)))
+    assert (_arg(cmd, "--host"), _arg(cmd, "--port"), _arg(cmd, "--ctx-size")) == ("127.0.0.1", "8080", "16384")
+    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "1024")
+
+
+def test_machine_knobs_from_environment(tmp_path, monkeypatch):
+    from haisenberg.launcher import build_command
+
+    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "4096", "LLAMA_PORT": "9090"}
+    for k, v in knobs.items():
+        monkeypatch.setenv(k, v)
+    cmd = build_command(load_config(write(tmp_path)))
+    assert _arg(cmd, "--ctx-size") == "65536" and _arg(cmd, "--gpu-layers") == "40"
+    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "4096"
+    assert _arg(cmd, "--port") == "9090"
