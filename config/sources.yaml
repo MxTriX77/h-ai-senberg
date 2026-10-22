@@ -1,0 +1,105 @@
+# Raw source files: what `uv run python -m ingest.download` fetches into retrieval.raw_dir,
+# and what `uv run python -m ingest.build_l1` reads (found by `use`).
+#
+# Each entry: name, use, layer, url, dest (relative to raw_dir), license, optional cite_url
+# (citation template; {path} {revision} {cid} {name} are filled per record), and exactly one checksum:
+#   sha256 / md5           pinned value, for files that never change (dated ZIMs, CODATA 2022)
+#   sha256_url / md5_url   the publisher's checksum file, for files regenerated in place (PubChem, daily)
+# Small files first; the big ones come last.
+
+sources:
+  - name: pubchem_readme_extras
+    use: doc
+    layer: 1
+    url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/README-Extras
+    dest: pubchem/README-Extras
+    sha256: 25cb8d5b4774b5be54bba8f9ddc91c1d7578afd7e9167c5ab3f6e77b05a1dbc4
+    license: NCBI places no restrictions on its data; some submitters may claim rights (see README-Extras)
+
+  - name: pubchem_cid_mesh
+    use: pubchem-mesh
+    layer: 1
+    url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-MeSH
+    dest: pubchem/CID-MeSH
+    md5_url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-MeSH.md5
+    license: NCBI places no restrictions on its data; some submitters may claim rights (see README-Extras)
+    cite_url: https://pubchem.ncbi.nlm.nih.gov/compound/{cid}
+
+  - name: codata_2022_allascii
+    use: codata
+    layer: 1
+    url: https://physics.nist.gov/cuu/Constants/Table/allascii.txt
+    dest: codata/allascii.txt
+    sha256: 77fb90e66c40db3e6eb16630bc9c88e4c7c8beddbe5e71be406f2f26e3f67e67
+    license: NIST, US government work (public domain)
+    cite_url: https://physics.nist.gov/cgi-bin/cuu/Results?search_for={name}
+
+  - name: wikipedia_en_chemistry_nopic_2026-10
+    use: wikipedia-zim
+    layer: 1
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_chemistry_nopic_2026-10.zim
+    dest: kiwix/wikipedia_en_chemistry_nopic_2026-10.zim
+    sha256: ac8efd8737b47de9c2dc0dd1d04e8bac70587ea885423b3a22715c6355d1122b
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: wikipedia_en_physics_nopic_2026-10
+    use: wikipedia-zim
+    layer: 1
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_physics_nopic_2026-10.zim
+    dest: kiwix/wikipedia_en_physics_nopic_2026-10.zim
+    sha256: d08a2e1c7d8c368649972b82ea70e9b40d41f8fee1bf2731ced3a5672a79890e
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: pubchem_cid_mass
+    use: pubchem-mass
+    layer: 1
+    url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-Mass.gz
+    dest: pubchem/CID-Mass.gz
+    md5_url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-Mass.gz.md5
+    license: NCBI places no restrictions on its data; some submitters may claim rights (see README-Extras)
+    cite_url: https://pubchem.ncbi.nlm.nih.gov/compound/{cid}
+
+  - name: pubchem_cid_synonym_filtered
+    use: pubchem-synonyms
+    layer: 1
+    url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-Synonym-filtered.gz
+    dest: pubchem/CID-Synonym-filtered.gz
+    md5_url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-Synonym-filtered.gz.md5
+    license: NCBI places no restrictions on its data; some submitters may claim rights (see README-Extras)
+    cite_url: https://pubchem.ncbi.nlm.nih.gov/compound/{cid}
+
+  - name: pubchem_cid_title
+    use: pubchem-title
+    layer: 1
+    url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-Title.gz
+    dest: pubchem/CID-Title.gz
+    md5_url: https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Extras/CID-Title.gz.md5
+    license: NCBI places no restrictions on its data; some submitters may claim rights (see README-Extras)
+    cite_url: https://pubchem.ncbi.nlm.nih.gov/compound/{cid}
+
+  - name: wikipedia_en_all_mini_2026-09
+    use: wikipedia-mini-zim
+    layer: 1
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_mini_2026-09.zim
+    dest: kiwix/wikipedia_en_all_mini_2026-09.zim
+    sha256: 350d8956ee3d7abe2839c464c3a983f93d6934a16c7f04b10715b49439dfd349
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: libretexts_en_phys_2026-01
+    use: libretexts-zim
+    layer: 2
+    url: https://download.kiwix.org/zim/libretexts/libretexts.org_en_phys_2026-01.zim
+    dest: kiwix/libretexts.org_en_phys_2026-01.zim
+    sha256: ace498581e085093cc86383439342d9ff5a4604bd87f6b82448c019e1264830f
+    license: mostly CC BY-NC-SA (per page)
+
+  - name: libretexts_en_chem_2025-01
+    use: libretexts-zim
+    layer: 2
+    url: https://download.kiwix.org/zim/libretexts/libretexts.org_en_chem_2025-01.zim
+    dest: kiwix/libretexts.org_en_chem_2025-01.zim
+    sha256: 83ba2fbfe36d72abe919661de5548103bb6674749bc26531cd61f83d8a825764
+    license: mostly CC BY-NC-SA (per page)

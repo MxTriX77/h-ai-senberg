@@ -3,7 +3,8 @@
 import re
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "haisenberg"
+REPO = Path(__file__).resolve().parents[1]
+ROOTS = [REPO / "src" / "haisenberg", REPO / "ingest"]
 PATTERNS = [r"https?://[\w.-]", r"\.gguf", r"qwen", r"you are an? "]
 
 
@@ -13,8 +14,9 @@ def offences(text: str) -> list[str]:
 
 def test_source_has_no_hardcoded_policy():
     found = {
-        str(f.relative_to(SRC)): hits
-        for f in SRC.rglob("*.py")
+        str(f.relative_to(REPO)): hits
+        for root in ROOTS
+        for f in root.rglob("*.py")
         if (hits := offences(f.read_text(encoding="utf-8")))
     }
     assert not found, found

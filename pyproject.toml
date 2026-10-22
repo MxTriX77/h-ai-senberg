@@ -21,6 +21,7 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]          # tests import the ingest/ scripts
 
 [dependency-groups]
 dev = [

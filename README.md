@@ -53,3 +53,14 @@ uv run python scripts/build_ui.py
 ```
 
 The build goes to `ui/dist/` (not committed).
+
+## Data
+
+Offline sources are listed in `config/sources.yaml` (URL, destination, checksum, license). One command downloads whatever is missing into `data/raw/` (or `$DATA_DIR/raw`):
+
+```bash
+uv run python -m ingest.download            # everything (~22 GB)
+uv run python -m ingest.download --layer 1  # Layer 1 only: Wikipedia, PubChem, CODATA (~19 GB)
+```
+
+Files that are already present and verified are skipped, and partial downloads resume. Progress goes to `data/raw/download.log`, and a `DONE` or `FAILED` marker is written at the end. PubChem regenerates its files daily; they are checked against PubChem's own `.md5`, and the verified digest is kept next to each file (`*.md5`). To fetch a newer copy, delete the file and its `.md5`.
