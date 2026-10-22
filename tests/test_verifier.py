@@ -462,6 +462,46 @@ def test_right_or_not_arithmetic_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+# Regression (user's vanillin test on #28): correct percent results were rewritten as "0.8%" and "0.0%".
+@pytest.mark.parametrize("draft", [
+    "The yield is 0.0986/0.1236 = 79.8% ≈ 80%.",
+    r"$$\frac{80.0\%}{87.4\%} = 91.5\%$$",
+    "x = 0.0986/0.1236 × 100% = 79.8%",
+    r"\frac{0.0986}{0.1236} \times 100\% = 79.8\%",
+    "x = 0.0986/0.1236 × 100% = 79.8",
+    "2.10/2.609 × 100 = 80.5%",
+    "0.0986/0.1236 = 0.798",
+    "80% / 90% = 88.9%",
+    "0.25 × 0.80 = 20%",
+    "15% × 200 = 30",
+    "purity = 96% × 0.90 = 86.4%",
+])
+def test_percent_results_read_every_way(draft):
+    fixed, fixes, checked = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == [] and checked == 1
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("0.0986/0.1236 = 50%", "0.0986/0.1236 = 80%"),
+    ("0.0986/0.1236 = 50.0%", "0.0986/0.1236 = 79.8%"),
+    ("0.0986/0.1236 × 100% = 50.0%", "0.0986/0.1236 × 100% = 79.8%"),
+    ("2.10/2.609 × 100 = 50.0%", "2.10/2.609 × 100 = 80.5%"),
+    ("80% / 90% = 50.0%", "80% / 90% = 88.9%"),
+    ("0.0986/0.1236 = 0.5", "0.0986/0.1236 = 0.8"),
+])
+def test_percent_results_wrong_every_way_are_fixed(draft, expected):
+    assert fix_arithmetic(draft, 0.005)[0] == expected
+
+
+@pytest.mark.parametrize("draft", [
+    "15% × 200 = 40",  # 30 or 3000: the intended reading is not clear
+    "3 / 1 = 50%",  # 300 % or 3 %: not clear
+])
+def test_ambiguous_wrong_results_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
 def test_scientific_and_russian_results():
     fixed, fixes, _ = fix_arithmetic("N = 0.0555 × 6.022 × 10^23 = 3.00 × 10^22 молекул", 0.005)
     assert fixes[0]["fixed"] == "3.342 × 10^22" and "= 3.342 × 10^22 молекул" in fixed

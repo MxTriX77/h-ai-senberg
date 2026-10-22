@@ -131,9 +131,17 @@ _NUMBER_IN_UNITS = re.compile(rf"({_NUM}|\))(?:{_UNIT})")
 
 @dataclass
 class Arithmetic:
+    """One `<expression> = <result>`. A % sign can be read two ways, so the left side has two values:
+    `fraction` reads `a%` as a/100 and drops a final `× 100%` (which only says "as a percent");
+    `plain` drops every % sign. They are equal when the left side has no % sign."""
+
     expression: str  # as written in the draft (normalized)
-    value: float  # computed
+    fraction: float
+    plain: float
     result_at: int  # where the stated result starts in the draft (read with verifier.read_numbers)
+    as_percent: bool  # the left side ends in `× 100%`: the result is the fraction written as a percent
+    has_percent: bool  # some operand carries a % sign (other than that final `× 100%`)
+    times_100: bool  # the left side multiplies by 100 somewhere (its value may already be a percent)
 
 
 def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmetic]:
@@ -152,20 +160,26 @@ def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmet
         number_end = re.match(r"[-−]?[\d.,\s]*\d", text[at:]).end()
         if _NEXT_OP.match(text, at + number_end) and not re.match(r"\s*[×x·]\s*10", text[at + number_end :]):
             continue  # "= 2 × 3": the right side is an expression, not a result
+        expression = m.group().strip()
+        as_percent = bool(_AS_PERCENT.search(expression))
+        core = _AS_PERCENT.sub("", expression) if as_percent else expression
         try:
-            value = evaluate(_python(m.group().strip()))
+            fraction = evaluate(_python(core, percent_is_fraction=True))
+            plain = evaluate(_python(expression, percent_is_fraction=False))
         except CalcError:
             continue
-        yield Arithmetic(m.group().strip(), value, at)
+        yield Arithmetic(expression, fraction, plain, at, as_percent, "%" in core,
+                         bool(re.search(r"\*\s*100(?:\.0+)?(?![\d.])", expression)))
 
 
-def _python(expression: str) -> str:
-    """Units dropped; % after the last operand dropped, elsewhere read as /100."""
-    numbers = list(re.finditer(_NUM, expression))
-    last = numbers[-1].start() if numbers else -1
+_AS_PERCENT = re.compile(r"\s*\*\s*100(?:\.0+)?\s*%\s*$")  # a final "× 100%"
+
+
+def _python(expression: str, percent_is_fraction: bool) -> str:
+    """Units dropped; `a%` read as (a/100), or as plain a when not percent_is_fraction."""
 
     def unit(m: re.Match[str]) -> str:
-        if m.group().rstrip().endswith("%") and m.start() != last:
+        if percent_is_fraction and m.group().rstrip().endswith("%"):
             return f"({m.group(1)}/100)"
         return m.group(1)
 
