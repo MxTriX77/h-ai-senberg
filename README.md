@@ -42,6 +42,17 @@ API_KEY=your-key
 MODEL_ID=model-name
 ```
 
+### Other machines and models
+
+Nothing in the code is tied to this laptop or model. On another machine (for example a cloud GPU box), set environment variables instead of editing files:
+
+- `MODEL_PATH`, `MODEL_ID`: any GGUF llama.cpp supports
+- `CTX_SIZE`, `GPU_LAYERS`, `LLAMA_THREADS`, `REASONING_BUDGET`: context size, layers on the GPU, CPU threads, thinking-token cap
+- `LLAMA_SERVER_ENABLED=false` with `API_BASE_URL`, `API_KEY`: use a model server that is already running, here or remote
+- `APP_HOST`, `APP_PORT`, `DATA_DIR`: address and data folder
+
+All variables and their defaults are in `.env.example`.
+
 ## Run from WSL (Ubuntu)
 
 Runs natively in WSL, with the GPU through the Windows NVIDIA driver. No sudo needed. From the repository folder (for example `/mnt/c/.dev/h-ai-senberg`):
