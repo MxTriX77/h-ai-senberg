@@ -146,10 +146,17 @@ MINI = {
     "pages": {
         "Benzene": page(
             "Benzene",
-            "<p>Benzene is an organic chemical compound with the molecular formula C<sub>6</sub>H<sub>6</sub>.</p>"
+            "<p>Benzene is an organic chemical compound with the molecular formula C<sub>6</sub>H<sub>6</sub>."
+            " Its boiling point is 80.1 °C.</p>"
             + chembox("Benzene", 241, "C<sub>6</sub>H<sub>6</sub>"),
             rev=500,
             projects={"Chemicals": "Top"},
+        ),
+        "Deuterated_benzene": page(
+            "Deuterated benzene",
+            "<p>Deuterated benzene is benzene with deuterium; boiling point 79.1 °C.</p>",
+            rev=505,
+            projects={"Chemistry": "Mid"},
         ),
         "Sodium_chloride": page(
             "Sodium chloride",

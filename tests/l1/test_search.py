@@ -93,3 +93,23 @@ def test_kinds_and_lookup_by_kind(built_store):
     for kind in ("text", "nope"):
         with pytest.raises(L1Error, match=kind):
             store.lookup(kind, "x")
+
+
+def test_entity_phrase_ranks_second(built_store):
+    # 'benzene' names Benzene, which also contains 'boiling' and 'point': it outranks the BM25 order
+    assert [r.path for r in search(built_store, "benzene boiling point")][:2] == ["Benzene", "Deuterated_benzene"]
+    assert search(built_store, "boiling point of benzene")[0].path == "Benzene"
+    # Benzene lacks 'deuterium', so the phrase does not promote it
+    assert search(built_store, "benzene deuterium")[0].path == "Deuterated_benzene"
+    # the domain filter applies to phrase matches too
+    assert all(r.path != "Benzene" for r in L1Store(built_store).search_encyclopedia("benzene boiling point", 5, "physics"))
+
+
+def test_phrases():
+    from haisenberg.l1.store import _phrases
+
+    got = dict(_phrases("Boiling point of ethanol?"))
+    assert got["boiling point"] == 2 and got["ethanol"] == 1 and got["point of ethanol"] == 3
+    assert "boiling point of ethanol" not in got  # the full query is the exact match
+    assert "of ethanol" not in got and "boiling point of" not in got and "of" not in got
+    assert dict(_phrases("half-life of carbon-14"))["carbon-14"] == 1

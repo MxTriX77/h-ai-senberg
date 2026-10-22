@@ -96,7 +96,7 @@ def test_linked_compounds_point_to_their_article(con):
 
 def test_fts_covers_every_article(con):
     n = con.execute("SELECT count(*) FROM article").fetchone()[0]
-    assert n == 9  # chemistry 3 + physics 3 new (Electron shared) + mini 3; persons and stubs excluded
+    assert n == 10  # chemistry 3 + physics 3 new (Electron shared) + mini 4; persons and stubs excluded
     hits = con.execute("SELECT rowid FROM article_fts WHERE article_fts MATCH 'subatomic'").fetchall()
     assert len(hits) == 1
 
