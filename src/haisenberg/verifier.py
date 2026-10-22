@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from .config import Config
-from .calc import find_arithmetic
+from .calc import Arithmetic, find_arithmetic
 from .l1.text import parse_formula, to_hill
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import SEARCH, Knowledge, Source, Sources
@@ -181,7 +181,9 @@ def _format(ref: float, like: Number) -> str:
 
 def fix_arithmetic(draft: str, rel_tol: float) -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
-    A result is wrong when it is off by more than half a unit of its last digit and rel_tol of the value."""
+    A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
+    result in % as itself or as a fraction): off by more than half a unit of its last digit and rel_tol.
+    It is rewritten only when the right value is clear; otherwise it is left as written."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
     for a in find_arithmetic(draft, decimal_comma):
@@ -191,15 +193,31 @@ def fix_arithmetic(draft: str, rel_tol: float) -> tuple[str, list[dict[str, str]
         if not numbers or numbers[0].start != 0:
             continue
         n, checked = numbers[0], checked + 1
-        if abs(n.value - a.value) <= max(n.half, rel_tol * abs(a.value)):
+        in_percent = a.as_percent or bool(re.match(r"\s*\\?%", window[n.end :]))
+        stated = [(n.value, n.half)] + ([(n.value / 100, n.half / 100)] if in_percent else [])
+        if any(abs(v - lhs) <= max(half, rel_tol * abs(lhs)) for lhs in (a.fraction, a.plain) for v, half in stated):
+            continue
+        right = _right_result(a, in_percent)
+        if right is None:
             continue
         start, end = a.result_at + n.start, a.result_at + n.end
-        fixed = _format(a.value, n)
+        fixed = _format(right, n)
         fixes.append({"expression": a.expression, "stated": draft[start:end], "fixed": fixed, "at": (start, end)})
     for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
         start, end = f.pop("at")
         draft = draft[:start] + f["fixed"] + draft[end:]
     return draft, fixes, checked
+
+
+def _right_result(a: Arithmetic, in_percent: bool) -> float | None:
+    """The value to write for a wrong result, or None when the intended reading is not clear."""
+    if not in_percent:
+        return a.fraction if a.fraction == a.plain else None  # "15% × 200 = 40": 30 or 3000? leave it
+    if a.as_percent or (a.fraction <= 1.5 and not a.times_100):
+        return 100 * a.fraction  # a fraction written as a percent
+    if a.times_100 and not a.has_percent:
+        return a.plain  # "x / y × 100 = r %": the value is already a percent
+    return None
 
 
 def _mentions(text: str, names: list[str]) -> bool:

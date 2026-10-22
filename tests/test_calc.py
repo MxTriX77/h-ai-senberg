@@ -53,7 +53,7 @@ def test_tool():
 
 
 def found(text, decimal_comma=False):
-    return [(a.expression, round(a.value, 6), text[a.result_at:a.result_at + 6]) for a in find_arithmetic(text, decimal_comma)]
+    return [(a.expression, round(a.plain, 6), text[a.result_at:a.result_at + 6]) for a in find_arithmetic(text, decimal_comma)]
 
 
 def test_finds_and_computes():
@@ -61,21 +61,29 @@ def test_finds_and_computes():
     assert found(text) == [("0.0500 * 56.08", 2.804, "3.80 g"), ("5.00 - 3.80", 1.2, "2.20 g")]
 
 
-@pytest.mark.parametrize("text, value", [
-    ("n = 2.00 g / 138.12 g/mol = 0.01448 mol", 0.01448),
-    ("$$\\frac{2.10}{2.609} \\times 100\\% = 80.5\\%$$", 80.49),
-    ("yield = 2.10 g / 2.609 g × 100 % = 80.5 %", 80.49),
-    ("15 % × 200 = 30", 30),
-    ("Kc = (0.20)^2 / (0.50 × 1.50^3) = 0.0237", 0.0237),
-    ("v = √(2 × 9.81 × 10) = 14.0 m/s", 14.007),
-    ("pH = -log(1.34 × 10^-3) = 2.87", 2.873),
-    ("N = 0.0555 mol × 6.022 × 10²³ mol⁻¹ = 3.34 × 10²² molecules", 3.342e22),
-    ("c = 0.250 mol / 0.250 L = 1.00 mol/L", 1.0),
-    ("m = 0,0500 моль × 56,08 г/моль = 2,80 г", 2.804),
+@pytest.mark.parametrize("text, fraction, plain", [
+    ("n = 2.00 g / 138.12 g/mol = 0.01448 mol", 0.01448, 0.01448),
+    ("$$\\frac{2.10}{2.609} \\times 100\\% = 80.5\\%$$", 0.8049, 80.49),
+    ("yield = 2.10 g / 2.609 g × 100 % = 80.5 %", 0.8049, 80.49),
+    ("15 % × 200 = 30", 30, 3000),
+    ("$$\\frac{80.0\\%}{87.4\\%} = 91.5\\%$$", 0.9153, 0.9153),
+    ("Kc = (0.20)^2 / (0.50 × 1.50^3) = 0.0237", 0.0237, 0.0237),
+    ("v = √(2 × 9.81 × 10) = 14.0 m/s", 14.007, 14.007),
+    ("pH = -log(1.34 × 10^-3) = 2.87", 2.873, 2.873),
+    ("N = 0.0555 mol × 6.022 × 10²³ mol⁻¹ = 3.34 × 10²² molecules", 3.342e22, 3.342e22),
+    ("c = 0.250 mol / 0.250 L = 1.00 mol/L", 1.0, 1.0),
+    ("m = 0,0500 моль × 56,08 г/моль = 2,80 г", 2.804, 2.804),
 ])
-def test_units_latex_and_percent(text, value):
+def test_units_latex_and_percent(text, fraction, plain):
     (a,) = list(find_arithmetic(text, decimal_comma="моль" in text))
-    assert a.value == pytest.approx(value, rel=2e-3)
+    assert (a.fraction, a.plain) == (pytest.approx(fraction, rel=2e-3), pytest.approx(plain, rel=2e-3))
+
+
+def test_percent_flags():
+    (a,) = find_arithmetic("x = 0.0986/0.1236 × 100% = 79.8%")
+    assert a.as_percent and a.times_100 and not a.has_percent
+    (b,) = find_arithmetic("80% / 90% = 88.9%")
+    assert b.has_percent and not b.as_percent and not b.times_100
 
 
 @pytest.mark.parametrize("text", [
@@ -95,4 +103,4 @@ def test_not_found(text):
 
 def test_chain_checks_each_step():
     text = "n = 2.00/138.12 = 0.01448 mol × 180.16 g/mol = 2.609 g"
-    assert [round(a.value, 4) for a in find_arithmetic(text)] == [0.0145, 2.6087]
+    assert [round(a.plain, 4) for a in find_arithmetic(text)] == [0.0145, 2.6087]
