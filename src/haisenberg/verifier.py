@@ -18,6 +18,7 @@ import httpx
 
 from .config import Config
 from .calc import Arithmetic, find_arithmetic
+from .checkers import CHECKERS
 from .l1.text import parse_formula, to_hill
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import SEARCH, Knowledge, Source, Sources
@@ -63,6 +64,7 @@ class Verification:
     claims: list[Claim]
     consistency: list[dict[str, str]] = field(default_factory=list)  # applied review fixes: old, new, why
     arithmetic: list[dict[str, str]] = field(default_factory=list)  # fixed results: expression, stated, fixed
+    checks: list[dict[str, Any]] = field(default_factory=list)  # domain checker findings: checker, text, fixed, note
 
     def report(self) -> dict[str, Any]:
         claims = [c for c in self.claims if c.outcome != NO_CLAIM]
@@ -71,6 +73,7 @@ class Verification:
             "counts": {o: sum(c.outcome == o for c in claims) for o in OUTCOMES},
             "consistency": self.consistency,
             "arithmetic": self.arithmetic,
+            "checks": self.checks,
         }
 
 
@@ -209,6 +212,18 @@ def fix_arithmetic(draft: str, rel_tol: float) -> tuple[str, list[dict[str, str]
     return draft, fixes, checked
 
 
+def run_checkers(draft: str, names: list[str]) -> tuple[str, list[dict[str, Any]]]:
+    """Run the configured domain checkers (D-034); apply their fixes in place, later spans first, skipping a fix
+    that overlaps one already applied. Returns the draft and every finding (fixed or only reported)."""
+    found = [(name, f) for name in names for f in CHECKERS[name](draft)]
+    applied_from = len(draft) + 1
+    for _, f in sorted(found, key=lambda nf: nf[1].start, reverse=True):
+        if f.fixed is not None and f.end <= applied_from:
+            draft = draft[: f.start] + f.fixed + draft[f.end :]
+            applied_from = f.start
+    return draft, [{"checker": name, "text": f.text, "fixed": f.fixed, "note": f.note} for name, f in found]
+
+
 def _right_result(a: Arithmetic, in_percent: bool) -> float | None:
     """The value to write for a wrong result, or None when the intended reading is not clear."""
     if not in_percent:
@@ -336,6 +351,13 @@ class Verifier:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
                        + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic))
+        draft, checks = run_checkers(draft, self.cfg.checkers)
+        for name in self.cfg.checkers:
+            found = [c for c in checks if c["checker"] == name]
+            if found:
+                yield _say(f"\n\nCheck {name}: {len(found)} finding{'s' if len(found) != 1 else ''}\n" + "".join(
+                    f"- {c['text']!r} → {c['fixed']!r} ({c['note']})\n" if c["fixed"] is not None
+                    else f"- {c['text']!r}: {c['note']}\n" for c in found))
         claims = split_claims(draft)
         yield _say(f"\n\nVerification: {len(claims)} claims\n")
         pending = []
@@ -387,7 +409,7 @@ class Verifier:
                         yield item
             finally:
                 await review.aclose()
-        yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic)
+        yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks)
 
     async def _consistency(self, question: str, answer: str):
         """One review call over the whole answer and the task. Yields reasoning lines, then (answer, fixes)."""

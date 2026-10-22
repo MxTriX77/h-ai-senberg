@@ -535,3 +535,28 @@ async def test_report_lists_arithmetic_fixes(cfg, fake, knowledge):
     items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
     report = next(i["verification"] for i in items if "verification" in i)
     assert report["arithmetic"] == [{"expression": "2 * 3", "stated": "7", "fixed": "6"}]
+
+
+# --- domain checkers ----------------------------------------------------------------------------------
+
+
+def test_checker_fixes_the_answer_silently(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("Water forms as H2 + O2 → H2O in a flame.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "Water forms as 2H2 + O2 → 2H2O in a flame."
+    assert "Check element_balance: 1 finding" in reasoning_text(r) and "(rebalanced)" in reasoning_text(r)
+
+
+@pytest.mark.anyio
+async def test_checker_findings_in_the_report_and_off_switch(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("It is NaCl → Na2O here.")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
+    (finding,) = next(i["verification"] for i in items if "verification" in i)["checks"]
+    assert finding["checker"] == "element_balance" and finding["fixed"] is None
+    cfg.verifier.checkers = []
+    fake.scripts = [[content("Water forms as H2 + O2 → H2O.")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
+    assert next(i["content"] for i in items if "content" in i) == "Water forms as H2 + O2 → H2O."

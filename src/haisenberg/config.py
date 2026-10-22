@@ -105,6 +105,7 @@ class VerifierConfig(_Section):
     judge_prompt: str
     rel_tol: NonNegativeFloat
     arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
+    checkers: list[str] = []  # domain checker plug-ins run on every draft (haisenberg.checkers), e.g. element_balance
     arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
     research_k: PositiveInt
     max_research: NonNegativeInt
@@ -112,6 +113,15 @@ class VerifierConfig(_Section):
     answer_style: Literal["plain", "annotated"]  # plain chat answer, or labels + ids + sources (debugging)
     consistency_check: bool  # one review call over the whole answer and the task (conclusions vs calculations...)
     consistency_prompt: str
+
+    @field_validator("checkers")
+    @classmethod
+    def _known_checkers(cls, v: list[str]) -> list[str]:
+        from .checkers import CHECKERS
+
+        if unknown := [n for n in v if n not in CHECKERS]:
+            raise ValueError(f"unknown checker {unknown}; available: {sorted(CHECKERS)}")
+        return v
 
     @field_validator("judge_prompt", "consistency_prompt")
     @classmethod

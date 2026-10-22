@@ -215,3 +215,10 @@ def test_consistency_fixes_counted():
          "verification": {"counts": {}, "consistency": [{"old": "a", "new": "b", "why": ""}]}}
     s = summarize([r])
     assert s["consistency_fixes"] == 1 and s["by_category"]["facts"]["consistency_fixes"] == 1
+
+
+def test_check_fixes_counted():
+    r = {"correct": True, "unmarked_contradiction": False, "seconds": 1.0, "error": None,
+         "verification": {"counts": {}, "checks": [{"checker": "x", "text": "a", "fixed": "b", "note": ""},
+                                                   {"checker": "x", "text": "c", "fixed": None, "note": ""}]}}
+    assert summarize([r])["check_fixes"] == 1
