@@ -15,6 +15,7 @@ SEARCH = [
     "avogadro constant", "half-life radioactive decay", "electronegativity", "noble gas", "schrodinger equation",
     "special relativity time dilation", "periodic table", "oxidation state", "black-body radiation", "caffeine",
     "superconductivity critical temperature", "xenon tetrafluoride", "acid dissociation constant", "entropy",
+    "melting point of iron", "molar mass of caffeine", "ionization energy of hydrogen", "density of water",
 ]
 COMPOUNDS = [
     "caffeine", "benzene", "71-43-2", "water", "sodium chloride", "CID 2244", "C6H12O6", "NaCl", "heavy water",
@@ -68,6 +69,19 @@ def test_known_facts(store):
     assert me.name == "electron mass" and me.value == pytest.approx(9.1093837139e-31) and me.unit == "kg"
     assert store.search_encyclopedia("planck constant")[0].path == "Planck_constant"
     assert store.search_encyclopedia("benzene")[0].path == "Benzene"  # from the all-articles mini ZIM
+
+
+@pytest.mark.parametrize("query, first", [
+    ("boiling point of ethanol", "Ethanol"),  # was Deuterated_ethanol before the entity-phrase rule
+    ("ethanol boiling point", "Ethanol"),
+    ("melting point of iron", "Iron"),
+    ("molar mass of caffeine", "Caffeine"),
+    ("half-life of carbon-14", "Carbon-14"),
+    ("ionization energy of hydrogen", "Hydrogen"),
+    ("speed of light in vacuum", "Speed_of_light"),
+])
+def test_entity_inside_a_property_question(store, query, first):
+    assert store.search_encyclopedia(query)[0].path == first
 
 
 def test_no_person_articles(store):

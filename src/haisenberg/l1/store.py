@@ -127,6 +127,22 @@ class CompoundRecord(Record):
         )
 
 
+_EDGE = ".,;:!?\"'()[]{}"
+MAX_PHRASE_WORDS = 8
+
+
+def _phrases(query: str) -> list[tuple[str, int]]:
+    """Shorter phrases of consecutive query words, not starting or ending with a stopword: longest first,
+    then those nearer the end ('boiling point of ethanol': the entity usually comes last)."""
+    tokens = [t for t in (w.strip(_EDGE) for w in normalize(query).split()) if t][:MAX_PHRASE_WORDS]
+    return [
+        (" ".join(tokens[i : i + n]), n)
+        for n in range(len(tokens) - 1, 0, -1)
+        for i in range(len(tokens) - n, -1, -1)
+        if tokens[i] not in STOPWORDS and tokens[i + n - 1] not in STOPWORDS
+    ]
+
+
 def _cut(text: str, n: int) -> str:
     """text, shortened at a word boundary to at most n characters (with an ellipsis)."""
     if len(text) <= n:
@@ -218,39 +234,31 @@ class L1Store:
         return getattr(self, f"lookup_{kind}")(query, k)
 
     def search_encyclopedia(self, query: str, k: int | None = None, domain: str | None = None) -> list[ArticleRecord]:
-        """Exact title/alias match first, then BM25 over articles with all words (any word if none).
-
-        With a domain, only articles having that domain are considered."""
+        """Exact title/alias match first; then articles named by a shorter phrase of the query that contain
+        all its words (longer phrases first, then phrases nearer the end); then BM25 over articles with all
+        words (any word if none). With a domain, only articles having that domain are considered."""
         k = k or self.top_k
         words = [w for w in _WORD.findall(query.lower()) if w not in STOPWORDS]
         if not words:
             return []
-        rows = self._fts(" ".join(f'"{w}"' for w in words), k, domain)
+        match = " ".join(f'"{w}"' for w in words)
+        rows = self._fts(match, k, domain)
         if not rows and len(words) > 1:
-            rows = self._fts(" OR ".join(f'"{w}"' for w in words), k, domain)
-        in_domain = (
-            " AND EXISTS (SELECT 1 FROM article_domain d WHERE d.article_id = article_alias.article_id AND d.domain = ?)"
-            if domain
-            else ""
-        )
-        exact = [
-            r[0]
-            for r in self.con.execute(
-                f"SELECT article_id FROM article_alias WHERE alias = ?{in_domain}",
-                (normalize(query), domain) if domain else (normalize(query),),
-            )
-        ]
-        if exact:
-            found = {r[0]: r for r in rows}
-            first = []
-            for article_id in exact:
-                row = found.pop(article_id, None) or self.con.execute(
-                    "SELECT id, path, title, lead, infobox, revision, source_id, 0.0, substr(lead, 1, 200)"
-                    " FROM article WHERE id = ?",
-                    (article_id,),
-                ).fetchone()
-                first.append(row[:7] + (0.0,) + row[8:])
-            rows = first + [r for r in rows if r[0] in found]
+            match = " OR ".join(f'"{w}"' for w in words)
+            rows = self._fts(match, k, domain)
+        found = {r[0]: r for r in rows}
+        first: list[tuple] = []
+        for article_id, _ in self._aliased([(normalize(query), 0)], domain):
+            row = found.get(article_id) or self.con.execute(
+                "SELECT id, path, title, lead, infobox, revision, source_id, 0.0, substr(lead, 1, 200)"
+                " FROM article WHERE id = ?",
+                (article_id,),
+            ).fetchone()
+            first.append(row[:7] + (0.0,) + row[8:])
+        if not first:  # a query that names an article needs no phrase matches
+            first = self._named(match, [i for i, _ in self._aliased(_phrases(query), domain)], found)
+        used = {r[0] for r in first}
+        rows = first + [r for r in rows if r[0] not in used]
         return [
             ArticleRecord(
                 title=title,
@@ -264,6 +272,42 @@ class L1Store:
             )
             for article_id, path, title, lead, infobox, rev, sid, score, snippet in rows[:k]
         ]
+
+    def _aliased(self, phrases: list[tuple[str, int]], domain: str | None) -> list[tuple[int, int]]:
+        """(article id, phrase length) for every article whose normalized title/alias is one of the phrases."""
+        in_domain = (
+            " AND EXISTS (SELECT 1 FROM article_domain d WHERE d.article_id = article_alias.article_id AND d.domain = ?)"
+            if domain
+            else ""
+        )
+        if not phrases:
+            return []
+        rank = {phrase: i for i, (phrase, _) in enumerate(phrases)}
+        rows = self.con.execute(
+            f"SELECT alias, article_id FROM article_alias WHERE alias IN ({','.join('?' * len(rank))}){in_domain}",
+            (*rank, domain) if domain else tuple(rank),
+        ).fetchall()
+        out: dict[int, int] = {}
+        for alias, article_id in sorted(rows, key=lambda r: rank[r[0]]):
+            out.setdefault(article_id, phrases[rank[alias]][1])
+        return list(out.items())
+
+    def _named(self, match: str, ids: list[int], found: dict[int, tuple]) -> list[tuple]:
+        """Search rows (score 0) of the given articles that satisfy the match, in the given order. Rows
+        already found by the ranking query are reused; the others are checked in one query without bm25(),
+        which recomputes term statistics per query and would double the search time."""
+        todo = [i for i in ids if i not in found]
+        rows = [found[i] for i in ids if i in found]
+        if todo:
+            rows += self.con.execute(
+            "SELECT a.id, a.path, a.title, a.lead, a.infobox, a.revision, a.source_id, 0.0,"
+            " coalesce(nullif(snippet(article_fts, 3, '[', ']', '…', 24), ''), snippet(article_fts, 2, '[', ']', '…', 24))"
+            " FROM article_fts JOIN article a ON a.id = article_fts.rowid"
+            f" WHERE article_fts MATCH ? AND article_fts.rowid IN ({','.join('?' * len(todo))})",
+            (match, *todo),
+        ).fetchall()
+        order = {article_id: i for i, article_id in enumerate(ids)}
+        return [r[:7] + (0.0,) + r[8:] for r in sorted(rows, key=lambda r: order[r[0]])]
 
     def _article_domains(self, article_id: int) -> list[str]:
         sql = "SELECT domain FROM article_domain WHERE article_id = ? ORDER BY domain"
