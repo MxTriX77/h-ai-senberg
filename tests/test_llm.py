@@ -24,6 +24,16 @@ async def test_request_body_and_extra_body_override(cfg, fake):
     }
 
 
+async def test_per_call_fields_win(cfg, fake):
+    b = cfg.model_backend
+    b.extra_body = {"top_k": 20}
+    tools = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}]
+    [c async for c in fake.client(b).stream_chat(USER, tools=tools, temperature=0)]
+    body = fake.last_body
+    assert body["tools"] == tools and body["temperature"] == 0 and body["top_k"] == 20
+    assert body["model"] == b.model_id and body["max_tokens"] == b.max_tokens
+
+
 async def test_no_auth_header_without_key(cfg, fake):
     cfg.model_backend.api_key = ""
     await drain(fake.client(cfg.model_backend))

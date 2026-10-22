@@ -9,7 +9,15 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, PositiveInt, PrivateAttr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    NonNegativeInt,
+    PositiveInt,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+)
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
 PROFILE_ENV = "MODEL_PROFILE"  # selects config/models/<name>.yaml, merged over config.yaml
@@ -43,10 +51,11 @@ class ModelBackendConfig(_Section):
 
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
+    tool_prompt: str
     enable_multi_hop_verification: bool
-    max_search_depth: int
+    max_search_depth: NonNegativeInt
 
-    @field_validator("system_prompt")
+    @field_validator("system_prompt", "tool_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():
@@ -59,6 +68,28 @@ class RetrievalConfig(_Section):
     layer1_encyclopedia_db: Path
     layer2_literature_index: Path
     top_k_proofs: PositiveInt
+    passage_chars: PositiveInt
+
+
+class ToolText(_Section):
+    """Model-facing texts of one agent tool; the tools themselves are generated from the store."""
+
+    description: str
+    parameters: dict[str, str] = {}
+
+    @field_validator("description")
+    @classmethod
+    def _description(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+    @field_validator("parameters")
+    @classmethod
+    def _parameters(cls, v: dict[str, str]) -> dict[str, str]:
+        if empty := [k for k, text in v.items() if not text.strip()]:
+            raise ValueError(f"empty description for {empty}")
+        return v
 
 
 class LlamaServerConfig(_Section):
@@ -83,6 +114,7 @@ class Config(_Section):
     model_backend: ModelBackendConfig
     reasoning_policy: ReasoningPolicyConfig
     retrieval: RetrievalConfig
+    tools: dict[str, ToolText]
     llama_server: LlamaServerConfig
     ui: UiConfig
 

@@ -31,8 +31,16 @@ class Citation:
 
 @dataclass
 class Record:
+    """A citeable record. label() names it in lists; passage() is the text handed to a model."""
+
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def label(self) -> str:
+        raise NotImplementedError
+
+    def passage(self, query: str, limit: int) -> str:
+        raise NotImplementedError
 
 
 @dataclass
@@ -47,6 +55,14 @@ class ConstantRecord(Record):
     domains: list[str]
     citation: Citation
 
+    def label(self) -> str:
+        return self.name
+
+    def passage(self, query: str, limit: int) -> str:
+        how = "exact" if self.exact else f"standard uncertainty {self.uncertainty:g} {self.unit}".rstrip()
+        value = f"{self.name} = {self.value_text} {self.unit}".rstrip()
+        return f"{value} ({how}); {self.citation.source}, version {self.citation.version}"
+
 
 @dataclass
 class ArticleRecord(Record):
@@ -58,6 +74,29 @@ class ArticleRecord(Record):
     score: float  # BM25 (lower is better); 0.0 for an exact title or alias match
     domains: list[str]
     citation: Citation
+
+    def label(self) -> str:
+        return self.title
+
+    def passage(self, query: str, limit: int) -> str:
+        """Lead, then infobox lines, at most limit characters. Infobox lines with query words (most
+        matches first) get up to half of the room, the lead the rest, other lines what is left."""
+        words = {w for w in _WORD.findall(query.lower()) if w not in STOPWORDS}
+        lines = [line for line in self.infobox.splitlines() if line.strip()]
+        matches = {line: sum(w in line.lower() for w in words) for line in lines}
+        picked: list[str] = []
+        used = 0
+        for line in sorted((x for x in lines if matches[x]), key=lambda x: -matches[x]):
+            if used + len(line) + 1 <= limit // 2:
+                picked.append(line)
+                used += len(line) + 1
+        text = "\n".join([x for x in [_cut(self.lead, limit - used)] if x] + picked)
+        for line in lines:
+            if line not in picked:
+                if len(text) + len(line) + 1 > limit:
+                    break
+                text = f"{text}\n{line}" if text else line
+        return text
 
 
 @dataclass
@@ -72,6 +111,27 @@ class CompoundRecord(Record):
     matched_by: str  # 'cid', 'name' or 'formula'
     domains: list[str]
     citation: Citation
+
+    def label(self) -> str:
+        return f"{self.title} (CID {self.cid})"
+
+    def passage(self, query: str, limit: int) -> str:
+        if self.molar_mass is not None:
+            mass = f"molar mass {self.molar_mass:.3f} g/mol ({self.citation.note})"
+        else:
+            mass = f"molar mass not given: {self.molar_mass_note}"
+        synonyms = f"; synonyms: {', '.join(self.synonyms[:6])}" if self.synonyms else ""
+        return (
+            f"CID {self.cid}, {self.title}: formula {self.formula}; {mass};"
+            f" monoisotopic mass {self.monoisotopic_mass:g} Da{synonyms}"
+        )
+
+
+def _cut(text: str, n: int) -> str:
+    """text, shortened at a word boundary to at most n characters (with an ellipsis)."""
+    if len(text) <= n:
+        return text
+    return text[: max(n - 1, 0)].rsplit(" ", 1)[0] + "â€¦" if n > 1 else ""
 
 
 # Ignored in encyclopedia queries: they match nearly every article and slow BM25 down.
