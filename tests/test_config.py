@@ -320,3 +320,12 @@ def test_big_profile_budget(tmp_path, monkeypatch):
     monkeypatch.setenv(PROFILE_ENV, profile.stem)
     cfg = load_config(path)
     assert (cfg.context_tokens, cfg.model_backend.max_tokens) == (32768, 8192)
+
+
+def test_consistency_settings(tmp_path):
+    v = load_config(write(tmp_path)).verifier
+    assert v.consistency_check is True and v.consistency_prompt.strip()
+    data = base()
+    data["verifier"]["consistency_prompt"] = " "
+    with pytest.raises(ConfigError, match="verifier.consistency_prompt"):
+        load_config(write(tmp_path, data))

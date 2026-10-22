@@ -126,6 +126,7 @@ def cfg(tmp_path):
     shutil.copy(REPO / "config" / "config.yaml", dest)
     c = load_config(dest)
     c.model_backend.wait_s = 0  # fail fast; the retry tests set their own
+    c.verifier.consistency_check = False  # one call fewer per answer; tests/test_verifier.py turns it on
     c.ui.dist_dir = tmp_path / "dist"
     c.retrieval.layer1_encyclopedia_db = tmp_path / "no-store.db"
     return c

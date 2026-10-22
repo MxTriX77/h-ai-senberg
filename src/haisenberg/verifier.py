@@ -58,14 +58,16 @@ class Claim:
 
 @dataclass
 class Verification:
-    answer: str  # the draft rendered by verifier.answer_style (see render)
+    answer: str  # the draft rendered by verifier.answer_style (see render), after the consistency review
     claims: list[Claim]
+    consistency: list[dict[str, str]] = field(default_factory=list)  # applied review fixes: old, new, why
 
     def report(self) -> dict[str, Any]:
         claims = [c for c in self.claims if c.outcome != NO_CLAIM]
         return {
             "claims": [{"text": c.text, "outcome": c.outcome, "ids": c.ids, "note": c.note} for c in claims],
             "counts": {o: sum(c.outcome == o for c in claims) for o in OUTCOMES},
+            "consistency": self.consistency,
         }
 
 
@@ -238,6 +240,24 @@ def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_to
 # --- judge ------------------------------------------------------------------------------------------
 
 
+def parse_fixes(text: str) -> list[dict[str, str]]:
+    """The consistency review's OLD/NEW/WHY blocks (an `OK` reply has none). Markdown emphasis around the
+    keys is ignored; a block needs an OLD and a NEW line."""
+    blocks: list[dict] = []
+    for line in text.splitlines():
+        m = re.match(r"^\W*(OLD|NEW|WHY)\W*?:\s?(.*)$", line.strip(), re.I)
+        if not m:
+            continue
+        key, value = m.group(1).lower(), m.group(2).strip().lstrip("*_").strip()
+        if len(value) > 1 and (value[0], value[-1]) in (('"', '"'), ("'", "'"), ("`", "`"), ("«", "»"), ("“", "”")):
+            value = value[1:-1]  # a quote around the text is not part of it
+        if key == "old":
+            blocks.append({"old": value, "new": None, "why": ""})
+        elif blocks:
+            blocks[-1][key] = value
+    return [b for b in blocks if b["old"] and b["new"] is not None]
+
+
 def parse_verdicts(text: str, given: set[str]) -> dict[int, tuple[str, list[str], str | None]]:
     """Claim number -> (verdict, decisive ids among `given`, correction) from the judge's reply lines."""
     out: dict[int, tuple[str, list[str], str | None]] = {}
@@ -305,7 +325,46 @@ class Verifier:
                 yield _say(f"- C{c.n} corrected from {', '.join(c.ids)}: {plain(c.fixed or '')}\n")
             elif c.outcome == REMOVED:
                 yield _say(f"- C{c.n} removed (contradicted by {', '.join(c.ids)})\n")
-        yield Verification(render(draft, claims, self.cfg.answer_style == "annotated"), claims)
+        answer, fixes = render(draft, claims, self.cfg.answer_style == "annotated"), []
+        if self.cfg.consistency_check:
+            review = self._consistency(question, answer)
+            try:
+                async for item in review:
+                    if isinstance(item, tuple):
+                        answer, fixes = item
+                    else:
+                        yield item
+            finally:
+                await review.aclose()
+        yield Verification(answer, claims, fixes)
+
+    async def _consistency(self, question: str, answer: str):
+        """One review call over the whole answer and the task. Yields reasoning lines, then (answer, fixes)."""
+        messages = [{"role": "system", "content": self.cfg.consistency_prompt},
+                    {"role": "user", "content": f"Task:\n{question}\n\nAnswer:\n{answer}"}]
+        if estimate_tokens(messages, self.chars_per_token) > self.budget:
+            yield _say("\n\nConsistency review skipped: the answer is too long for the context\n")
+            yield answer, []
+            return
+        try:
+            reply = await self._complete(messages)
+        except (UpstreamError, httpx.HTTPError) as e:
+            log.error("consistency review failed: %s", e)
+            yield _say(f"\n\nConsistency review failed: {e}\n")
+            yield answer, []
+            return
+        blocks, applied = parse_fixes(reply), []
+        yield _say(f"\n\nConsistency review: {len(blocks)} fix{'es' if len(blocks) != 1 else ''} proposed\n")
+        for f in blocks:
+            count = answer.count(f["old"]) if f["old"] else 0
+            if count == 1 and f["new"] != f["old"]:
+                answer = answer.replace(f["old"], f["new"])
+                applied.append(f)
+                yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
+            else:
+                why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
+                yield _say(f"- skipped {f['old']!r} ({why})\n")
+        yield answer, applied
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
         """One judge call for these claims; sets their outcome. Yields reasoning lines."""

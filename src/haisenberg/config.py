@@ -106,8 +106,10 @@ class VerifierConfig(_Section):
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
     answer_style: Literal["plain", "annotated"]  # plain chat answer, or labels + ids + sources (debugging)
+    consistency_check: bool  # one review call over the whole answer and the task (conclusions vs calculations...)
+    consistency_prompt: str
 
-    @field_validator("judge_prompt")
+    @field_validator("judge_prompt", "consistency_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():

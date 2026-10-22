@@ -90,6 +90,21 @@ verifier:                                  # claim checks on the draft; on/off: 
   max_research: 6                          # claims re-searched per answer
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the
                                            # reasoning block); annotated: [S#], labels, summary, source list (debugging)
+  consistency_check: true                  # after the claim checks: one review call over the whole answer and the task
+  consistency_prompt: |
+    You review an answer to the user's task for internal consistency only. Look for:
+    1. conclusions, verdicts, summaries or table cells that contradict the answer's own calculations or evidence;
+    2. verdict labels that conflict with their own reasons (for example "true" next to a reason that shows it is
+       false, or "unconfirmed" where the answer's own data settles the question);
+    3. results that are physically impossible or implausible but presented as fine (for example a yield above 100 %);
+    4. explicit instructions in the task that the answer does not follow;
+    5. statements in one part that contradict another part.
+    Do not re-check facts against outside knowledge, do not add new content, and do not restyle the text.
+    If there is no such problem, reply with exactly: OK
+    Otherwise reply with one block per fix and nothing else:
+    OLD: <a short exact quote from the answer, on one line, that appears only once>
+    NEW: <its corrected replacement>
+    WHY: <one short reason>
   request:                                 # fields merged into every judge call (per-model quirks, D-013)
     temperature: 0.0
     max_tokens: 1024
