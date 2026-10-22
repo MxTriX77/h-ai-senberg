@@ -329,3 +329,11 @@ def test_consistency_settings(tmp_path):
     data["verifier"]["consistency_prompt"] = " "
     with pytest.raises(ConfigError, match="verifier.consistency_prompt"):
         load_config(write(tmp_path, data))
+
+
+def test_relevance_threshold(tmp_path):
+    assert load_config(write(tmp_path)).retrieval.min_term_share == 0.5
+    data = base()
+    data["retrieval"]["min_term_share"] = 1.5
+    with pytest.raises(ConfigError, match="retrieval.min_term_share"):
+        load_config(write(tmp_path, data))

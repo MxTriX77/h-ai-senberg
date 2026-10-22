@@ -432,3 +432,10 @@ def test_review_skipped_when_too_long(cfg, fake, knowledge):
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         r = chat(c)
     assert "Consistency review skipped" in reasoning_text(r) and answer(r) == DRAFT
+
+
+def test_annotated_no_claim_loses_its_citation(client, fake):
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. Let me know if you need more [S1].")],
+                    [content("C1: supports S1\nC2: no_claim")]]
+    text = answer(chat(client))
+    assert text.startswith("Ethanol is a liquid [S1]. Let me know if you need more.")

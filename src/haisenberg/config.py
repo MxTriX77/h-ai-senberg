@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from dotenv import load_dotenv
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
@@ -76,6 +77,7 @@ class RetrievalConfig(_Section):
     layer2_literature_index: Path
     top_k_proofs: PositiveInt
     passage_chars: PositiveInt
+    min_term_share: Annotated[float, Field(ge=0, le=1)]  # search hits need this share of the query's words; 0 = off
 
 
 class ToolText(_Section):
