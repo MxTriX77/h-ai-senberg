@@ -291,3 +291,11 @@ def test_verifier_settings(tmp_path):
     data["verifier"]["judge_prompt"] = " "
     with pytest.raises(ConfigError, match=r"verifier\.judge_prompt"):
         load_config(write(tmp_path, data))
+
+
+def test_answer_style(tmp_path):
+    assert load_config(write(tmp_path)).verifier.answer_style == "plain"
+    data = base()
+    data["verifier"]["answer_style"] = "fancy"
+    with pytest.raises(ConfigError, match=r"verifier\.answer_style"):
+        load_config(write(tmp_path, data))
