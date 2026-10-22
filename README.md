@@ -42,6 +42,19 @@ API_KEY=your-key
 MODEL_ID=model-name
 ```
 
+## Run from WSL (Ubuntu)
+
+Runs natively in WSL, with the GPU through the Windows NVIDIA driver. No sudo needed. From the repository folder (for example `/mnt/c/.dev/h-ai-senberg`):
+
+```bash
+bash scripts/wsl/setup.sh
+bash scripts/wsl/run.sh
+```
+
+Run `setup.sh` once, and again after adding a model. Then `run.sh` starts llama-server and the app; open http://localhost:8000 in a Windows browser. Ctrl+C stops both.
+
+`setup.sh` installs everything under your WSL home: uv (`~/.local/bin`), the official llama.cpp Ubuntu CUDA build (`~/.local/share/llama.cpp/`), the Python environment (`~/.venvs/h-ai-senberg`, separate from the Windows `.venv`), and a copy of `models/*.gguf` on the WSL disk (`~/.local/share/h-ai-senberg/models/`), which loads in seconds instead of ~90 s over `/mnt/c`. The Windows setup is left as it is.
+
 ## WebUI
 
 `ui/` is the [llama.cpp](https://github.com/ggml-org/llama.cpp) WebUI from tag `b10173` (MIT, see `ui/LICENSE`), stripped down: no attachments, model picker, regenerate/delete, system-prompt or thinking controls. The app serves the built UI at http://127.0.0.1:8000; the model's thinking shows in the collapsible Reasoning block above each answer.
