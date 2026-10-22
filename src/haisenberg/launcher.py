@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -71,7 +74,7 @@ def ensure_llama_server(
         command = build_command(cfg)
 
     log.info("starting llama-server: %s", " ".join(command))
-    proc = subprocess.Popen(command, env=build_env(cfg))  # console inherited: load progress shows here
+    proc = spawn_tied(command, build_env(cfg))  # console inherited: load progress shows here
     deadline = time.monotonic() + ls.startup_timeout_s
     while True:
         code = proc.poll()
@@ -96,6 +99,75 @@ def stop(proc: subprocess.Popen | None) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def spawn_tied(command: list[str], env: dict[str, str] | None) -> subprocess.Popen:
+    """Start a process that the OS stops when this process exits, even if it is killed
+    and `stop()` never runs (for example a hard kill or a closed terminal)."""
+    if sys.platform.startswith("linux"):
+        # Own session: Ctrl+C reaches only the app, which then stops this process once.
+        return subprocess.Popen(command, env=env, preexec_fn=_die_with_parent, start_new_session=True)
+    proc = subprocess.Popen(command, env=env)
+    if os.name == "nt":
+        _kill_on_exit(proc)
+    return proc
+
+
+def _die_with_parent() -> None:
+    # Runs in the child before exec: SIGTERM when the parent dies (PR_SET_PDEATHSIG = 1).
+    ctypes.CDLL(None).prctl(1, signal.SIGTERM)
+
+
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [
+        ("basic", _BasicLimits),
+        ("io", ctypes.c_uint64 * 6),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+_jobs: list[int] = []  # job handles stay open for this process's lifetime
+
+
+def _kill_on_exit(proc: subprocess.Popen) -> None:
+    """Windows: put the child in a job that is killed when its last handle (ours) closes."""
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    k32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+
+    info = _ExtendedLimits()
+    info.basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    job = k32.CreateJobObjectW(None, None)
+    ok = (
+        job
+        and k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))  # extended limits
+        and k32.AssignProcessToJobObject(job, int(proc._handle))
+    )
+    if not ok:
+        log.warning("could not tie llama-server to this process (WinError %s)", ctypes.get_last_error())
+        return
+    _jobs.append(job)
 
 
 def _healthy(http: httpx.Client, url: str) -> bool:

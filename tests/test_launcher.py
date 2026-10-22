@@ -1,4 +1,7 @@
+import os
+import subprocess
 import sys
+import time
 
 import httpx
 import pytest
@@ -84,3 +87,42 @@ def test_timeout_stops_process(cfg, monkeypatch):
     with pytest.raises(LauncherError, match="not ready"):
         ensure_llama_server(cfg, http=health(503), command=SLEEPER, poll_s=0.05)
     assert spawned[0].poll() is not None
+
+
+CHILD = """
+import sys, time
+from haisenberg.launcher import spawn_tied
+p = spawn_tied([sys.executable, "-c", "import time; time.sleep(60)"], None)
+print(p.pid, flush=True)
+time.sleep(60)
+"""
+
+
+def _gone_within(pid: int, seconds: float) -> bool:
+    if os.name == "nt":
+        import ctypes
+
+        k32 = ctypes.WinDLL("kernel32")
+        handle = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return True
+        try:
+            return k32.WaitForSingleObject(handle, int(seconds * 1000)) == 0
+        finally:
+            k32.CloseHandle(handle)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_llama_server_dies_when_the_app_is_killed():
+    app = subprocess.Popen([sys.executable, "-c", CHILD], stdout=subprocess.PIPE, text=True)
+    child_pid = int(app.stdout.readline())
+    app.kill()  # hard kill: no cleanup code runs in the app
+    app.wait()
+    assert _gone_within(child_pid, 10)
