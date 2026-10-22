@@ -75,8 +75,9 @@ def test_missing_parameter_text_fails(cfg, built_store):
         Knowledge(L1Store(built_store), cfg)
 
 
-def run(k, name, args, sources=None):
-    return k.run(name, args if isinstance(args, str) else json.dumps(args), sources or Sources())
+def run(k, name, args, sources=None, n=None):
+    text, lines, _ = k.run(name, args if isinstance(args, str) else json.dumps(args), sources or Sources(), n)
+    return text, lines
 
 
 def test_search_restricted_to_a_domain(knowledge):
@@ -140,3 +141,10 @@ def test_source_list_only_cited_and_issued(knowledge):
     assert f"[{planck.id}] Planck constant" in listing and "S99" not in listing
     assert "https://pubchem.ncbi.nlm.nih.gov/compound/2519" in listing
     assert sources.source_list("No citations here.") == ""
+
+
+def test_record_count_and_ids(knowledge):
+    sources = Sources()
+    text, lines, ids = knowledge.run("lookup_constant", json.dumps({"query": "electron mass"}), sources, 2)
+    assert ids == ["S1", "S2"] and len(lines) == 2
+    assert sources.get("S2") is sources.items[1] and sources.get("S3") is None and sources.get("x") is None

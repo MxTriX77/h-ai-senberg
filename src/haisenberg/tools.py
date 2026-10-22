@@ -49,6 +49,11 @@ class Sources:
         self.items.append(src)
         return src, True
 
+    def get(self, sid: str) -> Source | None:
+        """The source with id 'S<n>', or None if it was not issued."""
+        n = int(sid[1:]) if sid[:1] == "S" and sid[1:].isdigit() else 0
+        return self.items[n - 1] if 0 < n <= len(self.items) else None
+
     def cited(self, text: str) -> list[Source]:
         """Issued sources cited as [S#] in text, in id order."""
         found = {int(n) for n in _CITE.findall(text)}
@@ -88,15 +93,16 @@ class Knowledge:
             store = None
         return cls(store, cfg)
 
-    def run(self, name: str, arguments: str, sources: Sources) -> tuple[str, list[str]]:
-        """Run one tool call: (result text for the model, one line per result for the reasoning)."""
+    def run(self, name: str, arguments: str, sources: Sources, k: int | None = None) -> tuple[str, list[str], list[str]]:
+        """Run one tool call returning at most k records (default retrieval.top_k_proofs):
+        (result text for the model, one line per result for the reasoning, the records' source ids)."""
         try:
-            kind, query, records = self._call(name, arguments)
+            kind, query, records = self._call(name, arguments, k or self.top_k)
         except _BadCall as e:
-            return f"Error: {e}", [f"error: {e}"]
+            return f"Error: {e}", [f"error: {e}"], []
         if not records:
-            return f"Nothing found for {query!r}.", ["nothing found"]
-        blocks, lines = [], []
+            return f"Nothing found for {query!r}.", ["nothing found"], []
+        blocks, lines, ids = [], [], []
         for record in records:
             src, new = sources.add(kind, record, record.passage(query, self.passage_chars))
             if new:
@@ -105,9 +111,10 @@ class Knowledge:
             else:
                 blocks.append(f"[{src.id}] {record.label()} (shown above)")
                 lines.append(f"[{src.id}] {record.label()} (shown above)")
-        return "\n\n".join(blocks), lines
+            ids.append(src.id)
+        return "\n\n".join(blocks), lines, ids
 
-    def _call(self, name: str, arguments: str) -> tuple[str, str, list[Record]]:
+    def _call(self, name: str, arguments: str, k: int) -> tuple[str, str, list[Record]]:
         kind = self._kind_of.get(name)
         if kind is None:
             raise _BadCall(f"unknown tool {name!r}; available: {', '.join(self._kind_of) or 'none'}")
@@ -122,11 +129,11 @@ class Knowledge:
             raise _BadCall("'query' must be a non-empty string")
         try:
             if kind != TEXT:
-                return kind, query, self.store.lookup(kind, query, self.top_k)
+                return kind, query, self.store.lookup(kind, query, k)
             domain = args.get("domain") or None
             if domain is not None and domain not in self.domains:
                 raise _BadCall(f"unknown domain {domain!r}; use one of {', '.join(self.domains)}")
-            return kind, query, self.store.search_encyclopedia(query, self.top_k, domain)
+            return kind, query, self.store.search_encyclopedia(query, k, domain)
         except (L1Error, sqlite3.Error) as e:
             raise _BadCall(f"lookup failed: {e}") from e
 

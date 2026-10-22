@@ -17,6 +17,7 @@ CAFFEINE = '{"query": "caffeine"}'
 
 @pytest.fixture
 def knowledge(cfg, built_store):
+    cfg.reasoning_policy.enable_multi_hop_verification = False  # the loop alone; tests/test_verifier.py adds it
     return Knowledge(L1Store(built_store), cfg)
 
 
