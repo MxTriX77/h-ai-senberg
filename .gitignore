@@ -9,7 +9,7 @@ __pycache__/
 .env
 
 # local data and indexes (large, rebuilt from scripts)
-data/
+/data/
 
 # model weights
-models/
+/models/

@@ -1,0 +1,155 @@
+"""Load `config/config.yaml` (+ `.env`), interpolate ${VAR} / ${VAR:-default}, validate, resolve paths."""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+
+CONFIG_ENV = "HAISENBERG_CONFIG"
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+class ConfigError(Exception):
+    """Any problem with the configuration; the message names the file, key or variable."""
+
+
+class _Section(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AppConfig(_Section):
+    host: str
+    port: int
+    debug: bool
+
+
+class ModelBackendConfig(_Section):
+    provider: str
+    api_base: str
+    api_key: str
+    model_id: str
+    temperature: float
+    max_tokens: int
+    timeout_s: float
+    extra_body: dict[str, Any] = {}
+
+
+class ReasoningPolicyConfig(_Section):
+    system_prompt: str
+    enable_multi_hop_verification: bool
+    max_search_depth: int
+
+    @field_validator("system_prompt")
+    @classmethod
+    def _not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+
+class RetrievalConfig(_Section):
+    layer1_encyclopedia_db: Path
+    layer2_literature_index: Path
+    top_k_proofs: int
+
+
+class LlamaServerConfig(_Section):
+    enabled: bool
+    executable: str
+    model_path: Path
+    host: str
+    port: int
+    ctx_size: int
+    startup_timeout_s: float
+    env: dict[str, str] = {}
+    flags: dict[str, Any] = {}
+
+
+class UiConfig(_Section):
+    dist_dir: Path
+    settings: dict[str, Any] = {}
+
+
+class Config(_Section):
+    app: AppConfig
+    model_backend: ModelBackendConfig
+    reasoning_policy: ReasoningPolicyConfig
+    retrieval: RetrievalConfig
+    llama_server: LlamaServerConfig
+    ui: UiConfig
+
+    _root: Path = PrivateAttr()
+
+    @property
+    def root(self) -> Path:
+        """Project root: the parent of the folder that holds the config file."""
+        return self._root
+
+
+# (section, field) pairs resolved against the project root when relative.
+_PATH_FIELDS = [
+    ("retrieval", "layer1_encyclopedia_db"),
+    ("retrieval", "layer2_literature_index"),
+    ("llama_server", "model_path"),
+    ("ui", "dist_dir"),
+]
+
+
+def load_config(path: Path | str | None = None) -> Config:
+    """Load, interpolate and validate the config. Raises ConfigError."""
+    if path is None:
+        path = os.environ.get(CONFIG_ENV) or Path.cwd() / "config" / "config.yaml"
+    path = Path(path).resolve()
+    if not path.is_file():
+        raise ConfigError(f"config file not found: {path}")
+    root = path.parent.parent
+
+    load_dotenv(root / ".env", override=False)
+
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path}: invalid YAML: {e}") from e
+
+    data = _interpolate(raw, "")
+    try:
+        cfg = Config.model_validate(data)
+    except ValidationError as e:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        raise ConfigError(f"{path}: {problems}") from e
+
+    for section, name in _PATH_FIELDS:
+        sec = getattr(cfg, section)
+        p = getattr(sec, name)
+        if not p.is_absolute():
+            setattr(sec, name, root / p)
+    cfg._root = root
+    return cfg
+
+
+def _interpolate(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return {k: _interpolate(v, f"{key}.{k}" if key else str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate(v, f"{key}[{i}]") for i, v in enumerate(value)]
+    if isinstance(value, str):
+        return _VAR.sub(lambda m: _substitute(m, key), value)
+    return value
+
+
+def _substitute(m: re.Match[str], key: str) -> str:
+    name, default = m.group(1), m.group(2)
+    val = os.environ.get(name)
+    if default is not None:
+        return val if val else default
+    if val is None:
+        raise ConfigError(f"environment variable {name} is not set (used by {key})")
+    return val
