@@ -49,6 +49,8 @@ reasoning_policy:
     Every result has a source id such as [S1]. Put the id of the result you used right after each fact
     you take from it, for example: "Ethanol boils at 78.2 °C [S1]." Cite only ids you were given.
     If the results do not contain what you need, say so, and say which parts come from your own knowledge.
+    Do every multiplication, division, percentage, power, root and logarithm with the calculate tool
+    instead of in your head; one round may hold several calculations.
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
 
@@ -80,6 +82,13 @@ tools:                                     # texts of the agent tools; which too
       each record with a source id.
     parameters:
       query: "Constant name, e.g. 'Planck constant', 'electron mass' or 'Avogadro constant'."
+  calculate:                               # built in: offered whenever the knowledge tools are
+    description: >-
+      Evaluate an arithmetic expression exactly: numbers (6.022e23 or 6.022 * 10^23), + - * / ^,
+      parentheses, sqrt, exp, ln, log (base 10), log2, sin, cos, tan, asin, acos, atan, abs, min, max,
+      pi and e. Plain numbers only, no units or variable names. Returns the value.
+    parameters:
+      expression: "The expression, e.g. '2.10 / (2.00 / 138.12 * 180.16) * 100' or 'sqrt(2 * 9.81 * 5)'."
 
 verifier:                                  # claim checks on the draft; on/off: reasoning_policy.enable_multi_hop_verification
   judge_prompt: |
@@ -96,6 +105,7 @@ verifier:                                  # claim checks on the draft; on/off: 
     C4: no_claim
     After supports or contradicts, give the ids of the passages that decide it.
   rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
+  arithmetic_rel_tol: 0.005                # "a × b = c" in the draft: c is recomputed and fixed when off by more
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the

@@ -212,6 +212,7 @@ def summarize(results: list[dict[str, Any]], by_category: bool = True) -> dict[s
         "claims": claims,
         **{f"{o}_claims": c for o, c in counts.items()},
         "consistency_fixes": sum(len(r["verification"].get("consistency", [])) for r in results),
+        "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in results),
         "errors": sum(r["error"] is not None for r in results),
         "mean_seconds": round(sum(r["seconds"] for r in results) / n, 1) if n else 0.0,
     }
@@ -282,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{name}: {s['questions']} items, {s['correct_pct']}% correct{parts}, {s['supported_claims_pct']}% of"
               f" {s['claims']} claims supported ({s['unverified_claims']} unverified, {s['corrected_claims']} corrected,"
               f" {s['removed_claims']} removed), {s['consistency_fixes']} consistency fixes,"
+              f" {s['arithmetic_fixes']} arithmetic fixes,"
               f" {s['unmarked_contradictions']} unmarked contradictions, {s['errors']} errors,"
               f" {s['mean_seconds']} s per item")
     print(f"report: {out}")
