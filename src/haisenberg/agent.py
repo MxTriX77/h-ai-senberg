@@ -1,8 +1,8 @@
 """The orchestrator's tool loop (ReAct): look facts up with the generated tools, then answer with sources.
 
 `Agent.run(history)` yields `{"reasoning_content": ...}` deltas (thinking, tool steps, the draft, the
-verification) while it works, then the answer as one `{"content": ...}`, a `{"verification": report}`
-for in-process callers, then `{"finish_reason": ...}`. Only standard OpenAI chat fields are used (D-003),
+verification) while it works, a `{"draft": ...}` and, after the answer as one `{"content": ...}`, a
+`{"verification": report}` for in-process callers, then `{"finish_reason": ...}`. Only standard OpenAI chat fields are used (D-003),
 so any backend with tool support works.
 """
 
@@ -129,6 +129,7 @@ class Agent:
                     yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
                 messages.append({**message, "content": result})
         answer = draft = reply.content.strip()
+        yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
         if self.verifier and draft:
             check = self.verifier.verify(_question(history), draft, sources)

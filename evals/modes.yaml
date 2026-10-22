@@ -1,0 +1,15 @@
+# Pipeline modes for component runs: `uv run python -m evals.run --mode A|B|C|D` overrides these config fields
+# in-process before the agent is built. Prompts and sampling stay as configured (mode A also drops the tool
+# prompt, since it offers no tools). Without --mode the config applies as it is (mode `config`).
+A:  # the model alone: no tools, no checks
+  reasoning_policy: {max_search_depth: 0, enable_multi_hop_verification: false}
+  verifier: {arithmetic_check: false, checkers: [], consistency_check: false}
+B:  # + tools (lookups and the calculator)
+  reasoning_policy: {max_search_depth: 3, enable_multi_hop_verification: false}
+  verifier: {arithmetic_check: false, checkers: [], consistency_check: false}
+C:  # + claim verification, arithmetic recheck and domain checkers
+  reasoning_policy: {max_search_depth: 3, enable_multi_hop_verification: true}
+  verifier: {arithmetic_check: true, checkers: [element_balance], consistency_check: false}
+D:  # + consistency review: the whole pipeline
+  reasoning_policy: {max_search_depth: 3, enable_multi_hop_verification: true}
+  verifier: {arithmetic_check: true, checkers: [element_balance], consistency_check: true}

@@ -162,9 +162,9 @@ With the 2026 sources the store holds about 37,500 articles, 355 constants and 9
 
 `evals/questions.yaml` holds about 100 chemistry and physics questions with known answers (a number with a tolerance, a formula, or accepted words), written for this project. The known answers come from CODATA 2022 (public domain), PubChem (no restrictions) and facts stated in the Wikipedia articles of the store (CC BY-SA 4.0; facts only, no text copied). A test checks every CODATA and PubChem answer against the store.
 
-`evals/reasoning.yaml` holds 31 multi-step problems, also written for this project: stoichiometry and yields (including an impossible yield), unit conversions, kinematics, energy, circuits, gas laws, pH, buffers, equilibrium, titration, decay, inconsistent given data, sorting claims into true, false or unconfirmed from the given data, finding the wrong statements in a short report, and following explicit constraints. Some are in Russian. Each problem asks for its results on labelled lines (`A1: …`, `A2: …`), and every part is scored in code on its line: a number within a tolerance (a decimal comma is fine), a verdict word at the start of the line, or the exact set of wrong statement ids. No LLM grades anything. A problem counts as solved when all its parts are right. Five problems are held out: they are for a final check only and never run unless you pass `--holdout`.
+`evals/reasoning.yaml` holds 31 multi-step problems, also written for this project: stoichiometry and yields (including an impossible yield), unit conversions, kinematics, energy, circuits, gas laws, pH, buffers, equilibrium, titration, decay, inconsistent given data, sorting claims into true, false or unconfirmed from the given data, finding the wrong statements in a short report, and following explicit constraints. Some are in Russian. Each problem asks for its results on labelled lines (`A1: …`, `A2: …`; a Cyrillic look-alike letter in the label, such as `А1:`, counts as the Latin one), and every part is scored in code on its line: a number within a tolerance, or the known value rounded to the answer's own precision when the answer has at least two significant figures (`0.024` for 0.0237, but not `0.025`, `0.0240` or `0.02`; `3` for 2.61 is wrong; a decimal comma is fine), a verdict word at the start of the line, or the exact set of wrong statement ids. No LLM grades anything. A problem counts as solved when all its parts are right. Five problems are held out: they are for a final check only and never run unless you pass `--holdout`.
 
-The runner sends questions and problems through the same tools, tool loop and verifier as the chat, using the configured backend (the model must be running):
+The runner sends items through the same tools, tool loop and verifier as the chat, in-process, using the configured backend (the model must be running):
 
 ```bash
 uv run python -m evals.run --limit 20      # 20 items spread over every source/domain group and the reasoning set
@@ -172,6 +172,95 @@ uv run python -m evals.run                 # all fact questions and reasoning pr
 uv run python -m evals.run --set reasoning # only the reasoning problems (or --set facts)
 uv run python -m evals.run --holdout       # only the held-out problems: final check
 uv run python -m evals.run --ids codata-01,r-stoich-02
+uv run python -m evals.run --authored data/evals/authored/b01 --split dev --sets S3,S4 --mode C
 ```
 
-It prints one line per item (for problems, `+`/`-` per part) and a summary for all items and per set: % correct answers (solved problems), % of problem parts right, % of claims supported, unmarked contradictions (wrong answers whose every claim the verifier rated supported, target 0), unverified/corrected/removed claims and seconds per item. Outcomes come from the verification report, so the score is the same in both answer styles. The full report goes to `data/evals/run-<timestamp>.json` (or `--out FILE`).
+The fact questions are set S1 and the reasoning problems set S2 in the logs.
+
+### Authored items
+
+Further items are written as YAML files in batch folders (git-ignored, under `data/`). `--authored DIR` (repeatable) loads every `*.yaml` in the folder; then only the authored items are run unless `--set` is given too. `--split dev|holdout|monitor` keeps the authored items of one split, `--sets S3,S4,...` keeps the items of those sets (S1 and S2 included). One file holds a list of items:
+
+```yaml
+items:
+  - id: b01-s3-01          # unique across batches
+    set: S3                # S3, S4, S5, S6 (conversation) or U (user case)
+    split: dev             # dev | holdout | monitor
+    domain: general        # free text, also used to spread --limit
+    lang: en               # en | ru (decimal commas in Russian)
+    format: audit          # free text
+    defect_tags: []        # tags of the defects planted in the prompt
+    turns: []              # earlier messages [{role: user|assistant, content: ...}], sent before the prompt
+    prompt: |              # the last user message
+      ... Finish with exactly these lines: A1: <verdict for claim A> ...
+    key:                   # never sent to the model; shown to the blind reviewer next to the answer
+      parts:               # optional: scored in code on labelled answer lines, as in evals/reasoning.yaml
+        - {label: A1, verdict: [incorrect]}
+        - {label: A2, number: 4.2, rel_tol: 0.01}
+      defects: [{id: D1, tag: F1, what: "...", found_if: "..."}]
+      verdicts: {A: {verdict: incorrect, why: "..."}}
+      required: []         # items the answer must address
+      must_not: []         # statements the answer must not make
+      notes: ""
+      conversation: {max_chars: 600, max_latency_s: 15}   # S6: checked in code
+```
+
+Items without `parts` get no code score; the blind review grades them.
+
+### Modes
+
+`--mode A|B|C|D` switches pipeline components off in-process, before the agent is built (`evals/modes.yaml`); prompts and sampling stay the same. Without `--mode` the config applies as it is (mode `config`).
+
+| Mode | Tools (`max_search_depth`) | Claim verification | Arithmetic recheck, checkers | Consistency review |
+|---|---|---|---|---|
+| A | off (0): no tools, no tool prompt | off | off, none | off |
+| B | 3 | off | off, none | off |
+| C | 3 | on | on, `element_balance` | off |
+| D | 3 | on | on, `element_balance` | on |
+
+### Run folders
+
+Each run writes `${DATA_DIR:-data}/evals/<run-id>/` in the data folder (default id `<yyyymmdd-hhmm>-<mode>`, or `--run-id ID`):
+
+- `manifest.json`: run id, git commit and dirty flag (also for a Windows checkout or worktree read from WSL), date, mode, `MODEL_PROFILE`, model id and backend, sha256 of the config after the mode, the model file the backend serves (llama-server's `/props` when it answers, else `MODEL_PATH` or the configured path, else the WSL copy in `$MODELS_DIR`) and its sha256 (cached by path, size and mtime in `${DATA_DIR:-data}/evals/.sha-cache.json`), Layer 1 store path, size and mtime, eval files and their sha256, GPU (`nvidia-smi`; null when unavailable), context size, sampling settings and the command-line arguments.
+- `items/<id>.json`, written as soon as the item is done: set, mode, the messages sent, the draft, the final answer, the reasoning trace, the verification report, timings (first reasoning token, first answer token, total), model calls, character counts, error, code scores of the final answer and of the draft, and the protocol artefacts found in the final answer.
+- `summary.json`: the metrics for all items and per set.
+
+Run again with the same `--run-id` to resume: items with a log are skipped, and with `--retry-errors` the failed ones run again. A run is resumed only with the same mode, config and commit, and a reviewed run keeps its review metrics.
+
+Code metrics (per set): items, errors, empty answers, solved items, parts right, verdict parts right, missing answer lines, false corrections (a part right in the draft and wrong in the final answer) and true corrections, answers with protocol artefacts (`[S#]` ids, the draft marker, verification or consistency headings, outcome labels, raw tool-call markup; tool-call leaks are also counted on their own), the S6 checks (no artefacts, at most `max_chars`, at most `max_latency_s`), latency median and 90th percentile, model calls, and the claim outcomes and fixes of the verifier (supported claims, unmarked contradictions, consistency, arithmetic and checker fixes).
+
+### Report
+
+```bash
+uv run python -m evals.report 20261023-1400-A 20261023-1500-B             # one row per run and set
+uv run python -m evals.report 20261023-1500-B --base 20261023-1400-A      # plus paired deltas on the same items
+```
+
+It prints markdown tables: code metrics per set and mode, review metrics when the run was reviewed, and with `--base` the change on the items both runs have (solved, parts right, items better and worse, artefacts, latency, review score).
+
+### Blind review
+
+```bash
+uv run python -m evals.review pack --runs 20261023-1400-A 20261023-1500-B --out data/evals/review-01 [--seed N]
+uv run python -m evals.review merge data/evals/review-01
+```
+
+`pack` shuffles every answer of the runs (failed items are left out), gives each a blind id (R001, …) and writes `pack.md` (blind id, prompt, key, final answer: nothing about run, mode, model or trace) and `mapping.json` (blind id to run and item, and the seed; not for the reviewer). The reviewer writes `reviews.yaml` next to them, one block per answer:
+
+```yaml
+- blind_id: R001
+  score: 6                       # 0-10
+  defects_found: [D1]            # ids from the key
+  defects_missed: []
+  verdicts: {A: incorrect}       # the verdict the answer gave per key item
+  new_errors: [{tag: F4, what: "..."}]
+  omissions: []                  # required items not addressed
+  unsupported_additions: 0
+  unsupported_as_verified: 0
+  final_vs_analysis: 0           # conclusions that contradict the answer's own working
+  must_not_violated: []
+  reveals: "one line"
+```
+
+`merge` checks the file (every blind id reviewed once, score 0-10, counts whole numbers, defect and verdict ids from the key) and lists every problem it finds. It then writes `reviews.json` into each run folder and adds the review metrics to its `summary.json`: mean score, share of planted defects found, verdicts right, omissions, unsupported additions, unsupported statements presented as verified, final-vs-analysis contradictions, must-not violations and new errors by tag.

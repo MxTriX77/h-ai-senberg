@@ -15,6 +15,7 @@ from evals.run import (
     load_questions,
     part_correct,
     pick,
+    read_logs,
     run_eval,
     score_parts,
     select,
@@ -77,12 +78,19 @@ def test_stratified_subset():
     assert [q["id"] for q in pick(qs, ids=["achemistry3", "bphysics0"])] == ["achemistry3", "bphysics0"]
 
 
+def log(**over):
+    """A minimal item log, as run_one writes it."""
+    return {"id": "x", "set": "S1", "mode": "config", "answer": "a", "error": None, "verification": {},
+            "timings": {"total_s": 1.0}, "model_calls": 1, "correct": None, "scores": None, "artefacts": [],
+            "unmarked_contradiction": False, **over}
+
+
 @pytest.mark.anyio
 async def test_run_eval_with_fake_backend(cfg, fake, built_store, tmp_path):
     questions = [
-        {"id": "q1", "question": "Molar mass of caffeine?", "answer": {"number": 194.194, "rel_tol": 0.002}},
-        {"id": "q2", "question": "Boiling point of benzene?", "answer": {"number": 80.1, "abs_tol": 0.5}},
-        {"id": "q3", "question": "Boiling point of benzene?", "answer": {"number": 80.1, "abs_tol": 0.5}},
+        {"id": "q1", "set": "S1", "question": "Molar mass of caffeine?", "answer": {"number": 194.194, "rel_tol": 0.002}},
+        {"id": "q2", "set": "S1", "question": "Boiling point of benzene?", "answer": {"number": 80.1, "abs_tol": 0.5}},
+        {"id": "q3", "set": "S1", "question": "Boiling point of benzene?", "answer": {"number": 80.1, "abs_tol": 0.5}},
     ]
     fake.scripts = [
         # q1: looked up, cited, supported in code
@@ -94,22 +102,22 @@ async def test_run_eval_with_fake_backend(cfg, fake, built_store, tmp_path):
         [content("Benzene boils at 90 °C.")], [content("C1: not_said")],
     ]
     agent = Agent(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))
-    out = tmp_path / "report.json"
-    report = await run_eval(agent, questions, out, {"model": "fake"})
-    by_id = {r["id"]: r for r in report["results"]}
+    summary = await run_eval(agent, questions, tmp_path / "run")
+    by_id = {r["id"]: r for r in read_logs(tmp_path / "run")}
     assert by_id["q1"]["correct"] and not by_id["q1"]["unmarked_contradiction"]
     assert not by_id["q2"]["correct"] and by_id["q2"]["unmarked_contradiction"]
     assert not by_id["q3"]["correct"] and not by_id["q3"]["unmarked_contradiction"]
-    s = report["summary"]
-    assert (s["questions"], s["correct_pct"], s["unmarked_contradictions"]) == (3, 33.3, 1)
+    s = summary["all"]
+    assert (s["items"], s["correct_pct"], s["unmarked_contradictions"]) == (3, 33.3, 1)
     assert (s["claims"], s["supported_claims"], s["unverified_claims"], s["supported_claims_pct"]) == (3, 2, 1, 66.7)
-    assert json.loads(out.read_text(encoding="utf-8"))["model"] == "fake"
+    assert json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8")) == summary
+    assert set(summary["sets"]) == {"S1"}
 
 
 def test_summary_of_errors():
-    r = {"correct": False, "unmarked_contradiction": False, "verification": {}, "seconds": 2.0, "error": "down"}
-    s = summarize([r])
-    assert s["errors"] == 1 and s["correct_pct"] == 0.0 and s["supported_claims_pct"] == 0.0
+    s = summarize([log(error="down", answer="")])
+    assert s["errors"] == 1 and s["empty_answers"] == 0 and s["supported_claims_pct"] is None
+    assert s["latency_median_s"] is None
 
 
 
@@ -148,6 +156,13 @@ def test_answer_lines_last_wins_and_markdown():
     assert answer_lines(text) == {"A1": "2.61 g", "A2": "80.5 %", "A3": "salicylic acid"}
 
 
+def test_cyrillic_look_alike_labels():
+    text = "\u04101: 2,61 г\n**\u0410\u0032**\uff1a верно\n\u04303: Масса\n\u04121: x"  # А1, А2 full-width colon, а3, В1
+    assert answer_lines(text) == {"A1": "2,61 г", "A2": "верно", "A3": "Масса", "B1": "x"}  # values untouched
+    problem = {"lang": "ru", "parts": [{"label": "A1", "number": 2.61, "rel_tol": 0.01}, {"label": "A2", "verdict": ["верно"]}]}
+    assert score_parts(text, problem) == [True, True]
+
+
 @pytest.mark.parametrize("part, line, lang, ok", [
     ({"number": 21.97, "rel_tol": 0.01}, "21,97 г", "ru", True),
     ({"number": 16.77, "rel_tol": 0.01}, "16,775 л", "ru", True),
@@ -156,6 +171,14 @@ def test_answer_lines_last_wins_and_markdown():
     ({"number": 3.34e22, "rel_tol": 0.005}, "3.34 × 10²² molecules", "en", True),
     ({"number": 2.61, "rel_tol": 0.01}, "about 2.5 g (2.61 g theoretical)", "en", False),
     ({"number": 180, "abs_tol": 0.01}, "180.16 g/mol", "en", False),
+    ({"number": 0.0237, "rel_tol": 0.01}, "0.024 M", "en", True),  # the key rounded to the answer's precision
+    ({"number": 0.0237, "rel_tol": 0.01}, "0.025 M", "en", False),
+    ({"number": 0.0237, "rel_tol": 0.01}, "0.0240 M", "en", False),  # four places claimed: 0.0237 is not 0.0240
+    ({"number": 0.0237, "rel_tol": 0.01}, "0.02 M", "en", False),  # one significant figure is not enough
+    ({"number": 2.61, "rel_tol": 0.01}, "3 g", "en", False),
+    ({"number": 2.61, "rel_tol": 0.001}, "2.6 g", "en", True),
+    ({"number": 2.6137e-3, "rel_tol": 0.001}, "2.61 × 10^-3", "en", True),
+    ({"number": 6.38, "abs_tol": 0.01}, "6,4", "ru", True),
     ({"verdict": ["false", "неверно"]}, "неверно, масса меньше на 1,6 %", "ru", True),
     ({"verdict": ["false"]}, "not false", "en", False),
     ({"verdict": ["false"]}, "❌ False: 1.6 % short", "en", True),
@@ -190,35 +213,34 @@ def test_reasoning_groups_in_a_subset():
 
 @pytest.mark.anyio
 async def test_reasoning_problem_end_to_end(cfg, fake, built_store, tmp_path):
-    problem = {"id": "r1", "category": "reasoning", "domain": "chemistry", "topic": "t", "lang": "en",
+    problem = {"id": "r1", "set": "S2", "domain": "chemistry", "topic": "t", "lang": "en",
                "question": "q", "parts": [{"label": "A1", "number": 2.61, "rel_tol": 0.01},
                                           {"label": "A2", "verdict": ["true"]}]}
-    fact = {"id": "q1", "category": "facts", "question": "Boiling point of benzene?",
+    fact = {"id": "q1", "set": "S1", "question": "Boiling point of benzene?",
             "answer": {"number": 80.1, "abs_tol": 0.5}}
     fake.scripts = [
         [content("The yield is 2.61 g.\nA1: 2.61 g\nA2: false")], [content("C1: not_said")],
         [content("Benzene boils at 80.1 °C.")], [content("C1: not_said")],
     ]
     agent = Agent(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))
-    report = await run_eval(agent, [problem, fact], tmp_path / "r.json", {"model": "fake"})
-    r1 = report["results"][0]
-    assert r1["category"] == "reasoning" and r1["parts"] == {"A1": True, "A2": False} and not r1["correct"]
-    s = report["summary"]
-    assert s["questions"] == 2 and s["correct_pct"] == 50.0 and s["parts_pct"] == 50.0
-    assert set(s["by_category"]) == {"facts", "reasoning"}
-    assert s["by_category"]["reasoning"]["parts_pct"] == 50.0 and s["by_category"]["facts"]["correct_pct"] == 100.0
+    summary = await run_eval(agent, [problem, fact], tmp_path / "run")
+    r1 = read_logs(tmp_path / "run")[1]
+    assert r1["set"] == "S2" and r1["scores"]["final"]["parts"] == {"A1": True, "A2": False} and not r1["correct"]
+    assert r1["scores"]["final"]["verdicts"] == {"A2": False} and r1["scores"]["final"]["missing"] == []
+    s = summary["all"]
+    assert s["items"] == 2 and s["correct_pct"] == 50.0 and s["parts_right"] == 2 and s["parts_total"] == 3
+    assert set(summary["sets"]) == {"S1", "S2"}
+    assert summary["sets"]["S2"]["parts_pct"] == 50.0 and summary["sets"]["S1"]["correct_pct"] == 100.0
+    assert summary["sets"]["S2"]["verdict_pct"] == 0.0
     assert score_parts("A1: 2.61\nA2: true", problem) == [True, True]
 
 
 def test_consistency_fixes_counted():
-    r = {"correct": True, "unmarked_contradiction": False, "seconds": 1.0, "error": None,
-         "verification": {"counts": {}, "consistency": [{"old": "a", "new": "b", "why": ""}]}}
-    s = summarize([r])
-    assert s["consistency_fixes"] == 1 and s["by_category"]["facts"]["consistency_fixes"] == 1
+    r = log(verification={"counts": {}, "consistency": [{"old": "a", "new": "b", "why": ""}]})
+    assert summarize([r])["consistency_fixes"] == 1
 
 
 def test_check_fixes_counted():
-    r = {"correct": True, "unmarked_contradiction": False, "seconds": 1.0, "error": None,
-         "verification": {"counts": {}, "checks": [{"checker": "x", "text": "a", "fixed": "b", "note": ""},
-                                                   {"checker": "x", "text": "c", "fixed": None, "note": ""}]}}
+    r = log(verification={"counts": {}, "checks": [{"checker": "x", "text": "a", "fixed": "b", "note": ""},
+                                                   {"checker": "x", "text": "c", "fixed": None, "note": ""}]})
     assert summarize([r])["check_fixes"] == 1
