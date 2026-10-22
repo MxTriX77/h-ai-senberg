@@ -1,0 +1,21 @@
+# Jinx-Qwen3-30B-A3B-Thinking-2507: uncensored fine-tune (Jinx-org) of Qwen3-30B-A3B-Thinking-2507.
+# MoE, 30B parameters, 3B active per token. Always thinks (Qwen3 Thinking-2507 template).
+# GGUF: mradermacher/Jinx-Qwen3-30B-A3B-Thinking-2507-i1-GGUF, i1-IQ3_M (13.5 GB).
+# License: Apache-2.0 plus Jinx's user agreement (lawful research use).
+# Fit on a 6 GB GPU: attention and KV cache on the GPU, most expert layers in RAM (~10 GB).
+# Use: MODEL_PROFILE=jinx-qwen3-30b-a3b
+
+model_backend:
+  model_id: "${MODEL_ID:-jinx-qwen3-30b-a3b}"
+  temperature: 0.6                          # Qwen3 thinking-mode recommendation
+  extra_body:
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Jinx-Qwen3-30B-A3B-Thinking-2507.i1-IQ3_M.gguf}"
+  flags:
+    n-cpu-moe: "${N_CPU_MOE:-38}"           # expert layers kept in RAM; lower it while VRAM stays under ~4.9 GB
+    ubatch-size: 1024
+    reasoning-budget: "${REASONING_BUDGET:-2048}"   # quality over speed; it usually thinks ~900 tokens
