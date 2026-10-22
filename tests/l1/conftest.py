@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import gzip
+import shutil
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
+from .l1_helpers import FIXTURES, write_manifest
 
 
 class FileServer:
@@ -59,3 +63,47 @@ def file_server():
     srv = FileServer()
     yield srv
     srv.close()
+
+
+# --- Layer 1 store fixtures -------------------------------------------------------------------
+
+
+def make_raw(root: Path) -> Path:
+    """A writable copy of tests/fixtures/l1/raw; PubChem *.txt extracts are gzipped like the real files."""
+    raw = root / "raw"
+    shutil.copytree(FIXTURES / "raw", raw)
+    for txt in (raw / "pubchem").glob("*.txt"):
+        txt.with_suffix(".gz").write_bytes(gzip.compress(txt.read_bytes()))
+        txt.unlink()
+    return raw
+
+
+@pytest.fixture
+def fixture_raw(tmp_path) -> Path:
+    return make_raw(tmp_path)
+
+
+@pytest.fixture
+def fixture_manifest(tmp_path) -> Path:
+    return write_manifest(tmp_path / "sources.yaml")
+
+
+@pytest.fixture
+def fresh_store(fixture_raw, fixture_manifest, tmp_path) -> Path:
+    """A store built from the fixtures for this test only (tests that modify it)."""
+    from ingest.build_l1 import build
+
+    db = tmp_path / "l1.db"
+    build(fixture_manifest, fixture_raw, db)
+    return db
+
+
+@pytest.fixture(scope="session")
+def built_store(tmp_path_factory) -> Path:
+    """One store built from the fixtures, shared read-only by the tests."""
+    from ingest.build_l1 import build
+
+    root = tmp_path_factory.mktemp("l1store")
+    db = root / "l1.db"
+    build(write_manifest(root / "sources.yaml"), make_raw(root), db)
+    return db

@@ -1,0 +1,265 @@
+241	benzene
+241	benzol
+241	71-43-2
+241	Cyclohexatriene
+241	benzole
+241	Pyrobenzole
+241	Benzine
+241	Coal naphtha
+241	Pyrobenzol
+241	Benzen
+241	Phene
+241	Phenyl hydride
+241	Mineral naphtha
+241	Benzolene
+241	Bicarburet of hydrogen
+241	Motor benzol
+241	Benzeen
+241	Benzolo
+241	Fenzen
+241	(6)Annulene
+241	[6]Annulene
+241	Nitration benzene
+297	methane
+297	Marsh gas
+297	Methyl hydride
+297	Fire Damp
+297	Biogas
+297	74-82-8
+297	R 50 (refrigerant)
+297	metano
+297	tetrahydridocarbon
+297	HSDB 167
+297	Methane in gaseus state
+297	UN1972
+297	BRN 1718732
+297	OP0UW79H66
+297	UN1971
+297	CH4
+297	DTXSID8025545
+297	UNII-OP0UW79H66
+297	CHEBI:16183
+297	R 50
+297	Methane-12C
+297	RefChem:6654
+702	ethanol
+702	ethyl alcohol
+702	alcohol
+702	64-17-5
+702	grain alcohol
+702	Methylcarbinol
+702	Ethyl hydrate
+702	Ethyl hydroxide
+702	Tecsol
+702	Algrain
+702	Anhydrol
+702	EtOH
+702	Hydroxyethane
+702	Alkohol
+702	Jaysol S
+702	Potato alcohol
+702	Absolute ethanol
+702	1-Hydroxyethane
+702	Ethanol 200 proof
+702	Aethylalkohol
+702	Denatured ethanol
+702	Aethanol
+962	water
+962	7732-18-5
+962	Distilled water
+962	Dihydrogen oxide
+962	Purified water
+962	Sterile water
+962	Water vapor
+962	Water, deionized
+962	oxidane
+962	aqua
+962	Water, mineral
+962	Water, purified
+962	Dihydrogen Monoxide
+962	steam
+962	Deionized water
+962	DHMO
+962	Water, sterile
+962	Water, distilled
+962	Water for injection
+962	Sterile purified water
+962	Water for hemodialysis
+962	Water purified
+2244	aspirin
+2244	ACETYLSALICYLIC ACID
+2244	50-78-2
+2244	2-Acetoxybenzoic acid
+2244	2-(Acetyloxy)benzoic acid
+2244	Acylpyrin
+2244	O-Acetylsalicylic acid
+2244	Acenterine
+2244	Acetophen
+2244	o-Acetoxybenzoic acid
+2244	Ecotrin
+2244	Salicylic acid acetate
+2244	Aceticyl
+2244	Acetosalin
+2244	Polopiryna
+2244	Aspirdrops
+2244	Pharmacin
+2244	Premaspin
+2244	Salcetogen
+2244	Acetonyl
+2244	Benaspir
+2244	Empirin
+2519	caffeine
+2519	58-08-2
+2519	Guaranine
+2519	1,3,7-Trimethylxanthine
+2519	Methyltheobromine
+2519	Theine
+2519	Thein
+2519	Cafeina
+2519	Caffein
+2519	Cafipel
+2519	Koffein
+2519	Mateina
+2519	Alert-pep
+2519	Coffeine
+2519	Anhydrous caffeine
+2519	Refresh'n
+2519	Caffedrine
+2519	Vivarin
+2519	Stim
+2519	No-Doz
+2519	Cafamil
+2519	Cafecon
+5234	sodium chloride
+5234	7647-14-5
+5234	Table salt
+5234	Common salt
+5234	Sodium chloric
+5234	NaCl
+5234	Dendritis
+5234	Purex
+5234	Iodized salt
+5234	Top flake
+5234	Flexivial
+5234	Sodium chloride (NaCl)
+5234	Gingivyl
+5234	Hyposaline
+5234	Sodium monochloride
+5234	Slow Sodium
+5234	Sea salt
+5234	SS salt
+5234	Adsorbanac
+5234	Natriumchlorid
+5234	Hypersal
+5234	White crystal
+5793	D-Glucopyranose
+5793	glucose
+5793	Glucopyranose
+5793	Grape sugar
+5793	Blood sugar
+5793	Traubenzucker
+5793	D-Glc
+5793	(3R,4S,5S,6R)-6-(hydroxymethyl)oxane-2,3,4,5-tetrol
+5793	Glucosteril
+5793	Cartose
+5793	anhydrous glucose
+5793	Maxim Energy Gel
+5793	Glucosum, anhydrous
+5793	Staleydex 333
+5793	Corn sugar
+5793	d-glucopyranoside
+5793	GLUCOSE, ALPHA-D-
+5793	Cerelose
+5793	Dextropur
+5793	Dextrosol
+5793	Glucolin
+5793	Goldsugar
+23931	MERCURY
+23931	7439-97-6
+23931	Quicksilver
+23931	Hydrargyrum
+23931	Liquid silver
+23931	Metallic mercury
+23931	Quecksilber
+23931	Mercurio
+23931	Mercure
+23931	Colloidal mercury
+23931	Mercurius vivus
+23931	Kwik
+23931	Mercury metal
+23931	Mercury, elemental
+23931	Hg
+23931	NCI-C60399
+23931	MERCURY ELEMENT
+23931	FXS1BY2PGL
+23931	DTXSID1024172
+23931	CHEBI:16170
+23931	CHEBI:25195
+23931	Dietary Mercury
+23940	PLUTONIUM
+23940	7440-07-5
+23940	plutonio
+23940	DTXSID4064682
+23940	94Pu
+23940	53023GN24M
+23940	PU
+23940	RefChem:389222
+23940	DTXCID2047646
+23940	231-117-7
+23940	plutonium atom
+23940	Plutonium, ion(4+)
+23940	Plutonium, ion(Pu3 )
+23940	Plutonium, ion(Pu5 )
+23940	Plutonium, Ion(Pu6 )
+23940	Plutonium Ion
+23940	Atomic Plutonium
+23940	Element-Pu
+23940	Element:Pu
+23940	Plutonium element
+23940	Element Plutonium
+23940	Element:Plutonium
+24602	DEUTERIUM OXIDE
+24602	7789-20-0
+24602	Heavy water
+24602	Deuterated water
+24602	Water-d2
+24602	Dideuterium oxide
+24602	Heavy water (D2O)
+24602	Water-d sub(2)
+24602	J65BV539M3
+24602	Oxide, Deuterium
+24602	DTXSID4051243
+24602	CHEBI:41981
+24602	RefChem:5735
+24602	DTXCID3029865
+24602	232-148-9
+24602	Heavy water-d2
+24602	Deuterium oxide [USAN]
+24602	Water(sup 2)-H2
+24602	Water, heavy (D2-O)
+24602	EINECS 232-148-9
+24602	MFCD00044636
+24602	UNII-J65BV539M3
+107526	(2R,3S,4R,5R)-2,3,4,5,6-pentahydroxyhexanal
+107526	glucose
+107526	RefChem:934733
+107526	GlyTouCan:G59743JO
+107526	G59743JO
+107526	D-(+)-Glucose
+107526	DL-Glucose
+107526	aldehydo-D-glucose
+107526	58367-01-4
+107526	Glucose [JAN]
+107526	DTXSID4048729
+107526	815-92-9
+107526	Glucose, liquid
+107526	Glucopur
+107526	(14C)-Glucose
+107526	(14C)D-Glucose
+107526	(C13)D-Glucose
+107526	(U-14C)Glucose
+107526	Glucose (C-13)
+107526	Glucose (C-14)
+107526	D-(U-14C)Glucose
+107526	Glucose, liquid [NF]
+107526	8027-56-3

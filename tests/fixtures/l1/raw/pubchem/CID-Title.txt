@@ -1,0 +1,12 @@
+241	Benzene
+297	Methane
+702	Ethanol
+962	Water
+2244	Aspirin
+2519	Caffeine
+5234	Sodium Chloride
+5793	D-Glucose
+23931	Mercury
+23940	Plutonium
+24602	Deuterium Oxide
+107526	(2R,3S,4R,5R)-2,3,4,5,6-pentahydroxyhexanal
