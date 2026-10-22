@@ -43,6 +43,7 @@ class LLMClient:
     def __init__(self, cfg: ModelBackendConfig, http: httpx.AsyncClient | None = None):
         self.cfg = cfg
         self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(cfg.timeout_s, connect=10.0))
+        self.calls = 0  # model calls made so far (read by the eval runner)
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -56,6 +57,7 @@ class LLMClient:
         iteration early closes the upstream connection.
         """
         cfg = self.cfg
+        self.calls += 1
         body = {
             "model": cfg.model_id,
             "messages": messages,

@@ -227,3 +227,18 @@ async def test_stop_closes_upstream_and_makes_no_more_calls(cfg, fake, knowledge
     assert await anext(run) == {"reasoning_content": "need data"}
     await run.aclose()
     assert fake.streams[0].closed and len(fake.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_draft_for_in_process_callers_only(cfg, fake, knowledge):
+    fake.scripts = [[content("Caffeine [S1].")], [content("Caffeine [S1].")], [content("Caffeine [S1].")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "hi"}])]
+    assert {"draft": "Caffeine [S1]."} in items and next(i for i in items if "content" in i) == {"content": "Caffeine."}
+    assert items.index({"draft": "Caffeine [S1]."}) < next(n for n, i in enumerate(items) if "content" in i)
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        assert all("draft" not in d for d in deltas(chat(c)))
+        r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert set(r.json()["choices"][0]["message"]) == {"role", "content", "reasoning_content"}
+        fake.status = 400  # an upstream 4xx still reaches the non-streaming client before any item
+        r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 400

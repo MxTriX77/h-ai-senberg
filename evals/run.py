@@ -1,22 +1,31 @@
 """Run the eval sets through the real pipeline (tools, tool loop, verifier) and score them.
 
-    uv run python -m evals.run [--set facts|reasoning|all] [--holdout] [--limit N] [--ids ID,ID]
-                               [--questions FILE] [--problems FILE] [--out FILE]
+    uv run python -m evals.run [--set facts|reasoning|all] [--holdout] [--authored DIR ...] [--split SPLIT]
+                               [--sets S3,S4] [--mode A|B|C|D] [--run-id ID] [--retry-errors]
+                               [--limit N] [--ids ID,ID] [--questions FILE] [--problems FILE]
 
-Two sets: fact questions (evals/questions.yaml) and multi-step reasoning problems
-(evals/reasoning.yaml, scored on their labelled answer lines; held-out problems run only with
---holdout). The backend, store and settings come from the config and environment, exactly as for the
-chat (`API_BASE_URL`, `DATA_DIR`, `MODEL_PROFILE`, ...). The JSON report is rewritten after every item.
+Sets: S1 fact questions (evals/questions.yaml), S2 multi-step reasoning problems (evals/reasoning.yaml, scored on
+their labelled answer lines; held-out problems run only with --holdout) and authored items (S3-S6, U) from batch
+folders (--authored, README "Evals"). --mode switches pipeline components off in-process (evals/modes.yaml).
+The backend, store and settings come from the config and environment, exactly as for the chat (`API_BASE_URL`,
+`DATA_DIR`, `MODEL_PROFILE`, ...). A run is a folder data/evals/<run-id>/: manifest.json, one log per item in
+items/ (written when the item is done, so an interrupted run resumes with the same --run-id) and summary.json.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import math
+import os
 import re
+import statistics
+import subprocess
 import sys
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,8 +33,8 @@ from typing import Any
 import httpx
 import yaml
 
-from haisenberg.agent import Agent
-from haisenberg.config import ConfigError, load_config
+from haisenberg.agent import DRAFT_MARK, Agent
+from haisenberg.config import PROFILE_ENV, Config, ConfigError, load_config
 from haisenberg.l1.text import to_hill
 from haisenberg.llm import LLMClient, UpstreamError
 from haisenberg.tools import Knowledge
@@ -33,11 +42,30 @@ from haisenberg.verifier import read_formulas, read_numbers
 
 QUESTIONS = Path(__file__).resolve().parent / "questions.yaml"
 PROBLEMS = Path(__file__).resolve().parent / "reasoning.yaml"
+MODES = Path(__file__).resolve().parent / "modes.yaml"
+ROOT = Path(__file__).resolve().parents[1]
+RUNS = ROOT / "data" / "evals"
 KINDS = ("number", "formula", "text")
 PART_KINDS = ("number", "text", "verdict", "ids")
-CATEGORIES = ("facts", "reasoning")
 SETS = ("facts", "reasoning", "all")
+AUTHORED_SETS = ("S3", "S4", "S5", "S6", "U")
+SPLITS = ("dev", "holdout", "monitor")
+OUTCOMES = ("supported", "unverified", "corrected", "removed")
+NVIDIA_SMI = ["nvidia-smi", "--query-gpu=name,power.limit,power.draw,memory.total", "--format=csv,noheader"]
 _LINE = re.compile(r"^[\s>*_`#+-]*(A\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.I | re.M)
+# Protocol artefacts: text the pipeline writes for itself that must not reach the final answer. The patterns follow
+# the code that writes it: [S#] ids (verifier._CITES), the draft marker (agent.DRAFT_MARK), the trace headings of
+# Verifier.verify and Verifier._consistency, the summary line and outcome labels of verifier.render and the
+# claim lines of the trace; and raw tool-call markup of the chat template that leaked into the answer text.
+ARTEFACTS = {
+    "source_id": re.compile(r"\[S\d+(?:\s*[,;]\s*S?\d+)*\]"),
+    "draft_marker": re.compile(re.escape(DRAFT_MARK.strip())),
+    "heading": re.compile(r"Verification: (?:\d+ claims?|no checkable claims)|Consistency review(?: skipped| failed)?:"
+                          r"|Arithmetic: \d+ calculations? recomputed|Check [\w-]+: \d+ findings?"),
+    "outcome_label": re.compile(r"\*\((?:unverified|corrected from [^)]*)\)\*"
+                                r"|\bC\d+ (?:supported|unverified|corrected|removed|judge:)"),
+    "tool_call": re.compile(r"<tool_call>|<function=|<parameter="),
+}
 
 
 def load_questions(path: Path = QUESTIONS) -> tuple[dict[str, str], list[dict[str, Any]]]:
@@ -60,8 +88,23 @@ def load_questions(path: Path = QUESTIONS) -> tuple[dict[str, str], list[dict[st
             raise ValueError(f"{path}: question {qid}: a number answer needs abs_tol or rel_tol")
         if "text" in answer and not (isinstance(answer["text"], list) and answer["text"]):
             raise ValueError(f"{path}: question {qid}: text answer must be a non-empty list")
-        q["category"] = "facts"
+        q.update(set="S1", file=path)
     return sources, questions
+
+
+def check_parts(parts: list[dict[str, Any]], where: str) -> None:
+    """Raises ValueError naming the bad part: a unique label and exactly one well-formed kind each."""
+    labels: set[str] = set()
+    for part in parts:
+        label, kinds = part.get("label"), [k for k in PART_KINDS if k in part]
+        here = f"{where}: part {label}"
+        if not label or label in labels or len(kinds) != 1:
+            raise ValueError(f"{here}: needs a unique label and exactly one of {PART_KINDS}")
+        labels.add(label)
+        if kinds[0] == "number" and ("abs_tol" in part) == ("rel_tol" in part):
+            raise ValueError(f"{here}: a number needs abs_tol or rel_tol")
+        if kinds[0] != "number" and not (isinstance(part[kinds[0]], list) and part[kinds[0]]):
+            raise ValueError(f"{here}: {kinds[0]} must be a non-empty list")
 
 
 def load_problems(path: Path = PROBLEMS) -> list[dict[str, Any]]:
@@ -76,19 +119,60 @@ def load_problems(path: Path = PROBLEMS) -> list[dict[str, Any]]:
         if p.get("domain") not in ("chemistry", "physics") or not p.get("question") or not p.get("topic") \
                 or p.get("lang") not in ("en", "ru") or not p.get("parts"):
             raise ValueError(f"{path}: problem {pid}: needs a domain, a topic, lang en|ru, the question and parts")
-        labels: set[str] = set()
-        for part in p["parts"]:
-            label, kinds = part.get("label"), [k for k in PART_KINDS if k in part]
-            where = f"{path}: problem {pid}: part {label}"
-            if not label or label in labels or len(kinds) != 1:
-                raise ValueError(f"{where}: needs a unique label and exactly one of {PART_KINDS}")
-            labels.add(label)
-            if kinds[0] == "number" and ("abs_tol" in part) == ("rel_tol" in part):
-                raise ValueError(f"{where}: a number needs abs_tol or rel_tol")
-            if kinds[0] != "number" and not (isinstance(part[kinds[0]], list) and part[kinds[0]]):
-                raise ValueError(f"{where}: {kinds[0]} must be a non-empty list")
-        p["category"] = "reasoning"
+        check_parts(p["parts"], f"{path}: problem {pid}")
+        p.update(set="S2", file=path)
     return problems
+
+
+def load_items(path: Path) -> list[dict[str, Any]]:
+    """The authored items of one file (README "Evals"); raises ValueError naming the bad item."""
+    items = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("items") or []
+    seen: set[str] = set()
+    for it in items:
+        iid = it.get("id")
+        if not iid or iid in seen:
+            raise ValueError(f"{path}: missing or duplicate id {iid!r}")
+        seen.add(iid)
+        where = f"{path}: item {iid}"
+        if it.get("set") not in AUTHORED_SETS or it.get("split") not in SPLITS or not it.get("prompt") \
+                or it.get("lang", "en") not in ("en", "ru"):
+            raise ValueError(f"{where}: needs set {'|'.join(AUTHORED_SETS)}, split {'|'.join(SPLITS)}, lang en|ru"
+                             " and the prompt")
+        turns = it.get("turns") or []
+        if not all(isinstance(t, dict) and t.get("role") in ("user", "assistant") and isinstance(t.get("content"), str)
+                   for t in turns):
+            raise ValueError(f"{where}: turns must be a list of {{role: user|assistant, content: text}}")
+        key = it.get("key") or {}
+        check_parts(key.get("parts") or [], where)
+        conv = key.get("conversation")
+        if conv is not None and not all(isinstance(conv.get(k), (int, float)) for k in ("max_chars", "max_latency_s")):
+            raise ValueError(f"{where}: key.conversation needs max_chars and max_latency_s")
+        it.update(turns=turns, question=it["prompt"], parts=key.get("parts") or [], lang=it.get("lang", "en"), file=path)
+    return items
+
+
+def load_authored(folder: Path) -> list[dict[str, Any]]:
+    """Every item of every *.yaml in a batch folder; raises ValueError on a bad item or a duplicate id."""
+    files = sorted(folder.glob("*.yaml"))
+    if not files:
+        raise ValueError(f"{folder}: no *.yaml item files")
+    items = [it for f in files for it in load_items(f)]
+    if dupes := sorted(i for i, n in Counter(it["id"] for it in items).items() if n > 1):
+        raise ValueError(f"{folder}: duplicate ids {dupes}")
+    return items
+
+
+def load_file(path: Path) -> list[dict[str, Any]]:
+    """The items of any eval file: fact questions, reasoning problems or authored items."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if "questions" in data:
+        return load_questions(path)[1]
+    return load_problems(path) if "problems" in data else load_items(path)
+
+
+def key_of(item: dict[str, Any]) -> dict[str, Any]:
+    """What the answer is graded against: an authored item's key, a question's answer or a problem's parts."""
+    return item.get("key") or {k: item[k] for k in ("answer", "parts") if k in item}
 
 
 def answer_text(answer: str) -> str:
@@ -125,7 +209,8 @@ def part_correct(part: dict[str, Any], line: str | None, lang: str = "en") -> bo
         numbers = read_numbers(re.sub(comma, r"\1.\2", line))
         value = float(part["number"])
         tol = part["abs_tol"] if "abs_tol" in part else part["rel_tol"] * abs(value)
-        return bool(numbers) and abs(numbers[0].value - value) <= tol + 1e-12 * abs(value)
+        # Within tolerance, or the key rounded to the answer's own precision (0.0237 written as 0.024).
+        return bool(numbers) and abs(numbers[0].value - value) <= max(tol, numbers[0].half) + 1e-12 * abs(value)
     if "text" in part:
         return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", line, re.I) for w in part["text"])
     if "verdict" in part:
@@ -139,7 +224,27 @@ def score_parts(answer: str, problem: dict[str, Any]) -> list[bool]:
     return [part_correct(p, lines.get(p["label"].upper()), problem["lang"]) for p in problem["parts"]]
 
 
-def select(facts: list[dict], problems: list[dict], which: str = "all", holdout: bool = False) -> list[dict]:
+def score(answer: str, item: dict[str, Any]) -> dict[str, Any] | None:
+    """Code score of an answer: part label -> right, the labels without an answer line, the verdict parts.
+    A fact question is one part, `answer`. None when the item has no code key (graded by the reviewer only)."""
+    if "answer" in item:
+        parts, missing, verdicts = {"answer": is_correct(answer, item["answer"])}, [], {}
+    elif item.get("parts"):
+        lines = answer_lines(answer)
+        parts = {p["label"]: ok for p, ok in zip(item["parts"], score_parts(answer, item))}
+        missing = [p["label"] for p in item["parts"] if p["label"].upper() not in lines]
+        verdicts = {p["label"]: parts[p["label"]] for p in item["parts"] if "verdict" in p}
+    else:
+        return None
+    return {"correct": all(parts.values()), "parts": parts, "missing": missing, "verdicts": verdicts}
+
+
+def artefacts(text: str) -> list[str]:
+    """The kinds of protocol artefacts in a text."""
+    return [kind for kind, pattern in ARTEFACTS.items() if pattern.search(text)]
+
+
+def select(facts: list[dict], problems: list[dict], which: str | None = "all", holdout: bool = False) -> list[dict]:
     """The items of a run: held-out problems only with `holdout` (and then nothing else)."""
     if holdout:
         return [p for p in problems if p.get("holdout")]
@@ -147,9 +252,14 @@ def select(facts: list[dict], problems: list[dict], which: str = "all", holdout:
            ([p for p in problems if not p.get("holdout")] if which in ("reasoning", "all") else [])
 
 
+def choose(items: list[dict], split: str | None = None, sets: list[str] | None = None) -> list[dict]:
+    """Authored items of `split` only (S1/S2 have no split), then only the items of `sets`."""
+    return [i for i in items if (not split or i.get("split", split) == split) and (not sets or i["set"] in sets)]
+
+
 def pick(questions: list[dict], ids: list[str] | None = None, limit: int | None = None) -> list[dict]:
-    """By id; or `limit` items shared out evenly between the groups (source/domain for facts,
-    reasoning/domain for problems) and spread evenly over each group (a small run still covers every kind)."""
+    """By id; or `limit` items shared out evenly between the groups (source/domain for facts, set/domain for
+    the others) and spread evenly over each group (a small run still covers every kind)."""
     if ids:
         wanted = set(ids)
         return [q for q in questions if q["id"] in wanted]
@@ -157,7 +267,7 @@ def pick(questions: list[dict], ids: list[str] | None = None, limit: int | None 
         return questions
     groups: dict[str, list[dict]] = {}
     for q in questions:
-        groups.setdefault(f"{q.get('source', 'reasoning')}/{q['domain']}", []).append(q)
+        groups.setdefault(f"{q.get('source') or q.get('set')}/{q.get('domain')}", []).append(q)
     quota = dict.fromkeys(groups, 0)
     while sum(quota.values()) < limit:
         for g in groups:
@@ -167,127 +277,320 @@ def pick(questions: list[dict], ids: list[str] | None = None, limit: int | None 
     return [q for q in questions if id(q) in chosen]
 
 
-async def run_one(agent: Agent, q: dict[str, Any]) -> dict[str, Any]:
-    t0, answer, report, error = time.monotonic(), "", {}, None
+# --- modes and manifest -----------------------------------------------------------------------------
+
+
+def load_modes(path: Path = MODES) -> dict[str, dict[str, dict[str, Any]]]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def apply_mode(cfg: Config, overrides: dict[str, dict[str, Any]]) -> None:
+    """Override config fields in place (section -> field -> value), validated like the config file."""
+    for section, fields in overrides.items():
+        sec = getattr(cfg, section)
+        setattr(cfg, section, type(sec).model_validate({**sec.model_dump(), **fields}))
+
+
+def file_sha256(path: Path, cache: Path | None = None) -> str | None:
+    """The file's sha256 (None when it is missing); with `cache`, reused while its size and mtime are unchanged."""
+    if not path.is_file():
+        return None
+    st, key = path.stat(), str(path.resolve())
+    known = json.loads(cache.read_text(encoding="utf-8")) if cache and cache.is_file() else {}
+    if (hit := known.get(key)) and (hit["size"], hit["mtime_ns"]) == (st.st_size, st.st_mtime_ns):
+        return hit["sha256"]
+    if cache:
+        print(f"sha256 of {path} (once: cached in {cache})", flush=True)
+    with path.open("rb") as f:
+        digest = hashlib.file_digest(f, "sha256").hexdigest()
+    if cache:
+        known[key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": digest}
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(known, indent=2), encoding="utf-8")
+    return digest
+
+
+def gpu_info() -> list[dict[str, str]] | None:
+    """nvidia-smi's name, power limit and draw, and memory per GPU; None when it is not available."""
     try:
-        async for item in agent.run([{"role": "user", "content": q["question"]}]):
+        out = subprocess.run(NVIDIA_SMI, capture_output=True, text=True, timeout=10, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = ("name", "power_limit", "power_draw", "memory_total")
+    return [dict(zip(fields, (v.strip() for v in line.split(",")))) for line in out.splitlines() if line.strip()]
+
+
+def _git(root: Path) -> dict[str, Any] | None:
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"sha": sha.stdout.strip(), "dirty": bool(status.stdout.strip())}
+
+
+def _rel(path: Path) -> str:
+    """A path relative to the repository when it is inside it (runs move between Windows and WSL)."""
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path) -> dict[str, Any]:
+    """What a run depends on: code, config after the mode, model file, store, eval files, GPU, sampling."""
+    store, backend = cfg.retrieval.layer1_encyclopedia_db, cfg.model_backend
+    st = store.stat() if store.is_file() else None
+    return {
+        "run_id": run_id,
+        "git": _git(cfg.root),
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "mode": mode,
+        "model_profile": os.environ.get(PROFILE_ENV),
+        "model_id": backend.model_id,
+        "backend": backend.api_base,
+        "config_sha256": hashlib.sha256(cfg.model_dump_json().encode()).hexdigest(),
+        "model_file": {"path": str(cfg.llama_server.model_path), "sha256": file_sha256(cfg.llama_server.model_path, cache)},
+        "store": {"path": str(store), "size": st and st.st_size,
+                  "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")},
+        "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
+        "seed": None,  # the runner does not shuffle; --limit picks the same items every time
+        "gpu": gpu_info(),
+        "context_tokens": cfg.context_tokens,
+        "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, **backend.extra_body},
+        "args": args,
+    }
+
+
+def open_run(folder: Path, man: dict[str, Any]) -> None:
+    """Write the manifest of a new run. A resumed run must have the same mode, config and commit (ValueError)."""
+    path = folder / "manifest.json"
+    if path.is_file():
+        old = json.loads(path.read_text(encoding="utf-8"))
+        same = (old["mode"], old["config_sha256"], (old["git"] or {}).get("sha")) == \
+               (man["mode"], man["config_sha256"], (man["git"] or {}).get("sha"))
+        if not same:
+            raise ValueError(f"run {folder.name} was made with another mode, config or commit; use a new --run-id")
+        return
+    folder.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def run_dir(run: str) -> Path:
+    """A run folder: the path itself when it is a folder, else data/evals/<run>."""
+    return Path(run) if Path(run).is_dir() else RUNS / run
+
+
+def read_logs(folder: Path) -> list[dict[str, Any]]:
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted((folder / "items").glob("*.json"))]
+
+
+def run_items(folder: Path) -> dict[str, dict[str, Any]]:
+    """Item id -> item (with its key) from the eval files a run's manifest lists."""
+    man = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    return {i["id"]: i for f in man["eval_files"] for i in load_file(ROOT / f["path"])}
+
+
+# --- running and scoring -------------------------------------------------------------------------------
+
+
+async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict[str, Any]:
+    messages = [*q.get("turns", []), {"role": "user", "content": q["question"]}]
+    t0, calls = time.monotonic(), agent.llm.calls
+    answer = draft = trace = ""
+    report: dict[str, Any] = {}
+    timings: dict[str, float] = {}
+    error = None
+    try:
+        async for item in agent.run(messages):
+            if text := item.get("reasoning_content"):
+                at = round(time.monotonic() - t0, 2)
+                timings.setdefault("first_reasoning_s", at)
+                if text == DRAFT_MARK:  # the model's first answer token follows
+                    timings.setdefault("first_answer_s", at)
+                trace += text
             answer += item.get("content", "")
+            draft = item.get("draft", draft)
             report = item.get("verification", report)
     except (UpstreamError, httpx.HTTPError) as e:
         error = str(e)
+    timings["total_s"] = round(time.monotonic() - t0, 2)
+    final, found = score(answer, q), artefacts(answer)
     claims = report.get("claims", [])
-    category = q.get("category", "facts")
-    extra: dict[str, Any] = {}
-    if category == "reasoning":
-        parts = score_parts(answer, q) if error is None else [False] * len(q["parts"])
-        correct, extra["parts"] = all(parts), {p["label"]: ok for p, ok in zip(q["parts"], parts)}
-    else:
-        correct = error is None and is_correct(answer, q["answer"])
     all_supported = bool(claims) and all(c["outcome"] == "supported" for c in claims)
-    return {
+    log = {
         "id": q["id"],
-        "category": category,
-        "question": q["question"],
-        "known": q["answer"] if category == "facts" else q["parts"],
+        "set": q["set"],
+        "mode": mode,
+        "messages": messages,
+        "draft": draft,
         "answer": answer,
-        "correct": correct,
-        **extra,
-        "unmarked_contradiction": error is None and not correct and all_supported,
+        "reasoning": trace,
         "verification": report,
-        "seconds": round(time.monotonic() - t0, 1),
+        "timings": timings,
+        "model_calls": agent.llm.calls - calls,
+        "chars": {"reasoning": len(trace), "draft": len(draft), "answer": len(answer)},
         "error": error,
+        "correct": final["correct"] if final else None,
+        "scores": {"final": final, "draft": score(draft, q)} if final else None,
+        "artefacts": found,
+        "unmarked_contradiction": error is None and bool(final) and not final["correct"] and all_supported,
     }
+    if conv := (q.get("key") or {}).get("conversation"):  # S6
+        log["conversation"] = {"artefact_free": not found, "max_chars": len(answer) <= conv["max_chars"],
+                               "max_latency": timings["total_s"] <= conv["max_latency_s"]}
+    return log
 
 
-def summarize(results: list[dict[str, Any]], by_category: bool = True) -> dict[str, Any]:
-    n = len(results)
-    counts = {o: sum(r["verification"].get("counts", {}).get(o, 0) for r in results)
-              for o in ("supported", "unverified", "corrected", "removed")}
+def _pct(n: int, total: int) -> float | None:
+    return round(100 * n / total, 1) if total else None
+
+
+def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
+    ok = [r for r in logs if r["error"] is None]
+    scored = [r["scores"] for r in logs if r["scores"]]
+    parts = [v for s in scored for v in s["final"]["parts"].values()]
+    verdicts = [v for s in scored for v in s["final"]["verdicts"].values()]
+    pairs = [(s["draft"]["parts"][k], v) for r in ok if (s := r["scores"]) for k, v in s["final"]["parts"].items()]
+    latency = sorted(r["timings"]["total_s"] for r in ok)
+    counts = {o: sum(r["verification"].get("counts", {}).get(o, 0) for r in logs) for o in OUTCOMES}
     claims = sum(counts.values())
+    solved = sum(s["final"]["correct"] for s in scored)
     summary: dict[str, Any] = {
-        "questions": n,
-        "correct_pct": round(100 * sum(r["correct"] for r in results) / n, 1) if n else 0.0,
-        "supported_claims_pct": round(100 * counts["supported"] / claims, 1) if claims else 0.0,
-        "unmarked_contradictions": sum(r["unmarked_contradiction"] for r in results),
+        "items": len(logs),
+        "errors": len(logs) - len(ok),
+        "empty_answers": sum(not r["answer"].strip() for r in ok),
+        "scored": len(scored),
+        "correct": solved,
+        "correct_pct": _pct(solved, len(scored)),
+        "parts_right": sum(parts),
+        "parts_total": len(parts),
+        "parts_pct": _pct(sum(parts), len(parts)),
+        "verdict_parts_right": sum(verdicts),
+        "verdict_parts_total": len(verdicts),
+        "verdict_pct": _pct(sum(verdicts), len(verdicts)),
+        "missing_lines": sum(len(r["scores"]["final"]["missing"]) for r in ok if r["scores"]),
+        "draft_parts_right": sum(d for d, _ in pairs),
+        "false_corrections": sum(d and not f for d, f in pairs),
+        "true_corrections": sum(f and not d for d, f in pairs),
+        "with_artefacts": sum(bool(r["artefacts"]) for r in ok),
+        "tool_call_leaks": sum("tool_call" in r["artefacts"] for r in ok),
+        "artefacts": dict(Counter(k for r in ok for k in r["artefacts"])),
+        "latency_median_s": statistics.median(latency) if latency else None,
+        "latency_p90_s": latency[math.ceil(0.9 * len(latency)) - 1] if latency else None,
+        "model_calls": sum(r["model_calls"] for r in logs),
         "claims": claims,
+        "supported_claims_pct": _pct(counts["supported"], claims),
         **{f"{o}_claims": c for o, c in counts.items()},
-        "consistency_fixes": sum(len(r["verification"].get("consistency", [])) for r in results),
-        "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in results),
-        "check_fixes": sum(c["fixed"] is not None for r in results for c in r["verification"].get("checks", [])),
-        "errors": sum(r["error"] is not None for r in results),
-        "mean_seconds": round(sum(r["seconds"] for r in results) / n, 1) if n else 0.0,
+        "unmarked_contradictions": sum(r["unmarked_contradiction"] for r in logs),
+        "consistency_fixes": sum(len(r["verification"].get("consistency", [])) for r in logs),
+        "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in logs),
+        "check_fixes": sum(c["fixed"] is not None for r in logs for c in r["verification"].get("checks", [])),
     }
-    parts = [ok for r in results for ok in r.get("parts", {}).values()]
-    if parts:
-        summary["parts_pct"] = round(100 * sum(parts) / len(parts), 1)
-    if by_category:
-        cats = {c: [r for r in results if r.get("category", "facts") == c] for c in CATEGORIES}
-        summary["by_category"] = {c: summarize(rs, by_category=False) for c, rs in cats.items() if rs}
+    if conv := [r["conversation"] for r in logs if "conversation" in r]:
+        summary["conversation"] = {"items": len(conv), **{k: sum(c[k] for c in conv) for k in conv[0]}}
     return summary
 
 
-async def run_eval(agent: Agent, questions: list[dict], out: Path | None = None, meta: dict | None = None) -> dict:
-    results: list[dict] = []
-    for i, q in enumerate(questions, 1):
-        r = await run_one(agent, q)
-        results.append(r)
-        labels = r["verification"].get("counts", {})
-        mark = "ok  " if r["correct"] else ("ERR " if r["error"] else "WRONG")
-        parts = " parts " + "".join("+" if ok else "-" for ok in r["parts"].values()) if "parts" in r else ""
-        print(f"[{i}/{len(questions)}] {mark} {q['id']:<16} {r['seconds']:6.1f}s{parts}  claims {labels}"
-              + ("  UNMARKED" if r["unmarked_contradiction"] else ""), flush=True)
-        report = {**(meta or {}), "summary": summarize(results), "results": results}
-        if out:
-            out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    return report
+def write_summary(folder: Path, mode: str) -> dict[str, Any]:
+    """summary.json of every item log in the run folder: all items and each set."""
+    logs = read_logs(folder)
+    summary = {"run_id": folder.name, "mode": mode, "all": summarize(logs),
+               "sets": {s: summarize([r for r in logs if r["set"] == s]) for s in sorted({r["set"] for r in logs})}}
+    (folder / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def _done(log: Path, retry_errors: bool) -> bool:
+    return log.is_file() and not (retry_errors and json.loads(log.read_text(encoding="utf-8"))["error"])
+
+
+async def run_eval(agent: Agent, items: list[dict], folder: Path, mode: str = "config",
+                   retry_errors: bool = False) -> dict[str, Any]:
+    """Run the items without a log in the folder (with retry_errors also those whose log has an error), writing
+    each log when its item is done; then write and return the summary of every log in the folder."""
+    (folder / "items").mkdir(parents=True, exist_ok=True)
+    todo = [q for q in items if not _done(folder / "items" / f"{q['id']}.json", retry_errors)]
+    if len(todo) < len(items):
+        print(f"{len(items) - len(todo)} items already done", flush=True)
+    try:
+        for i, q in enumerate(todo, 1):
+            r = await run_one(agent, q, mode)
+            (folder / "items" / f"{q['id']}.json").write_text(json.dumps(r, ensure_ascii=False, indent=2),
+                                                               encoding="utf-8")
+            mark = "ERR  " if r["error"] else "-    " if r["correct"] is None else "ok   " if r["correct"] else "WRONG"
+            line = ""
+            if s := r["scores"]:
+                line = " parts " + "".join("+" if ok else "-" for ok in s["final"]["parts"].values())
+                if s["draft"]["parts"] != s["final"]["parts"]:
+                    line += " (draft " + "".join("+" if ok else "-" for ok in s["draft"]["parts"].values()) + ")"
+            print(f"[{i}/{len(todo)}] {mark} {q['set']:<3} {q['id']:<16} {r['timings']['total_s']:6.1f}s{line}"
+                  f"  claims {r['verification'].get('counts', {})}"
+                  + (f"  ARTEFACTS {','.join(r['artefacts'])}" if r["artefacts"] else "")
+                  + ("  UNMARKED" if r["unmarked_contradiction"] else ""), flush=True)
+    finally:
+        summary = write_summary(folder, mode)
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
+    modes = load_modes()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--set", choices=SETS, default="all", help="facts, reasoning or all (default)")
+    parser.add_argument("--set", choices=SETS, help="S1/S2: facts, reasoning or all (default: all; none with --authored)")
     parser.add_argument("--holdout", action="store_true", help="run only the held-out reasoning problems")
-    parser.add_argument("--ids", help="comma-separated question or problem ids")
+    parser.add_argument("--authored", type=Path, action="append", help="batch folder of authored items (repeatable)")
+    parser.add_argument("--split", choices=SPLITS, help="authored items of this split only")
+    parser.add_argument("--sets", help="comma-separated sets to keep, e.g. S3,S4 (S1 facts, S2 reasoning)")
+    parser.add_argument("--mode", choices=sorted(modes), help="pipeline mode (evals/modes.yaml); default: as configured")
+    parser.add_argument("--run-id", help="run folder under data/evals (default <yyyymmdd-hhmm>-<mode>); an existing"
+                                         " run is resumed: items with a log are skipped")
+    parser.add_argument("--retry-errors", action="store_true", help="when resuming, run the items that failed again")
+    parser.add_argument("--ids", help="comma-separated item ids")
     parser.add_argument("--limit", type=int, help="run N items, taken in turn from each group")
     parser.add_argument("--questions", type=Path, default=QUESTIONS)
     parser.add_argument("--problems", type=Path, default=PROBLEMS)
-    parser.add_argument("--out", type=Path, help="report path (default data/evals/run-<timestamp>.json)")
     args = parser.parse_args(argv)
+    mode = args.mode or "config"
     try:
         cfg = load_config()
+        apply_mode(cfg, modes.get(mode, {}))
         _, facts = load_questions(args.questions)
-        problems = load_problems(args.problems)
+        items = select(facts, load_problems(args.problems), args.set or (None if args.authored else "all"), args.holdout)
+        for folder in args.authored or []:
+            items += load_authored(folder)
+        items = choose(items, args.split, args.sets.split(",") if args.sets else None)
+        chosen = pick(items, args.ids.split(",") if args.ids else None, args.limit)
+        if dupes := sorted(i for i, n in Counter(q["id"] for q in chosen).items() if n > 1):
+            raise ValueError(f"duplicate item ids {dupes}")
+        run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{mode}"
+        folder = RUNS / run_id
+        files = sorted({q["file"] for q in chosen})
+        open_run(folder, manifest(cfg, run_id, mode, files, sys.argv[1:] if argv is None else argv,
+                                  RUNS / ".sha-cache.json"))
     except (ConfigError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    items = select(facts, problems, args.set, args.holdout)
-    chosen = pick(items, args.ids.split(",") if args.ids else None, args.limit)
-    out = args.out or cfg.root / "data" / "evals" / f"run-{datetime.now():%Y%m%d-%H%M%S}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
     knowledge = Knowledge.open(cfg)
-    if not knowledge.tools:
+    if not knowledge.tools and cfg.reasoning_policy.max_search_depth:
         print("warning: no knowledge tools (store missing?): answers are neither grounded nor verified", file=sys.stderr)
-    meta = {"model": cfg.model_backend.model_id, "backend": cfg.model_backend.api_base, "set": args.set,
-            "holdout": args.holdout, "started": datetime.now().isoformat(timespec="seconds")}
 
     async def go() -> dict:
         llm = LLMClient(cfg.model_backend)
         try:
-            return await run_eval(Agent(cfg, llm, knowledge), chosen, out, meta)
+            return await run_eval(Agent(cfg, llm, knowledge), chosen, folder, mode, args.retry_errors)
         finally:
             await llm.aclose()
 
-    report = asyncio.run(go())
+    summary = asyncio.run(go())
     print()
-    for name, s in [("all", report["summary"]), *report["summary"].get("by_category", {}).items()]:
-        parts = f" ({s['parts_pct']}% of parts)" if "parts_pct" in s else ""
-        print(f"{name}: {s['questions']} items, {s['correct_pct']}% correct{parts}, {s['supported_claims_pct']}% of"
-              f" {s['claims']} claims supported ({s['unverified_claims']} unverified, {s['corrected_claims']} corrected,"
-              f" {s['removed_claims']} removed), {s['consistency_fixes']} consistency fixes,"
-              f" {s['arithmetic_fixes']} arithmetic fixes, {s['check_fixes']} checker fixes,"
-              f" {s['unmarked_contradictions']} unmarked contradictions, {s['errors']} errors,"
-              f" {s['mean_seconds']} s per item")
-    print(f"report: {out}")
+    for name, s in [("all", summary["all"]), *summary["sets"].items()]:
+        print(f"{name}: {s['items']} items, {s['errors']} errors, solved {s['correct']}/{s['scored']},"
+              f" parts {s['parts_right']}/{s['parts_total']}, {s['missing_lines']} missing lines,"
+              f" {s['false_corrections']} false / {s['true_corrections']} true corrections,"
+              f" {s['with_artefacts']} with artefacts ({s['tool_call_leaks']} tool-call leaks),"
+              f" median {s['latency_median_s']} s")
+    print(f"run: {folder}  (uv run python -m evals.report {run_id})")
     return 0
 
 
