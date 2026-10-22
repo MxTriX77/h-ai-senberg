@@ -20,7 +20,7 @@ def _strings(v):
         yield v
 
 
-PROFILES = sorted((REPO / "config" / "models").glob("*.yaml"))
+PROFILES = sorted(p for p in (REPO / "config").glob("*.yaml") if p.stem not in {"config", "sources"})
 
 # Variables referenced in config and profile values (comments excluded).
 VARS = sorted(
@@ -198,7 +198,7 @@ def test_machine_knobs_from_environment(tmp_path, monkeypatch):
 
 
 def write_profile(root: Path, name: str, data: dict) -> None:
-    path = root / "config" / "models" / f"{name}.yaml"
+    path = root / "config" / f"{name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
@@ -272,3 +272,11 @@ def test_tool_texts(tmp_path):
     data["tools"]["search_knowledge"]["description"] = ""
     with pytest.raises(ConfigError, match=r"tools\.search_knowledge\.description"):
         load_config(write(tmp_path, data))
+
+
+def test_config_and_sources_are_not_profiles(tmp_path, monkeypatch):
+    path = write(tmp_path)
+    write_profile(tmp_path, "big", {})
+    monkeypatch.setenv(PROFILE_ENV, "config")
+    with pytest.raises(ConfigError, match=r"'config' not found.*\(available: big\)$"):
+        load_config(path)
