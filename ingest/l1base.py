@@ -28,9 +28,12 @@ class BuildContext:
     def add_source(self, entry: Entry, version: str) -> int:
         path = entry.path(self.raw_dir)
         cur = self.con.execute(
-            "INSERT INTO source(name, use, file, sha256, version, license, cite_url)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (entry.name, entry.use, entry.dest, sha256(path), version, entry.license, entry.cite_url or ""),
+            "INSERT INTO source(name, use, file, sha256, version, license, cite_url, domains)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.name, entry.use, entry.dest, sha256(path), version, entry.license, entry.cite_url or "",
+                " ".join(entry.domains),
+            ),
         )
         return cur.lastrowid
 

@@ -115,3 +115,41 @@ def test_stub_target_and_missing_section():
     assert stub_target(CHEM["pages"]["Percent_yield"].encode()) == "Yield_(chemistry)"
     assert stub_target(CHEM["pages"]["Ethanol"].encode()) is None
     assert first_section(b"<html><body><p>no sections</p></body></html>") is None
+
+
+def domains(con, path):
+    sql = "SELECT d.domain FROM article_domain d JOIN article a ON a.id = d.article_id WHERE a.path = ? ORDER BY 1"
+    return [r[0] for r in con.execute(sql, (path,))]
+
+
+def test_article_domains(con):
+    assert domains(con, "Electron") == ["chemistry", "physics"]  # in both topic ZIMs
+    assert domains(con, "Ethanol") == ["chemistry"]
+    assert domains(con, "Planck_constant") == ["physics"]
+    assert domains(con, "Thermal_conductance") == ["physics"]  # mini: only WikiProject Physics (Mid) matched
+    assert domains(con, "Sodium_chloride") == ["chemistry"]  # mini: chembox only
+    assert con.execute("SELECT count(*) FROM article a WHERE NOT EXISTS"
+                       " (SELECT 1 FROM article_domain d WHERE d.article_id = a.id)").fetchone()[0] == 0
+
+
+def test_source_domains(con):
+    rows = dict(con.execute("SELECT name, domains FROM source"))
+    assert rows["codata_fixture"] == "physics chemistry"
+    assert rows["wikipedia_en_all_mini_fixture"] == "chemistry physics"
+
+
+def test_mini_filter_changed_in_config_only(fixture_raw, tmp_path):
+    from ingest.build_l1 import build
+
+    from .l1_helpers import FIXTURE_SOURCES, MINI_FILTER, write_manifest
+
+    sources = [
+        {**s, "filter": {**MINI_FILTER, "projects": {**MINI_FILTER["projects"], "Sports": "physics"}}}
+        if s["use"] == "wikipedia-mini-zim" else s
+        for s in FIXTURE_SOURCES
+    ]
+    db = tmp_path / "l1.db"
+    build(write_manifest(tmp_path / "sources.yaml", sources), fixture_raw, db)
+    con = sqlite3.connect(db)
+    assert article(con, "Football") is not None and domains(con, "Football") == ["physics"]
+    assert article(con, "Obscure_low_topic") is None

@@ -1,6 +1,6 @@
 """Layer 1 store schema, shared by the build (ingest/build_l1.py) and the query side."""
 
-SCHEMA_VERSION = 1  # stored as PRAGMA user_version; bump on any change below
+SCHEMA_VERSION = 2  # stored as PRAGMA user_version; bump on any change below
 
 DDL = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -13,7 +13,8 @@ CREATE TABLE source(
   sha256 TEXT NOT NULL,             -- computed by the build
   version TEXT NOT NULL,            -- ZIM Date, CODATA year, or download date
   license TEXT NOT NULL,
-  cite_url TEXT NOT NULL            -- citation template from the manifest
+  cite_url TEXT NOT NULL,           -- citation template from the manifest
+  domains TEXT NOT NULL             -- the manifest entry's domains, space-separated
 );
 
 CREATE TABLE article(
@@ -33,6 +34,13 @@ CREATE TABLE article_alias(          -- normalized titles and redirect names
   article_id INTEGER NOT NULL REFERENCES article(id),
   PRIMARY KEY(alias, article_id)
 ) WITHOUT ROWID;
+
+CREATE TABLE article_domain(         -- an article's domains (topic ZIM domains, or the mini filter's match)
+  article_id INTEGER NOT NULL REFERENCES article(id),
+  domain TEXT NOT NULL,
+  PRIMARY KEY(article_id, domain)
+) WITHOUT ROWID;
+CREATE INDEX article_domain_by_domain ON article_domain(domain, article_id);
 
 CREATE VIRTUAL TABLE article_fts USING fts5(
   title, aliases, infobox, lead,
