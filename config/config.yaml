@@ -15,7 +15,7 @@ model_backend:
   api_key: "${API_KEY:-}"                  # empty for local llama-server; set in .env for cloud backends
   model_id: "${MODEL_ID:-qwen3.5-9b}"      # sent as `model`; also llama-server's --alias
   temperature: 0.6
-  max_tokens: 4096                         # per call: thinking (llama_server reasoning-budget) + answer
+  max_tokens: 7168                         # per call: thinking (up to reasoning_policy.thinking_budget.max_tokens) + answer
   timeout_s: null                          # read limit in s; null = wait as long as the backend needs (queue, slow prompt)
   wait_s: 300                              # retry a backend that refuses connections or answers 503 (loading, restarting)
   context_tokens: null                     # backend context in tokens; null = llama_server.ctx_size
@@ -53,6 +53,10 @@ reasoning_policy:
     instead of in your head; one round may hold several calculations.
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
+  thinking_budget:                         # thinking tokens per reasoner call, more for demanding questions:
+    field: "thinking_budget_tokens"        #   request field the backend reads (llama-server); "" = send none
+    min_tokens: 1024                       #   a short question without numbers
+    max_tokens: 4096                       #   reached at 10 numbers and 1200 characters (each counts half)
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
@@ -129,7 +133,7 @@ llama_server:                              # local reasoner, started by `uv run 
     jinja: true                            # use the GGUF's own chat template (tool calls later)
     reasoning: "on"
     reasoning-format: deepseek             # thinking arrives as reasoning_content
-    reasoning-budget: "${REASONING_BUDGET:-1024}"                 # thinking-token cap: Qwen3.5 otherwise thinks ~4k tokens (~6 min at 11 t/s)
+    reasoning-budget: "${REASONING_BUDGET:-4096}"                 # hard cap on thinking; per call: reasoning_policy.thinking_budget
     parallel: 1
     n-predict: 8192
     gpu-layers: "${GPU_LAYERS:-99}"                         # all layers on the GPU: 9B Q4_K_M just fits in 6 GB

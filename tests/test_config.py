@@ -182,18 +182,18 @@ def test_machine_knob_defaults_unchanged(tmp_path):
 
     cmd = build_command(load_config(write(tmp_path)))
     assert (_arg(cmd, "--host"), _arg(cmd, "--port"), _arg(cmd, "--ctx-size")) == ("127.0.0.1", "8080", "16384")
-    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "1024")
+    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "4096")
 
 
 def test_machine_knobs_from_environment(tmp_path, monkeypatch):
     from haisenberg.launcher import build_command
 
-    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "4096", "LLAMA_PORT": "9090"}
+    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "8192", "LLAMA_PORT": "9090"}
     for k, v in knobs.items():
         monkeypatch.setenv(k, v)
     cmd = build_command(load_config(write(tmp_path)))
     assert _arg(cmd, "--ctx-size") == "65536" and _arg(cmd, "--gpu-layers") == "40"
-    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "4096"
+    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "8192"
     assert _arg(cmd, "--port") == "9090"
 
 
@@ -307,7 +307,7 @@ def test_robustness_settings(tmp_path):
     cfg = load_config(write(tmp_path))
     b = cfg.model_backend
     assert (cfg.app.keepalive_s, b.timeout_s, b.wait_s, b.context_tokens, b.chars_per_token) == (1, None, 300, None, 2.0)
-    assert cfg.context_tokens == cfg.llama_server.ctx_size == 16384 and b.max_tokens == 4096
+    assert cfg.context_tokens == cfg.llama_server.ctx_size == 16384 and b.max_tokens == 7168
     data = base()
     data["app"]["keepalive_s"] = 0
     with pytest.raises(ConfigError, match=r"app\.keepalive_s"):
@@ -322,3 +322,12 @@ def test_big_profile_budget(tmp_path, monkeypatch):
     monkeypatch.setenv(PROFILE_ENV, profile.stem)
     cfg = load_config(path)
     assert (cfg.context_tokens, cfg.model_backend.max_tokens) == (32768, 8192)
+
+
+def test_thinking_budget_settings(tmp_path):
+    tb = load_config(write(tmp_path)).reasoning_policy.thinking_budget
+    assert (tb.field, tb.min_tokens, tb.max_tokens) == ("thinking_budget_tokens", 1024, 4096)
+    data = base()
+    data["reasoning_policy"]["thinking_budget"] = {"field": "x", "min_tokens": 4096, "max_tokens": 1024}
+    with pytest.raises(ConfigError, match="reasoning_policy.thinking_budget"):
+        load_config(write(tmp_path, data))

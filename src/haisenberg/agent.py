@@ -16,7 +16,7 @@ from typing import Any
 from .config import Config
 from .llm import LLMClient, estimate_tokens
 from .tools import Knowledge, Sources
-from .verifier import Verification, Verifier, strip_cites
+from .verifier import Verification, Verifier, read_numbers, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -73,6 +73,14 @@ class Agent:
     def _estimate(self, messages: list[dict[str, Any]]) -> int:
         return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
 
+    def _thinking(self, question: str) -> dict[str, int]:
+        """The per-call thinking budget field: more for questions with many numbers and much text."""
+        tb = self.policy.thinking_budget
+        if not tb.field:
+            return {}
+        share = 0.5 * min(1.0, len(read_numbers(question)) / 10) + 0.5 * min(1.0, len(question) / 1200)
+        return {tb.field: round(tb.min_tokens + (tb.max_tokens - tb.min_tokens) * share)}
+
     def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Drop the oldest turns until system + history use at most half of the prompt budget (the rest is
         for tool results); what remains starts with a user message, and the last message is always kept."""
@@ -98,9 +106,10 @@ class Agent:
             return
         sources = Sources()
         rounds, room_left = 0, True
+        thinking = self._thinking(_question(history))
         while True:
             may_call = bool(tools) and rounds < self.policy.max_search_depth and room_left
-            fields: dict[str, Any] = {"tools": tools} if tools else {}
+            fields: dict[str, Any] = {"tools": tools, **thinking} if tools else {**thinking}
             if tools and not may_call:
                 fields["tool_choice"] = "none"
             if (prompt := self._estimate(messages)) > self.budget:  # only by the few chars of a cut note

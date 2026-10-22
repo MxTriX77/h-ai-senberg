@@ -19,6 +19,7 @@ from pydantic import (
     PrivateAttr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
@@ -56,11 +57,24 @@ class ModelBackendConfig(_Section):
     extra_body: dict[str, Any] = {}
 
 
+class ThinkingBudgetConfig(_Section):
+    field: str  # request field the backend reads per call (llama-server: thinking_budget_tokens); "" = none
+    min_tokens: PositiveInt
+    max_tokens: PositiveInt
+
+    @model_validator(mode="after")
+    def _bounds(self) -> "ThinkingBudgetConfig":
+        if self.min_tokens > self.max_tokens:
+            raise ValueError("min_tokens must not exceed max_tokens")
+        return self
+
+
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
     tool_prompt: str
     enable_multi_hop_verification: bool
     max_search_depth: NonNegativeInt
+    thinking_budget: ThinkingBudgetConfig
 
     @field_validator("system_prompt", "tool_prompt")
     @classmethod

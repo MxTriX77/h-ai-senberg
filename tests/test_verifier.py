@@ -408,3 +408,9 @@ async def test_report_lists_arithmetic_fixes(cfg, fake, knowledge):
     items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
     report = next(i["verification"] for i in items if "verification" in i)
     assert report["arithmetic"] == [{"expression": "2 * 3", "stated": "7", "fixed": "6"}]
+
+
+def test_judge_call_without_thinking_budget(client, fake):
+    fake.scripts = [[content("Benzene boils at 80.1 °C.")], [content("C1: supports S1")]]
+    chat(client)
+    assert "thinking_budget_tokens" in fake.bodies[0] and "thinking_budget_tokens" not in fake.bodies[1]

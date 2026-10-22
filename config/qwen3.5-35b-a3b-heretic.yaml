@@ -12,6 +12,10 @@ model_backend:
   # Sampling: the precise Qwen3.5 settings from config.yaml (temperature 0.6, presence_penalty 0).
   # The base card's general thinking mode would be temperature 1.0, presence_penalty 1.5.
 
+reasoning_policy:
+  thinking_budget:
+    min_tokens: 2048                        # it thinks long anyway; max_tokens 4096 as in config.yaml
+
 llama_server:
   model_path: "${MODEL_PATH:-models/Qwen3.5-35B-A3B-uncensored-heretic.i1-IQ3_XS.gguf}"
   ctx_size: "${CTX_SIZE:-32768}"

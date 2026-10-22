@@ -227,3 +227,23 @@ async def test_stop_closes_upstream_and_makes_no_more_calls(cfg, fake, knowledge
     assert await anext(run) == {"reasoning_content": "need data"}
     await run.aclose()
     assert fake.streams[0].closed and len(fake.requests) == 1
+
+
+# --- thinking budget ---------------------------------------------------------------------------------
+
+
+def test_thinking_budget_scales_with_the_question(client, fake, cfg):
+    fake.scripts = [lookup_round(), [content("ok")], [content("ok")]]
+    chat(client, [{"role": "user", "content": "What is the molar mass of water?"}])
+    easy = [b["thinking_budget_tokens"] for b in fake.bodies]
+    assert len(easy) == 2 and easy[0] == easy[1] and 1024 <= easy[0] < 1200  # every reasoner call
+    hard = "Compute it. " + " ".join(f"value {i} is {i + 0.5} g;" for i in range(10)) + " x" * 600
+    chat(client, [{"role": "user", "content": hard}])
+    assert fake.last_body["thinking_budget_tokens"] == 4096
+
+
+def test_no_thinking_field_when_not_configured(cfg, fake, knowledge):
+    cfg.reasoning_policy.thinking_budget.field = ""
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        chat(c)
+    assert not any(k.startswith("thinking") for k in fake.last_body)
