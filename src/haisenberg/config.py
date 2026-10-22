@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from pydantic import (
     BaseModel,
     ConfigDict,
+    NonNegativeFloat,
     NonNegativeInt,
     PositiveInt,
     PrivateAttr,
@@ -93,6 +94,21 @@ class ToolText(_Section):
         return v
 
 
+class VerifierConfig(_Section):
+    judge_prompt: str
+    rel_tol: NonNegativeFloat
+    research_k: PositiveInt
+    max_research: NonNegativeInt
+    request: dict[str, Any] = {}  # fields merged into every judge call
+
+    @field_validator("judge_prompt")
+    @classmethod
+    def _not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+
 class LlamaServerConfig(_Section):
     enabled: bool
     executable: str
@@ -116,6 +132,7 @@ class Config(_Section):
     reasoning_policy: ReasoningPolicyConfig
     retrieval: RetrievalConfig
     tools: dict[str, ToolText]
+    verifier: VerifierConfig
     llama_server: LlamaServerConfig
     ui: UiConfig
 

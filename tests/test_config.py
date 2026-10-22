@@ -280,3 +280,14 @@ def test_config_and_sources_are_not_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv(PROFILE_ENV, "config")
     with pytest.raises(ConfigError, match=r"'config' not found.*\(available: big\)$"):
         load_config(path)
+
+
+def test_verifier_settings(tmp_path):
+    cfg = load_config(write(tmp_path))
+    v = cfg.verifier
+    assert v.judge_prompt.strip() and v.rel_tol >= 0 and v.research_k > 0 and v.max_research >= 0
+    assert v.request["temperature"] == 0
+    data = base()
+    data["verifier"]["judge_prompt"] = " "
+    with pytest.raises(ConfigError, match=r"verifier\.judge_prompt"):
+        load_config(write(tmp_path, data))

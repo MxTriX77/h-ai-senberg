@@ -34,9 +34,9 @@ reasoning_policy:
     look up what you need: search_knowledge for concepts, laws, properties and explanations, and the
     lookup tools for compound data and physical constants. A few precise lookups beat many vague ones.
     Every result has a source id such as [S1]. Put the id of the result you used right after each fact
-    you take from it, for example: "Ethanol boils at 78.2 Â°C [S1]." Cite only ids you were given.
+    you take from it, for example: "Ethanol boils at 78.2 °C [S1]." Cite only ids you were given.
     If the results do not contain what you need, say so, and say which parts come from your own knowledge.
-  enable_multi_hop_verification: true      # used from the verifier step on
+  enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
 
 retrieval:                                 # used from the Layer 1 step on
@@ -66,6 +66,28 @@ tools:                                     # texts of the agent tools; which too
       each record with a source id.
     parameters:
       query: "Constant name, e.g. 'Planck constant', 'electron mass' or 'Avogadro constant'."
+
+verifier:                                  # claim checks on the draft; on/off: reasoning_policy.enable_multi_hop_verification
+  judge_prompt: |
+    You check the claims of an answer against numbered source passages, using only the passages.
+    Give each claim one verdict:
+    - supports: a passage states the claim (rounding, equivalent units and wording are fine)
+    - contradicts: a passage states something that conflicts with the claim
+    - not_said: no passage settles the claim
+    - no_claim: the sentence states no checkable fact (a plan, a heading, a remark, a question)
+    Reply with exactly one line per claim and nothing else, like this:
+    C1: supports S2
+    C2: contradicts S1 | the claim rewritten so that it agrees with S1
+    C3: not_said
+    C4: no_claim
+    After supports or contradicts, give the ids of the passages that decide it.
+  rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
+  research_k: 2                            # records per re-search of an unsupported claim
+  max_research: 6                          # claims re-searched per answer
+  request:                                 # fields merged into every judge call (per-model quirks, D-013)
+    temperature: 0.0
+    max_tokens: 1024
+    chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: no thinking for the judge
 
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend

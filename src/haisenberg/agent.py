@@ -1,8 +1,9 @@
 """The orchestrator's tool loop (ReAct): look facts up with the generated tools, then answer with sources.
 
-`Agent.run(history)` yields `{"reasoning_content": ...}` deltas (thinking, tool steps, the draft) while
-it works, then the answer as one `{"content": ...}`, then `{"finish_reason": ...}`. Only standard
-OpenAI chat fields are used (D-003), so any backend with tool support works.
+`Agent.run(history)` yields `{"reasoning_content": ...}` deltas (thinking, tool steps, the draft, the
+verification) while it works, then the answer as one `{"content": ...}`, a `{"verification": report}`
+for in-process callers, then `{"finish_reason": ...}`. Only standard OpenAI chat fields are used (D-003),
+so any backend with tool support works.
 """
 
 from __future__ import annotations
@@ -15,8 +16,18 @@ from typing import Any
 from .config import Config
 from .llm import LLMClient
 from .tools import Knowledge, Sources
+from .verifier import Verification, Verifier
 
 DRAFT_MARK = "\n\nDraft answer:\n"
+
+
+def _question(history: list[dict[str, Any]]) -> str:
+    """The last user message as text (content parts joined)."""
+    for m in reversed(history):
+        if m["role"] == "user":
+            c = m["content"]
+            return c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return ""
 
 
 @dataclass
@@ -51,6 +62,8 @@ class Agent:
         self.policy = cfg.reasoning_policy
         self.llm = llm
         self.knowledge = knowledge
+        verify = self.policy.enable_multi_hop_verification and knowledge.tools
+        self.verifier = Verifier(cfg, llm, knowledge) if verify else None
 
     async def run(self, history: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         tools = self.knowledge.tools
@@ -80,11 +93,23 @@ class Agent:
             for c in calls:
                 fn = c["function"]
                 yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
-                result, lines = self.knowledge.run(fn["name"], fn["arguments"], sources)
+                result, lines, _ = self.knowledge.run(fn["name"], fn["arguments"], sources)
                 yield {"reasoning_content": "".join(f"- {line}\n" for line in lines) + "\n"}
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
-        draft = reply.content.strip()
-        yield {"content": draft + sources.source_list(draft)}
+        answer = draft = reply.content.strip()
+        report: dict[str, Any] = {}
+        if self.verifier and draft:
+            check = self.verifier.verify(_question(history), draft, sources)
+            try:
+                async for item in check:
+                    if isinstance(item, Verification):
+                        answer, report = item.answer, item.report()
+                    else:
+                        yield item
+            finally:
+                await check.aclose()
+        yield {"content": answer + sources.source_list(answer)}
+        yield {"verification": report}  # for in-process callers (evals); the server forwards only text fields
         yield {"finish_reason": reply.finish or "stop"}
 
     async def _call(self, messages: list[dict[str, Any]], fields: dict[str, Any], reply: _Reply):

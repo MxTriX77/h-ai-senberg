@@ -29,9 +29,23 @@ class Citation:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class Value:
+    """A number a claim about a record can be checked against. `unit` is a regex that must follow a
+    claim's number for a mismatch to count as a contradiction ('' = any number of the same magnitude)."""
+
+    number: float
+    unit: str = ""
+
+
+# A mass per amount of substance, as written after a number (text normalized: '−' and '⁻¹' as '-1').
+MASS_UNIT = r"\s*(?:g\s*(?:/|·|⋅|\s)\s*mol\b|g\s*mol\s*\^?\s*-\s*1|daltons?\b|da\b|amu\b|u\b)"
+
+
 @dataclass
 class Record:
-    """A citeable record. label() names it in lists; passage() is the text handed to a model."""
+    """A citeable record. label() names it in lists; passage() is the text handed to a model;
+    values(), formulas() and names() say what a claim about it can be checked against in code."""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -41,6 +55,15 @@ class Record:
 
     def passage(self, query: str, limit: int) -> str:
         raise NotImplementedError
+
+    def values(self) -> list[Value]:
+        return []
+
+    def formulas(self) -> list[str]:
+        return []
+
+    def names(self) -> list[str]:
+        return []
 
 
 @dataclass
@@ -62,6 +85,12 @@ class ConstantRecord(Record):
         how = "exact" if self.exact else f"standard uncertainty {self.uncertainty:g} {self.unit}".rstrip()
         value = f"{self.name} = {self.value_text} {self.unit}".rstrip()
         return f"{value} ({how}); {self.citation.source}, version {self.citation.version}"
+
+    def values(self) -> list[Value]:
+        return [Value(self.value)]
+
+    def names(self) -> list[str]:
+        return [self.name]
 
 
 @dataclass
@@ -126,6 +155,16 @@ class CompoundRecord(Record):
             f" monoisotopic mass {self.monoisotopic_mass:g} Da{synonyms}"
         )
 
+    def values(self) -> list[Value]:
+        masses = [self.molar_mass] if self.molar_mass is not None else []
+        return [Value(m, MASS_UNIT) for m in [*masses, self.monoisotopic_mass]]
+
+    def formulas(self) -> list[str]:
+        return [self.formula]
+
+    def names(self) -> list[str]:
+        return [self.title, *self.synonyms]
+
 
 _EDGE = ".,;:!?\"'()[]{}"
 MAX_PHRASE_WORDS = 8
@@ -147,7 +186,7 @@ def _cut(text: str, n: int) -> str:
     """text, shortened at a word boundary to at most n characters (with an ellipsis)."""
     if len(text) <= n:
         return text
-    return text[: max(n - 1, 0)].rsplit(" ", 1)[0] + "â€¦" if n > 1 else ""
+    return text[: max(n - 1, 0)].rsplit(" ", 1)[0] + "…" if n > 1 else ""
 
 
 # Ignored in encyclopedia queries: they match nearly every article and slow BM25 down.
