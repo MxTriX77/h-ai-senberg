@@ -249,11 +249,11 @@ async def test_draft_for_in_process_callers_only(cfg, fake, knowledge):
 
 # --- answer robustness: calculator rounds, tool calls written as text, empty answers -----------------
 
-XML_CALL = "<tool_call>\n<function=calculate>\n<parameter=expression>\n0.48 * 1000\n</parameter>\n</function>\n</tool_call>"
+XML_CALL = "<tool_call>\n<function=calculate>\n<parameter=expressions>\n0.48 * 1000\n</parameter>\n</function>\n</tool_call>"
 
 
 def calc_round(expression="2 * 3", call_id="k1"):
-    return [tool_call("calculate", json.dumps({"expression": expression}), call_id=call_id), finish("tool_calls")]
+    return [tool_call("calculate", json.dumps({"expressions": [expression]}), call_id=call_id), finish("tool_calls")]
 
 
 def offered(body):
@@ -295,7 +295,7 @@ def test_tool_call_written_as_text_is_run_when_rounds_are_left(client, fake):
     assert answer(r) == "It is 480." and len(fake.requests) == 2
     call, result = fake.bodies[1]["messages"][-2:]
     assert call == {"role": "assistant", "content": "I compute it.", "tool_calls": [{
-        "id": "call_0", "type": "function", "function": {"name": "calculate", "arguments": '{"expression": "0.48 * 1000"}'}}]}
+        "id": "call_0", "type": "function", "function": {"name": "calculate", "arguments": '{"expressions": "0.48 * 1000"}'}}]}
     assert result["tool_call_id"] == "call_0" and result["content"].startswith("0.48 * 1000 = 480")
     assert "tool call written as text: run" in reasoning_text(r)
 
@@ -344,8 +344,8 @@ def test_safety_nets_switched_off(cfg, fake, knowledge):
 
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
-    calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expression>\n2 * 3")
-    assert rest == "Plan." and [c["function"] for c in calls] == [{"name": "calculate", "arguments": '{"expression": "2 * 3"}'}]
+    calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")
+    assert rest == "Plan." and [c["function"] for c in calls] == [{"name": "calculate", "arguments": '{"expressions": "2 * 3"}'}]
     calls, rest = markup.split("<function=search_knowledge><parameter=query>a b</parameter>"
                                "<parameter=domain>physics</parameter></function>\n</tool_call> x")
     assert rest == "x" and json.loads(calls[0]["function"]["arguments"]) == {"query": "a b", "domain": "physics"}

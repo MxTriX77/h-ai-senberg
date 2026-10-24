@@ -88,7 +88,8 @@ class Knowledge:
             self.tools.append(_tool(name, self.domains if kind == TEXT else None, cfg))
         self.calculator = bool(self.tools) and CALCULATE in cfg.tools  # built in, next to the knowledge tools
         if self.calculator:
-            self.tools.append(_tool(CALCULATE, None, cfg, param="expression"))
+            self.tools.append(_tool(CALCULATE, None, cfg, param="expressions",
+                                    schema={"type": "array", "items": {"type": "string"}}))
 
     @classmethod
     def open(cls, cfg: Config) -> Knowledge:
@@ -103,7 +104,7 @@ class Knowledge:
         """Run one tool call returning at most k records (default retrieval.top_k_proofs):
         (result text for the model, one line per result for the reasoning, the records' source ids)."""
         if name == CALCULATE and self.calculator:
-            return (*calc.run_tool(arguments), [])
+            return (*_calculate(arguments), [])
         try:
             kind, query, records = self._call(name, arguments, k or self.top_k)
         except _BadCall as e:
@@ -170,12 +171,34 @@ def term_share(query: str, text: str) -> float:
     return sum((w[:4] in stems) if len(w) >= 4 else (w in have) for w in words) / len(words)
 
 
-def _tool(name: str, domains: list[str] | None, cfg: Config, param: str = "query") -> dict[str, Any]:
-    """OpenAI function tool: parameters from code, texts from tools.<name> in the config."""
+def _calculate(arguments: str) -> tuple[str, list[str]]:
+    """The `calculate` tool: every one of `expressions` through calc.run_tool, one result line each."""
+    try:
+        args = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return "Error: arguments are not valid JSON", ["Error: arguments are not valid JSON"]
+    exprs = args.get("expressions") if isinstance(args, dict) else None
+    if isinstance(exprs, str):  # a list written as text ('["2 * 3", "4 / 5"]') or one expression
+        try:
+            listed = json.loads(exprs)
+        except json.JSONDecodeError:
+            listed = None
+        exprs = listed if isinstance(listed, list) else [exprs]
+    if not isinstance(exprs, list) or not exprs:
+        lines = ["Error: 'expressions' must be a non-empty list of expressions"]
+    else:
+        lines = [calc.run_tool(json.dumps({"expression": e}))[0] for e in exprs]
+    return "\n".join(lines), lines
+
+
+def _tool(name: str, domains: list[str] | None, cfg: Config, param: str = "query",
+          schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    """OpenAI function tool: parameters from code (`schema`: the main parameter's type, default string), texts
+    from tools.<name> in the config."""
     text = cfg.tools.get(name)
     if text is None:
         raise ConfigError(f"tools.{name}: the store offers this tool but the config has no text for it")
-    properties: dict[str, dict[str, Any]] = {param: {"type": "string"}}
+    properties: dict[str, dict[str, Any]] = {param: schema or {"type": "string"}}
     if domains is not None:
         properties["domain"] = {"type": "string", "enum": domains}
     for key, schema in properties.items():

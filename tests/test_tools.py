@@ -218,11 +218,23 @@ def test_real_store_keeps_the_ranked_first_hit(cfg):
 def test_calculator_next_to_the_knowledge_tools(knowledge, cfg):
     calc_tool = knowledge.tools[-1]["function"]
     assert calc_tool["description"] == cfg.tools["calculate"].description
-    assert calc_tool["parameters"]["required"] == ["expression"]
+    assert calc_tool["parameters"]["required"] == ["expressions"]
+    assert calc_tool["parameters"]["properties"]["expressions"]["type"] == "array"
     sources = Sources()
-    text, lines, ids = knowledge.run("calculate", json.dumps({"expression": "0.0500 * 56.08"}), sources)
+    text, lines, ids = knowledge.run("calculate", json.dumps({"expressions": ["0.0500 * 56.08"]}), sources)
     assert text == "0.0500 * 56.08 = 2.804" and lines == [text] and ids == [] and not sources.items
-    assert knowledge.run("calculate", '{"expression": "__import__(1)"}', sources)[0].startswith("Error: not allowed")
+    assert knowledge.run("calculate", '{"expressions": ["__import__(1)"]}', sources)[0].startswith("Error: not allowed")
+
+
+def test_several_calculations_in_one_call(knowledge):
+    text, lines, _ = knowledge.run("calculate", json.dumps({"expressions": ["2 * 3", "1 / 0", "sqrt(16)"]}), Sources())
+    assert lines[0] == "2 * 3 = 6" and lines[1].startswith("Error") and lines[2] == "sqrt(16) = 4"
+    assert text == "\n".join(lines)
+    # written as text, the list arrives as a string; a plain string is one expression
+    assert knowledge.run("calculate", json.dumps({"expressions": '["2 * 3", "4 / 2"]'}), Sources())[1] == ["2 * 3 = 6", "4 / 2 = 2"]
+    assert knowledge.run("calculate", json.dumps({"expressions": "2 * 3"}), Sources())[1] == ["2 * 3 = 6"]
+    for bad in ['{"expressions": []}', '{"expression": "2 * 3"}', "not json"]:
+        assert knowledge.run("calculate", bad, Sources())[0].startswith("Error:"), bad
 
 
 def test_no_calculator_without_the_store(cfg):
