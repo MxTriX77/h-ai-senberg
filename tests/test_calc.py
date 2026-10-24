@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from haisenberg.calc import CalcError, evaluate, find_arithmetic, run_tool
+from haisenberg.calc import CalcError, evaluate, find_arithmetic, prefixed, run_tool
 
 
 @pytest.mark.parametrize("expression, value", [
@@ -96,9 +96,33 @@ def test_percent_flags():
     "2 × 3 ≈ 6.1",
     "1 L = 1000 mL",
     "0.5 × 4 = 2 × 1",  # the right side is an expression, not a result
+    "h = 6.626 070 15 × 2 = 13.25",  # digits before the expression that it cannot join: not one reading
+    "y = 2 (3 + 4) = 14",
 ])
 def test_not_found(text):
     assert found(text) == []
+
+
+@pytest.mark.parametrize("text, expression, value", [
+    ("Q = 12 500 mA·h × 3.7 V = 46 250 mWh", "12500 mA*h * 3.7 V", 46250),
+    (r"m = 1\,250 \times 4 = 5\,000", "1250 * 4", 5000),
+    ("n = 2 400 × 3 = 7 200", "2400 * 3", 7200),
+    ("s = 1,234,567 × 2 = 2,469,134", "1234567 * 2", 2469134),
+    ("x = 1,234.5 × 2 = 2,469", "1234.5 * 2", 2469),
+    ("x = 1 234,5 × 2 = 2 469 г", "1234.5 * 2", 2469),
+])
+def test_grouped_numbers_are_one_number(text, expression, value):
+    (a,) = find_arithmetic(text, decimal_comma="г" in text)
+    assert (a.expression, a.plain) == (expression, pytest.approx(value))
+
+
+@pytest.mark.parametrize("text, has", [
+    ("2.45 kW", True), ("12500 mA*h", True), ("18500 мА*ч", True), ("250 mg", True), ("2000 ms", True),
+    ("3 кВт", True), ("5 µs", True), ("2452 W", False), ("5 m", False), ("0.5 mol", False), ("3 min", False),
+    ("101 Pa", False), ("sqrt(2) * pi", False), ("so the motor", False),
+])
+def test_prefixed_units(text, has):
+    assert prefixed(text) is has
 
 
 def test_chain_checks_each_step():

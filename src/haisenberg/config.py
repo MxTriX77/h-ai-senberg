@@ -107,6 +107,9 @@ class VerifierConfig(_Section):
     arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
     checkers: list[str] = []  # domain checker plug-ins run on every draft (haisenberg.checkers), e.g. element_balance
     arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
+    arithmetic_prefixes: bool  # c may also be scaled by an SI prefix of its chain (2452 W = 2.45 kW)
+    skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
+    keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
