@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from .config import Config
-from .calc import Arithmetic, find_arithmetic
+from .calc import Arithmetic, find_arithmetic, prefixed
 from .checkers import CHECKERS
 from .l1.text import parse_formula, to_hill
 from .llm import LLMClient, UpstreamError, estimate_tokens
@@ -31,7 +31,7 @@ OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
 # Same-length normalisation for reading numbers and formulas, so spans stay valid in the original text.
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
 _NUM = re.compile(
-    r"(?<![\w.^/\\-])(-?)(\d{1,3}(?:[ ,]\d{3})+(?!\d)|\d+)"  # sign, integer part (maybe grouped in threes)
+    r"(?<![\w.^/\\-])(-?)(\d{1,3}(?:(?:[ ,]|\\,)\d{3})+(?!\d)|\d+)"  # sign, integer part (maybe grouped in threes)
     r"(?:\.(\d+(?: \d{1,3}(?!\d))*))?"  # decimals (maybe grouped, CODATA style)
     r"(?:\s*(?:[eE]|(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:\^|\*\*)?)\s*\{?\(?([-+]?\d+)\)?\}?)?"  # exponent
     r"(?!\w)"
@@ -43,6 +43,10 @@ _END = re.compile(r"[.!?]+(?:\s*\[S\d+(?:\s*[,;]\s*S?\d+)*\])*(?=\s|$)")
 _ABBREV = {"e.g", "i.e", "approx", "ca", "vs", "etc", "cf", "fig", "eq", "no", "al"}
 _MARKERS = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+|>\s*)*")
 _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]claim)\b(.*)$", re.I)
+# A label (an id such as A1, C or (b), maybe after one word: "Claim C", "Claim 3") and a colon starts the line.
+_LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
+# An equation, comparison or operation with numbers: a computation, not a sourceable fact.
+_COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 
 
 @dataclass
@@ -80,8 +84,9 @@ class Verification:
 # --- claims ---------------------------------------------------------------------------------------
 
 
-def split_claims(draft: str) -> list[Claim]:
-    """Sentences of paragraphs and list items; not headings, code, display math, tables or lead-ins."""
+def split_claims(draft: str, skip_labelled: bool = False) -> list[Claim]:
+    """Sentences of paragraphs and list items; not headings, code, display math, tables or lead-ins, and with
+    `skip_labelled` not labelled answer or verdict lines (`A1: …`, `Claim C: Incorrect`)."""
     claims: list[Claim] = []
     pos, fence = 0, False
     for line in draft.splitlines(keepends=True):
@@ -94,6 +99,8 @@ def split_claims(draft: str) -> list[Claim]:
             continue
         body_at = start + _MARKERS.match(line).end()
         body = draft[body_at : start + len(line.rstrip("\r\n"))]
+        if skip_labelled and _LABELLED.match(body):
+            continue
         for a, b in _sentences(body):
             text = body[a:b]
             lead = len(text) - len(text.lstrip())
@@ -152,7 +159,7 @@ def read_numbers(text: str) -> list[Number]:
     out = []
     for m in _NUM.finditer(norm):
         sign, integer, decimals, exp = m.groups()
-        digits, dec = re.sub(r"[ ,]", "", integer), (decimals or "").replace(" ", "")
+        digits, dec = re.sub(r"[ ,\\]", "", integer), (decimals or "").replace(" ", "")
         e = int(exp) if exp else 0
         value = float(f"{sign}{digits}.{dec or '0'}") * 10.0**e
         out.append(Number(value, 0.5 * 10.0 ** (e - len(dec)), m.start(), m.end(), len(dec), exp is not None))
@@ -182,25 +189,52 @@ def _format(ref: float, like: Number) -> str:
     return f"{ref:.{like.decimals}f}"
 
 
-def fix_arithmetic(draft: str, rel_tol: float) -> tuple[str, list[dict[str, str]], int]:
+_UNIT_AFTER = re.compile(r"(?:[ \t]|\\[,;! ]|\\(?:text|mathrm)\{)*([A-Za-zА-Яа-яЁёµμΩ]+(?:[·*/⋅∙][A-Za-zА-Яа-яЁёµμΩ]+)*)")
+_NEXT_RESULT = re.compile(r"[ \t}$]*=[ \t$]*[-−]?\d(?:[\d.,]|[ \xa0  ]\d)*")
+_SCALES = (1.0, 1e3, 1e-3, 1e6, 1e-6, 1e9, 1e-9)
+
+
+def _result_units(tail: str) -> str:
+    """The unit right after a result and the one after the next `= number` of its chain (`= 2452 W = 2.45 kW`)."""
+    units = []
+    if m := _UNIT_AFTER.match(tail):
+        units.append(m[1])
+        tail = tail[m.end() :]
+    if (nxt := _NEXT_RESULT.match(tail)) and (m := _UNIT_AFTER.match(tail, nxt.end())):
+        units.append(m[1])
+    return " ".join(units)
+
+
+def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
     A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
-    result in % as itself or as a fraction): off by more than half a unit of its last digit and rel_tol.
-    It is rewritten only when the right value is clear; otherwise it is left as written."""
+    result in % as itself or as a fraction) and, with `prefixes`, of the SI prefixes in its chain (a unit
+    with a prefix on an operand, right after the result or after the next `=`: the result may be scaled by
+    10^±3, ±6, ±9): off by more than half a unit of its last digit and rel_tol. It is rewritten only when the
+    right value is clear; otherwise it is left as written, and so is a number that cannot be read as one."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
     for a in find_arithmetic(draft, decimal_comma):
         window = draft[a.result_at : a.result_at + 80]
         comma = r"(\d),(\d)" if decimal_comma else r"(\d),(\d{1,2}(?!\d)|\d{4,})"
-        numbers = read_numbers(re.sub(comma, r"\1.\2", window))  # same length: spans stay valid
+        window = re.sub(comma, r"\1.\2", window)  # same length: spans stay valid
+        numbers = read_numbers(window)
         if not numbers or numbers[0].start != 0:
             continue
+        if re.match(r"(?:\\[,;! ]|[ \xa0  ,.'])\d", window[numbers[0].end :]):
+            continue  # "4\,900": digits read_numbers did not join, so not one reading
         n, checked = numbers[0], checked + 1
         in_percent = a.as_percent or bool(re.match(r"\s*\\?%", window[n.end :]))
         stated = [(n.value, n.half)] + ([(n.value / 100, n.half / 100)] if in_percent else [])
-        if any(abs(v - lhs) <= max(half, rel_tol * abs(lhs)) for lhs in (a.fraction, a.plain) for v, half in stated):
+        scaled = prefixes and not in_percent and prefixed(f"{a.expression} {_result_units(window[n.end :])}")
+        scales = _SCALES if scaled else (1.0,)
+        if any(abs(v * s - lhs) <= max(half * s, rel_tol * abs(lhs))
+               for lhs in (a.fraction, a.plain) for v, half in stated for s in scales):
             continue
         right = _right_result(a, in_percent)
+        if right is not None and scaled:  # the scale meant: the one within a factor of ten of the stated value
+            near = [right / s for s in scales if right * n.value > 0 and abs(math.log10(right / s / n.value)) < 1]
+            right = near[0] if len(near) == 1 else None
         if right is None:
             continue
         start, end = a.result_at + n.start, a.result_at + n.end
@@ -296,6 +330,30 @@ def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_to
     return None
 
 
+def results(draft: str) -> list[float]:
+    """Every number written right after `=` or `≈` in the draft and not followed by an operator: values the
+    answer computed."""
+    out = []
+    for m in re.finditer(r"[=≈][ \t$]*", draft):
+        text = draft[m.end() : m.end() + 40]
+        nums = read_numbers(text)
+        if nums and nums[0].start == 0 and not re.match(r"\s*(?:[×*/·⋅÷+^−-]|\\times|\\cdot)", text[nums[0].end :]):
+            out.append(nums[0].value)
+    return out
+
+
+def is_computation(claim: Claim, given: list[float], computed: list[float], rel_tol: float) -> bool:
+    """The claim is a calculation: an equation, comparison or operation with numbers, or a sentence whose
+    numbers are all the task's (`given`) or the answer's results (`computed`), at least one a result."""
+    nums = read_numbers(claim.text)
+    if not nums:
+        return False
+    if _COMPUTED.search(claim.text):  # the claim as written: plain() would drop a "*" operator
+        return True
+    is_result = [any(_matches(n, v, rel_tol) for v in computed) for n in nums]
+    return any(is_result) and all(r or any(_matches(n, v, rel_tol) for v in given) for n, r in zip(nums, is_result))
+
+
 # --- judge ------------------------------------------------------------------------------------------
 
 
@@ -346,7 +404,8 @@ class Verifier:
         """Yield reasoning deltas while checking, then the Verification."""
         arithmetic, checked = [], 0
         if self.cfg.arithmetic_check:
-            draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol)
+            draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
+                                                        self.cfg.arithmetic_prefixes)
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
@@ -358,13 +417,18 @@ class Verifier:
                 yield _say(f"\n\nCheck {name}: {len(found)} finding{'s' if len(found) != 1 else ''}\n" + "".join(
                     f"- {c['text']!r} → {c['fixed']!r} ({c['note']})\n" if c["fixed"] is not None
                     else f"- {c['text']!r}: {c['note']}\n" for c in found))
-        claims = split_claims(draft)
+        derived = self.cfg.skip_derived_claims
+        claims = split_claims(draft, skip_labelled=derived)
         yield _say(f"\n\nVerification: {len(claims)} claims\n")
         pending = []
+        given, computed = [n.value for n in read_numbers(question)], results(draft)
         for c in claims:
             if found := code_check(c, sources, self.cfg.rel_tol):
                 c.outcome, c.ids, c.fixed, c.note = found
                 c.note = f"code: {c.note}"
+                yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
+            elif derived and is_computation(c, given, computed, self.cfg.rel_tol):
+                c.outcome, c.note = UNVERIFIED, "computation: checked in code, not against sources"
                 yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
             else:
                 pending.append(c)
@@ -466,6 +530,8 @@ class Verifier:
             c.note = f"judge: {verdict}" + (f" {' '.join(ids)}" if ids else "")
             if verdict == "supports":
                 c.outcome, c.ids = SUPPORTED, ids
+            elif verdict == "contradicts" and not correction and self.cfg.keep_uncorrected:
+                c.outcome, c.note = UNVERIFIED, f"{c.note}, no correction: kept"  # no value stated against it
             elif verdict == "contradicts":
                 c.outcome, c.ids, c.fixed = (CORRECTED, ids, correction) if correction else (REMOVED, ids, None)
             elif verdict == "no_claim":

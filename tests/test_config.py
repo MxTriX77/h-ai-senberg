@@ -333,6 +333,15 @@ def test_consistency_settings(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_conservative_check_settings(tmp_path):
+    v = load_config(write(tmp_path)).verifier
+    assert v.arithmetic_prefixes is v.skip_derived_claims is v.keep_uncorrected is True
+    data = base()
+    del data["verifier"]["keep_uncorrected"]
+    with pytest.raises(ConfigError, match="verifier.keep_uncorrected"):
+        load_config(write(tmp_path, data))
+
+
 def test_relevance_threshold(tmp_path):
     assert load_config(write(tmp_path)).retrieval.min_term_share == 0.5
     data = base()
