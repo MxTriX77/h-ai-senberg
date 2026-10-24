@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from haisenberg.calc import CalcError, evaluate, find_arithmetic, prefixed, run_tool
+from haisenberg.calc import CalcError, computations, evaluate, find_arithmetic, prefixed, run_tool
 
 
 @pytest.mark.parametrize("expression, value", [
@@ -123,6 +123,34 @@ def test_grouped_numbers_are_one_number(text, expression, value):
 ])
 def test_prefixed_units(text, has):
     assert prefixed(text) is has
+
+
+@pytest.mark.parametrize("text, value", [
+    ("- (800 - 2) / 800 × 100 = 99.75%", 99.75),
+    ("  * (6 - 1) × 2 = 10", 10),
+    ("+ (6 - 1) × 2 = 10", 10),
+    ("> 1. (9 - 3) / 2 = 3", 3),
+    ("2) (9 - 3) / 2 = 3", 3),
+    ("Notes:\n- sqrt(16) - 1 = 3", 3),
+    ("-5 × 2 = -10", -10),  # a sign that touches its number is a sign
+    ("- -5 × 2 = -10", -10),
+    ("-(6 - 1) × 2 = -10", -10),
+])
+def test_list_markers_are_not_signs(text, value):
+    (a,) = find_arithmetic(text)
+    assert a.plain == pytest.approx(value)
+
+
+@pytest.mark.parametrize("text, values", [
+    ("the gap is 96 °C − (−18 °C), about 120 °C", {114}),
+    ("margin (800 - 2) / 800 × 100 %", {0.9975, 99.75}),  # both readings of the % sign
+    ("x = 2 × 3 = 6, and 4 + 1 more", {6, 5}),
+    ("ethanol ~78 °C, dimethyl ether −24 °C", set()),  # no operator between them: not a computation
+    ("5 / 0 and 2 × n", set()),
+    ("0,5 × 3", {1.5}),
+])
+def test_computations(text, values):
+    assert {round(v, 6) for v in computations(text, decimal_comma="0,5" in text)} == values
 
 
 def test_chain_checks_each_step():

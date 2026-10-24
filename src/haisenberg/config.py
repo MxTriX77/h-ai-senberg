@@ -133,12 +133,14 @@ class VerifierConfig(_Section):
     arithmetic_prefixes: bool  # c may also be scaled by an SI prefix of its chain (2452 W = 2.45 kW)
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
+    ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
     answer_style: Literal["plain", "annotated"]  # plain chat answer, or labels + ids + sources (debugging)
     consistency_check: bool  # one review call over the whole answer and the task (conclusions vs calculations...)
     consistency_prompt: str
+    consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
 
     @field_validator("checkers")
     @classmethod

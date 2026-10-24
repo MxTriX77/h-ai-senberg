@@ -135,6 +135,8 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # are never judged, corrected or removed by the claim checks
   keep_uncorrected: true                   # a judge "contradicts" without a correction marks the claim unverified;
                                            # false: the claim is removed
+  ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
+                                           # row, ids aside) is ignored: the claim counts as uncorrected (see above)
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer
@@ -142,22 +144,26 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # reasoning block); annotated: [S#], labels, summary, source list (debugging)
   consistency_check: true                  # after the claim checks: one review call over the whole answer and the task
   consistency_prompt: |
-    You review an answer to the user's task for internal consistency only. Look for:
-    1. conclusions, verdicts, summaries or table cells that contradict the answer's own calculations or evidence;
-    2. verdict labels that conflict with their own reasons (for example "true" next to a reason that shows it is
-       false, or "unconfirmed" where the answer's own data settles the question);
-    3. results that are physically impossible or implausible but presented as fine (for example a yield above 100 %);
-    4. explicit instructions in the task that the answer does not follow;
-    5. statements in one part that contradict another part;
-    6. anything presented as checked that could not have been checked offline (a DOI, link or reference
-       "verified", a paper's or website's content "confirmed", or validity judged from how a reference looks):
-       it must say that it could not be verified (no web access).
-    Do not re-check facts against outside knowledge, do not add new content, and do not restyle the text.
+    You review an answer to the user's task for one thing only: places where the answer contradicts itself,
+    that is two statements of the answer that cannot both be true. Look for:
+    1. conclusions, verdicts, summaries, answer lines or table cells that differ from the answer's own
+       calculations or evidence;
+    2. verdict labels that conflict with the answer's own stated reasons (for example "true" next to a reason
+       that shows it is false);
+    3. a value or fact stated one way in one part and another way in another part.
+    Do not solve the task again, do not judge whether the answer is right or reads the task right, do not
+    re-check facts against outside knowledge, do not add new content, and do not reword or restyle the text.
+    A fix must take its value or verdict from the other statement of the answer, as written there.
     If there is no such problem, reply with exactly: OK
     Otherwise reply with one block per fix and nothing else:
-    OLD: <a short exact quote from the answer, on one line, that appears only once>
+    OLD: <a short exact quote from the answer, on one line, that appears only once: the statement to fix>
     NEW: <its corrected replacement>
+    CONFLICT: <a short exact quote, on one line, of the other statement of the answer that OLD contradicts>
     WHY: <one short reason>
+  consistency_quotes: true                 # a review fix is applied only when its CONFLICT quote is elsewhere in the
+                                           # answer, every number NEW adds is stated there or computed there (in code),
+                                           # and, for an answer/verdict line (A1: …) or a fix without a number, every word
+                                           # NEW adds is in it; false: any OLD that occurs once is replaced
   request:                                 # fields merged into every judge call (per-model quirks, D-013)
     temperature: 0.0
     max_tokens: 1024

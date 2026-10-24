@@ -355,6 +355,16 @@ def test_conservative_check_settings(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_conservative_review_settings(tmp_path):
+    v = load_config(write(tmp_path)).verifier
+    assert v.consistency_quotes is v.ignore_prompt_echo is True
+    for key in ("consistency_quotes", "ignore_prompt_echo"):
+        data = base()
+        del data["verifier"][key]
+        with pytest.raises(ConfigError, match=f"verifier.{key}"):
+            load_config(write(tmp_path, data))
+
+
 def test_relevance_threshold(tmp_path):
     assert load_config(write(tmp_path)).retrieval.min_term_share == 0.5
     data = base()
