@@ -115,9 +115,10 @@ verifier:                                  # claim checks on the draft; on/off: 
     You check the claims of an answer against numbered source passages, using only the passages.
     Give each claim one verdict:
     - supports: a passage states the claim (rounding, equivalent units and wording are fine)
-    - contradicts: a passage states something that conflicts with the claim
+    - contradicts: a passage states a different value or fact for the same quantity or property of the same thing
     - not_said: no passage settles the claim
-    - no_claim: the sentence states no checkable fact (a plan, a heading, a remark, a question)
+    - no_claim: the sentence states no checkable fact (a plan, a heading, a remark, a question, or a result or
+      conclusion the answer worked out from the task's own data)
     Reply with exactly one line per claim and nothing else, like this:
     C1: supports S2
     C2: contradicts S1 | the claim rewritten so that it agrees with S1
@@ -127,6 +128,13 @@ verifier:                                  # claim checks on the draft; on/off: 
   rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
   arithmetic_check: true                   # recompute every "a × b = c" in the draft and fix wrong results
   arithmetic_rel_tol: 0.005                # ... when c is off by more than its rounding and this share
+  arithmetic_prefixes: true                # ... and also off when scaled by 10^±3/6/9 where a unit of the chain has an
+                                           # SI prefix (2452 W = 2.45 kW, 250 mg × 6 = 1.5 g); false: c as written only
+  skip_derived_claims: true                # computations (an equation or operation with numbers, or a sentence restating
+                                           # the answer's results) and labelled answer/verdict lines (A1: …, Claim C: …)
+                                           # are never judged, corrected or removed by the claim checks
+  keep_uncorrected: true                   # a judge "contradicts" without a correction marks the claim unverified;
+                                           # false: the claim is removed
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer

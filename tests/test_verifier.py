@@ -17,11 +17,13 @@ from haisenberg.verifier import (
     UNVERIFIED,
     code_check,
     fix_arithmetic,
+    is_computation,
     parse_fixes,
     parse_verdicts,
     read_formulas,
     read_numbers,
     render,
+    results,
     Verifier,
     split_claims,
 )
@@ -63,12 +65,20 @@ def test_numbered_list_and_quote_markers():
     ]
 
 
+def test_labelled_answer_and_verdict_lines_are_not_claims():
+    draft = ("A1: S2, S4 and S7\n- **A2:** Correct, the sample weighs 3.1 g.\n**B3**: 42 kJ\nClaim D: Incorrect, it is 5 g.\n"
+             "Statement 2: false, see 12 mL\n(c): it is 7 g heavier\nNote: water boils at 100 °C [S1].\nА1: 4,2 г\n")
+    assert len(split_claims(draft)) == 7  # the Russian line has no Latin letter: never a claim
+    assert [c.text for c in split_claims(draft, skip_labelled=True)] == ["Note: water boils at 100 °C [S1]."]
+
+
 # --- numbers and formulas --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("text, value", [
     ("c = 299 792 458 m/s", 299792458),
     ("about 10,000 K", 10000),
+    (r"$2\,450$ J", 2450),
     ("h = 6.626 070 15 e-34 J Hz^-1", 6.62607015e-34),
     ("h = 6.626e-34", 6.626e-34),
     ("h = 6.626 × 10^-34 J s", 6.626e-34),
@@ -162,6 +172,22 @@ def test_melting_point_citing_a_compound_goes_to_the_judge(store):
 def test_every_number_must_match(store):
     s = sources_with(store, store.lookup_compound("caffeine")[0])
     assert code_check(claim("Caffeine (194.19 g/mol) is found in 95 mg per cup [S1]."), s, 0.001) is None
+
+
+PUMP_TASK = "A pump lifts 0.04 m³/s of water by 6 m; its motor gives 2.2 kW. Is the motor big enough?"
+PUMP_DRAFT = (
+    "P = 1000 × 9.81 × 0.04 × 6 = 2354 W [S1]. So 2354 W is more than the 2.2 kW of the motor. "
+    "The margin is (2.2 − 2.354)/2.354 = −6.5 %. A motor of 2.2 kW is too small. "
+    "Water has a density of 1000 kg/m³ [S1]. The pump lifts 0.04 m³/s."
+)
+
+
+def test_computations_are_recognised():
+    claims = split_claims(PUMP_DRAFT)
+    given, computed = [n.value for n in read_numbers(PUMP_TASK)], results(PUMP_DRAFT)
+    assert computed == [2354, -6.5]  # "= 1000 × …" starts an expression: not a result
+    # equation; computed vs given; equation; only given numbers; a value of a source; restated given data
+    assert [is_computation(c, given, computed, 0.001) for c in claims] == [True, True, True, False, False, False]
 
 
 # --- judge reply -----------------------------------------------------------------------------------
@@ -440,6 +466,46 @@ def test_annotated_no_claim_loses_its_citation(client, fake):
                     [content("C1: supports S1\nC2: no_claim")]]
     text = answer(chat(client))
     assert text.startswith("Ethanol is a liquid [S1]. Let me know if you need more.")
+
+
+# --- conservative claim checks (c01) ---------------------------------------------------------------
+
+LOOP_DRAFT = ("P = 1000 × 9.81 × 0.04 × 6 = 2354 W [S1]. So 2354 W is more than the 2.2 kW of the motor [S1]. "
+              "Ethanol is blue [S1].\nA1: 2354 W\nClaim B: Incorrect, the motor is too small\n")
+
+
+def test_computations_and_answer_lines_are_not_judged(cfg, fake, knowledge):
+    fake.scripts = [SEARCH_ETHANOL, [content(LOOP_DRAFT)], [content("C3: contradicts S1 | Ethanol is colorless.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c, [{"role": "user", "content": PUMP_TASK}])
+    user = fake.bodies[2]["messages"][1]["content"]
+    assert user.endswith("Claims:\nC3: Ethanol is blue.")  # one claim judged: no computation, no answer line
+    assert answer(r) == ("P = 1000 × 9.81 × 0.04 × 6 = 2354 W. So 2354 W is more than the 2.2 kW of the motor. "
+                         "Ethanol is colorless.\nA1: 2354 W\nClaim B: Incorrect, the motor is too small")
+    assert "C1 unverified (computation: checked in code, not against sources)" in reasoning_text(r)
+
+
+def test_derived_claims_judged_when_switched_off(cfg, fake, knowledge):
+    cfg.verifier.skip_derived_claims = False
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [SEARCH_ETHANOL, [content(LOOP_DRAFT)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        chat(c, [{"role": "user", "content": PUMP_TASK}])
+    user = fake.bodies[2]["messages"][1]["content"]
+    assert "C1: P = 1000 × 9.81" in user and "A1: 2354 W" in user
+
+
+@pytest.mark.parametrize("keep, expected", [(True, "Ethanol is a liquid. It is blue."), (False, "Ethanol is a liquid.")])
+def test_contradiction_without_a_correction(cfg, fake, knowledge, keep, expected):
+    cfg.verifier.keep_uncorrected = keep
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. It is blue [S1].")],
+                    [content("C1: supports S1\nC2: contradicts S1")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == expected
+    assert ("no correction: kept" in reasoning_text(r)) is keep
+
+
 # --- arithmetic ---------------------------------------------------------------------------------------
 
 
@@ -507,6 +573,50 @@ def test_scientific_and_russian_results():
     assert fixes[0]["fixed"] == "3.342 × 10^22" and "= 3.342 × 10^22 молекул" in fixed
     fixed, fixes, _ = fix_arithmetic("m = 0,0500 моль × 56,08 г/моль = 3,80 г", 0.005)
     assert fixes[0]["stated"] == "3,80" and fixed.endswith("= 2.80 г")
+
+
+# c01: a result in another SI prefix of its chain is not wrong; grouped numbers are one number.
+@pytest.mark.parametrize("draft", [
+    "P = 1000 × 9.81 × 0.04 × 6 W = 2.35 kW",
+    "P = 1000 × 9.81 × 0.04 × 6 = 2.35 kW",
+    "P = 2.5 × 980 = 2.45 = 2.45 kW",  # the prefix after the next "="
+    "E = 15 000 mA·h × 3.7 V = 55.5 W·h",
+    "m = 250 mg × 6 = 1.5 g",
+    "t = 0.004 s × 500 = 2000 ms",
+    "E = 18 500 мА·ч × 3,7 В = 68,45 Вт·ч",
+])
+def test_prefix_readings_left_alone(draft):
+    fixed, fixes, checked = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == [] and checked == 1
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("P = 1000 × 9.81 × 0.04 × 6 W = 3.35 kW", "P = 1000 × 9.81 × 0.04 × 6 W = 2.35 kW"),
+    ("m = 250 mg × 6 = 2.5 g", "m = 250 mg × 6 = 1.5 g"),
+    ("E = 15 000 mA·h × 3.7 V = 60.0 W·h", "E = 15 000 mA·h × 3.7 V = 55.5 W·h"),
+    ("t = 0.004 s × 500 = 3000 ms", "t = 0.004 s × 500 = 2000 ms"),
+    ("Q = 12 500 × 4 = 40 000", "Q = 12 500 × 4 = 50000"),
+])
+def test_wrong_under_every_reading_still_fixed(draft, expected):
+    assert fix_arithmetic(draft, 0.005)[0] == expected
+
+
+def test_prefix_readings_switched_off():
+    assert fix_arithmetic("m = 250 mg × 6 = 1.5 g", 0.005, prefixes=False)[0] == "m = 250 mg × 6 = 1500.0 g"
+
+
+@pytest.mark.parametrize("draft", [
+    "Q = 12 500 × 4 = 50 000",
+    "Q = 12 500 × 4 = 50 000",
+    r"$Q = 12\,500 \times 4 = 50\,000$",
+    "x = 1,234.5 × 2 = 2,469",
+    "x = 1 234,5 × 2 = 2 469 г",
+    "h = 6.626 070 15 × 2 = 13.25",  # cannot be read as one expression: skipped
+    "E = 24 000 мА·ч × 3,6 В = 86,4 Вт·ч",
+])
+def test_grouped_numbers_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
 
 
 def test_plain_answer_shows_the_fixed_result(cfg, fake, knowledge):

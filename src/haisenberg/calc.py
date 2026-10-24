@@ -41,8 +41,9 @@ _BINARY = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
 
 
 def normalize(expression: str, decimal_comma: bool = False) -> str:
-    """Typographic and LaTeX arithmetic as Python syntax (units are not handled here). A comma between
-    digits is a decimal comma, except before exactly three digits (1,900) unless `decimal_comma`."""
+    """Typographic and LaTeX arithmetic as Python syntax (units are not handled here). Digits grouped in
+    threes with spaces (20 000, 2\\,450) are one number. A comma between digits is a decimal comma, except
+    before exactly three digits (1,900) unless `decimal_comma`."""
     s = expression.strip()
     s = re.sub(r"\\(?:left|right)\b", "", s)
     for _ in range(3):  # nested \frac and \sqrt
@@ -50,6 +51,7 @@ def normalize(expression: str, decimal_comma: bool = False) -> str:
         s = re.sub(r"\\sqrt\s*\{([^{}]*)\}", r"sqrt(\1)", s)
     s = re.sub(r"\\(?:times|cdot)", "*", s).replace("\\div", "/").replace("\\%", "%").replace("\\pi", "pi")
     s = re.sub(r"\\[,;:! ]", " ", s)
+    s = re.sub(r"(?<![\d.,])\d{1,3}(?:[ \xa0  ]\d{3})+(?!\d)", lambda m: re.sub(r"\D", "", m[0]), s)  # 20 000
     s = re.sub(r"([\d)\]])\s*([⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)", lambda m: f"{m[1]}^({m[2].translate(_SUP)})", s)
     s = re.sub(r"√\s*\(", "sqrt(", s)
     s = re.sub(r"√\s*(\d+(?:[.,]\d+)?)", r"sqrt(\1)", s)
@@ -58,7 +60,7 @@ def normalize(expression: str, decimal_comma: bool = False) -> str:
     s = re.sub(r"(?<=[\d)])\s*[xX]\s*(?=[\d(])", "*", s)
     if not re.search(r"\b(?:min|max)\s*\(", s):  # there a comma separates arguments
         if not decimal_comma:
-            s = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", s)
+            s = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", s)  # every group: 1,234,567
         s = re.sub(r"(\d),(\d)", r"\1.\2", s)
     return s.replace("^", "**")
 
@@ -151,7 +153,7 @@ def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmet
         line_start = max(text.rfind("\n", 0, eq.start()), text.rfind("=", 0, eq.start())) + 1
         lhs = normalize(text[max(line_start, eq.start() - 200) : eq.start()], decimal_comma)
         m = _EXPR.search(lhs)
-        if not m:
+        if not m or re.search(r"\d\s+$", lhs[: m.start()]):  # "6.626 070 15 × 2", "2 (3 + 4)": not one reading
             continue
         lead = _RESULT_LEAD.match(text, eq.end())
         at = lead.end()
@@ -173,6 +175,18 @@ def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmet
 
 
 _AS_PERCENT = re.compile(r"\s*\*\s*100(?:\.0+)?\s*%\s*$")  # a final "× 100%"
+
+_SI_PREFIXES = ("G", "M", "k", "m", "µ", "μ", "u", "n", "Г", "М", "к", "мк", "м", "н")  # 10^±3, ±6, ±9
+_BASE_UNITS = {
+    "W", "Wh", "J", "V", "A", "Ah", "g", "s", "L", "l", "m", "Pa", "N", "Hz", "Ω", "C", "F", "eV", "mol", "bar", "cal",
+    "Вт", "Втч", "Дж", "В", "А", "Ач", "г", "с", "л", "м", "Па", "Н", "Гц", "Ом", "Кл", "Ф", "эВ", "моль", "бар", "кал",
+}
+
+
+def prefixed(text: str) -> bool:
+    """Some word of the text is a unit with an SI prefix (kW, mA, мг; not W, m, mol or min)."""
+    return any(w not in _BASE_UNITS and any(w.startswith(p) and w[len(p) :] in _BASE_UNITS for p in _SI_PREFIXES)
+               for w in re.findall(r"[A-Za-zА-Яа-яЁёµμΩ]+", text))
 
 
 def _python(expression: str, percent_is_fraction: bool) -> str:
