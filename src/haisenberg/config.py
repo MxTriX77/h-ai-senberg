@@ -57,13 +57,36 @@ class ModelBackendConfig(_Section):
     extra_body: dict[str, Any] = {}
 
 
+class ToolCallMarkup(_Section):
+    """How chat templates write a tool call as text (regular expressions; `.` also matches a newline)."""
+
+    call: str  # one whole call, also cut off; removed from the answer
+    function: str  # the tool name (group 1); a call without it is read as JSON {"name", "arguments"}
+    parameter: str  # one argument: name (group 1) and value (group 2)
+
+    @field_validator("call", "function", "parameter")
+    @classmethod
+    def _regex(cls, v: str) -> str:
+        try:
+            re.compile(v)
+        except re.error as e:
+            raise ValueError(f"invalid regular expression: {e}") from None
+        return v
+
+
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
     tool_prompt: str
     enable_multi_hop_verification: bool
     max_search_depth: NonNegativeInt
+    max_calc_rounds: NonNegativeInt  # rounds of calculator calls only, not counted in max_search_depth; 0 = counted
+    text_tool_calls: bool  # a tool call written as text is run (rounds left) or removed and the answer asked again
+    tool_call_markup: ToolCallMarkup
+    empty_answer_retry: bool  # an empty final answer is asked again once
+    answer_retry_prompt: str  # the user turn that asks again for the final answer
+    answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
 
-    @field_validator("system_prompt", "tool_prompt")
+    @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():

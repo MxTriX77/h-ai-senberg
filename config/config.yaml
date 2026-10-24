@@ -54,10 +54,24 @@ reasoning_policy:
     If the results do not contain what you need, say so, and say which parts come from your own knowledge.
     Compute every number you state with the calculate tool, not in your head: products, quotients,
     percentages, powers, roots, logarithms, unit conversions, and also side calculations such as
-    "to reach X you would need Y". One round may hold several calculations. When you revise a number,
-    recompute everything that depends on it.
+    "to reach X you would need Y". Put all the calculations of a step into one calculate call (it takes
+    a list of expressions). When you revise a number, recompute everything that depends on it.
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
+  max_calc_rounds: 1                       # rounds of calculate calls only, on top: they use no lookup rounds; 0 = they do
+  text_tool_calls: true                    # a tool call written as text in the reply is run when its tool has rounds
+                                           # left, else removed and the final answer asked for again (once)
+  tool_call_markup:                        # how chat templates write a tool call as text (regex; . matches newlines)
+    call: '<tool_call>.*?(?:</tool_call>|$)|<function=.*?(?:</function>(?:\s*</tool_call>)?|$)'   # Hermes/Qwen wrapper or bare Qwen3.5 XML, also cut off
+    function: '<function=([^>\s]+)>'       # Qwen3.5 XML: the tool name; a call without it is read as JSON {"name", "arguments"}
+    parameter: '<parameter=([^>\s]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=|</function>)|$)'   # ... and each argument
+  empty_answer_retry: true                 # an empty final answer (all of it left in the thinking) is asked for again (once)
+  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call)
+    Tools are no longer available. Write your complete final answer to the question above now, as plain
+    text without any tool call: use the results you have, show the working and keep the format the
+    question asks for.
+  answer_retry_request:                    # fields merged into that call
+    chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
@@ -89,11 +103,12 @@ tools:                                     # texts of the agent tools; which too
       query: "Constant name, e.g. 'Planck constant', 'electron mass' or 'Avogadro constant'."
   calculate:                               # built in: offered whenever the knowledge tools are
     description: >-
-      Evaluate an arithmetic expression exactly: numbers (6.022e23 or 6.022 * 10^23), + - * / ^,
+      Evaluate arithmetic expressions exactly: numbers (6.022e23 or 6.022 * 10^23), + - * / ^,
       parentheses, sqrt, exp, ln, log (base 10), log2, sin, cos, tan, asin, acos, atan, abs, min, max,
-      pi and e. Plain numbers only, no units or variable names. Returns the value.
+      pi and e. Plain numbers only, no units or variable names. Put all the calculations of a step into
+      one call. Returns one line per expression with its value.
     parameters:
-      expression: "The expression, e.g. '2.10 / (2.00 / 138.12 * 180.16) * 100' or 'sqrt(2 * 9.81 * 5)'."
+      expressions: 'The expressions, e.g. ["2.10 / (2.00 / 138.12 * 180.16) * 100", "sqrt(2 * 9.81 * 5)"].'
 
 verifier:                                  # claim checks on the draft; on/off: reasoning_policy.enable_multi_hop_verification
   judge_prompt: |

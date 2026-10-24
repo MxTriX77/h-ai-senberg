@@ -47,7 +47,16 @@ When the Layer 1 store exists, the model looks facts up before it answers. The t
 
 Weak search hits are dropped before the model sees them. A hit is kept only when its title and passage contain at least `retrieval.min_term_share` (half) of the query's content words, or when the store matched its title or alias. Dropped hits show as "weak match, not used" in the Reasoning block. Without the filter, a query whose words no single article holds gets articles that share just one of them. Set `0` to turn the filter off.
 
-Next to the knowledge tools there is a built-in `calculate(expression)` tool. It evaluates plain arithmetic exactly: numbers in any common notation, `+ - * / ^`, parentheses, `sqrt`, `exp`, `ln`, `log`, trigonometry, `pi` and `e`. It parses the expression and runs no code. The tool prompt asks the model to use it for every calculation. Its text is `tools.calculate` in the config; remove that entry (and the calculator sentence of the tool prompt) to turn the tool off.
+Next to the knowledge tools there is a built-in `calculate(expressions)` tool. It evaluates plain arithmetic exactly: numbers in any common notation, `+ - * / ^`, parentheses, `sqrt`, `exp`, `ln`, `log`, trigonometry, `pi` and `e`. It parses each expression and runs no code. One call takes a list of expressions and returns one `expression = value` line (or error) per expression; a single string counts as one expression. The tool prompt asks the model to use it for every calculation and to put all the calculations of a step into one call. Its text is `tools.calculate` in the config; remove that entry (and the calculator sentence of the tool prompt) to turn the tool off.
+
+Calculations have their own rounds, so they do not use up the lookups: a round with only `calculate` calls counts against `reasoning_policy.max_calc_rounds` (1: one extra round for calculations after the lookups), not `max_search_depth`. Once the lookup rounds are used, the model is offered the calculator alone until its rounds are used too; then the last call sends `tool_choice: "none"`. With `max_calc_rounds: 0` every round counts as a lookup round.
+
+Two safety nets keep the answer an answer:
+
+- **Tool calls written as text.** Some chat templates write a tool call as text (`<tool_call><function=calculate>…`) when tools are not allowed. Such text in the reply is read with the patterns in `reasoning_policy.tool_call_markup` (Qwen3.5 XML and Hermes JSON). When every call names a tool that still has rounds, the calls run and the loop goes on. Otherwise the markup is removed and the model is asked once more for a plain final answer (`reasoning_policy.answer_retry_prompt`, request fields `answer_retry_request`, shipped: thinking off). Switch: `reasoning_policy.text_tool_calls`.
+- **Empty answers.** When the model leaves its whole answer in the thinking and returns no content, it is asked once more the same way. Switch: `reasoning_policy.empty_answer_retry`.
+
+If the retry gives nothing, the text before the markup is kept; if there is none at all, the answer says plainly that it could not be completed. The Reasoning block shows what happened ("tool call written as text: run", "empty answer: final answer asked again").
 
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 

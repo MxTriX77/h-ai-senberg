@@ -252,6 +252,9 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
     ("reasoning_policy", "max_search_depth", -1, r"reasoning_policy\.max_search_depth"),
     ("reasoning_policy", "tool_prompt", None, r"reasoning_policy\.tool_prompt"),
     ("reasoning_policy", "tool_prompt", " ", r"reasoning_policy\.tool_prompt"),
+    ("reasoning_policy", "max_calc_rounds", -1, r"reasoning_policy\.max_calc_rounds"),
+    ("reasoning_policy", "answer_retry_prompt", " ", r"reasoning_policy\.answer_retry_prompt"),
+    ("reasoning_policy", "text_tool_calls", None, r"reasoning_policy\.text_tool_calls"),
     ("retrieval", "passage_chars", 0, r"retrieval\.passage_chars"),
 ])
 def test_tool_and_search_settings_validated(tmp_path, section, key, value, named):
@@ -267,12 +270,22 @@ def test_tool_and_search_settings_validated(tmp_path, section, key, value, named
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
     assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate"}
-    assert set(cfg.tools["calculate"].parameters) == {"expression"}
+    assert set(cfg.tools["calculate"].parameters) == {"expressions"}
     assert cfg.verifier.arithmetic_rel_tol == 0.005
     assert set(cfg.tools["search_knowledge"].parameters) == {"query", "domain"}
     data = base()
     data["tools"]["search_knowledge"]["description"] = ""
     with pytest.raises(ConfigError, match=r"tools\.search_knowledge\.description"):
+        load_config(write(tmp_path, data))
+
+
+def test_answer_robustness_settings(tmp_path):
+    p = load_config(write(tmp_path)).reasoning_policy
+    assert p.max_calc_rounds == 1 and p.text_tool_calls and p.empty_answer_retry
+    assert p.answer_retry_request == {"chat_template_kwargs": {"enable_thinking": False}}
+    data = base()
+    data["reasoning_policy"]["tool_call_markup"]["call"] = "<tool_call>("
+    with pytest.raises(ConfigError, match=r"reasoning_policy\.tool_call_markup\.call: .*invalid regular expression"):
         load_config(write(tmp_path, data))
 
 
