@@ -58,6 +58,20 @@ reasoning_policy:
     recompute everything that depends on it.
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
+  max_calc_rounds: 3                       # rounds of calculate calls only, on top: they use no lookup rounds; 0 = they do
+  text_tool_calls: true                    # a tool call written as text in the reply is run when its tool has rounds
+                                           # left, else removed and the final answer asked for again (once)
+  tool_call_markup:                        # how chat templates write a tool call as text (regex; . matches newlines)
+    call: '<tool_call>.*?(?:</tool_call>|$)|<function=.*?(?:</function>(?:\s*</tool_call>)?|$)'   # Hermes/Qwen wrapper or bare Qwen3.5 XML, also cut off
+    function: '<function=([^>\s]+)>'       # Qwen3.5 XML: the tool name; a call without it is read as JSON {"name", "arguments"}
+    parameter: '<parameter=([^>\s]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=|</function>)|$)'   # ... and each argument
+  empty_answer_retry: true                 # an empty final answer (all of it left in the thinking) is asked for again (once)
+  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call)
+    Tools are no longer available. Write your complete final answer to the question above now, as plain
+    text without any tool call: use the results you have, show the working and keep the format the
+    question asks for.
+  answer_retry_request:                    # fields merged into that call
+    chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
