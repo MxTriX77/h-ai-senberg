@@ -899,3 +899,32 @@ async def test_review_fix_on_a_quote_skipped(cfg, fake, knowledge, keep):
     own = QUOTING.replace("about 9", "about 7")  # the answer's own text: fixed either way
     assert text == (own if keep else own.replace("founded in 1994", "founded in 1987"))
     assert ("skipped 'founded in 1994' (quoted from the task)" in steps) is keep
+
+
+COST_TASK = "The report computes the batch cost as 12 × 45 = 560 euros. Check it."
+COST_DRAFT = "The report's 12 × 45 = 560 euros is wrong."
+
+
+@pytest.mark.parametrize("task, kept", [
+    (COST_TASK, True),  # quoted from the task: left as written, listed with a note
+    ("Check the batch cost of 12 crates at 45 euros.", False),  # the answer's own product: fixed
+    ("Is 12 × 45 = 560?", False),  # shared, but shorter than a quotation
+    ("", False),  # keep_quotes off
+])
+def test_quoted_wrong_product(task, kept):
+    out, (fix,), checked = fix_arithmetic(COST_DRAFT, 0.005, task=task)
+    assert checked == 1 and out == (COST_DRAFT if kept else COST_DRAFT.replace("560", "540"))
+    assert fix == {"expression": "12 * 45", "stated": "560", "fixed": "540"} | (
+        {"note": "quoted from the task, left as written"} if kept else {})
+
+
+@pytest.mark.anyio
+async def test_quoted_wrong_product_only_in_the_trace(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(COST_DRAFT)]]
+    question = [{"role": "user", "content": COST_TASK}]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(question)]
+    assert next(i["content"] for i in items if "content" in i) == COST_DRAFT
+    assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []
+    steps = "".join(i.get("reasoning_content", "") for i in items)
+    assert "1 calculation recomputed, 0 fixed\n- 12 * 45 = 560: quoted from the task, left as written (would be 540)" in steps

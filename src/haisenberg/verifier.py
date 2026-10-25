@@ -264,15 +264,20 @@ def _result_units(tail: str) -> str:
     return " ".join(units)
 
 
-def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[str, list[dict[str, str]], int]:
+def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
+                   task: str = "") -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
     A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
     result in % as itself or as a fraction) and, with `prefixes`, of the SI prefixes in its chain (a unit
     with a prefix on an operand, right after the result or after the next `=`: the result may be scaled by
     10^±3, ±6, ±9): off by more than half a unit of its last digit and rel_tol. It is rewritten only when the
-    right value is clear; otherwise it is left as written, and so is a number that cannot be read as one."""
+    right value is clear; otherwise it is left as written, and so is a number that cannot be read as one.
+    With the `task`, a wrong result that is quoted from it (the task writes the same expression with the same
+    result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
+    in_task = _written_results(task, decimal_comma) if task else set()
+    mask = quoted(draft, task) if task else []
     for a in find_arithmetic(draft, decimal_comma):
         window = _decimal_points(draft[a.result_at : a.result_at + 80], decimal_comma)
         numbers = read_numbers(window)
@@ -295,12 +300,25 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[s
         if right is None:
             continue
         start, end = a.result_at + n.start, a.result_at + n.end
-        fixed = _format(right, n)
-        fixes.append({"expression": a.expression, "stated": draft[start:end], "fixed": fixed, "at": (start, end)})
+        fix = {"expression": a.expression, "stated": draft[start:end], "fixed": _format(right, n), "at": (start, end)}
+        if (a.expression, n.value) in in_task and all(mask[start:end]):
+            fix["note"] = "quoted from the task, left as written"
+        fixes.append(fix)
     for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
         start, end = f.pop("at")
-        draft = draft[:start] + f["fixed"] + draft[end:]
+        if "note" not in f:
+            draft = draft[:start] + f["fixed"] + draft[end:]
     return draft, fixes, checked
+
+
+def _written_results(text: str, decimal_comma: bool) -> set[tuple[str, float]]:
+    """(expression, stated result) of every `expression = result` written in the text."""
+    out = set()
+    for a in find_arithmetic(text, decimal_comma):
+        numbers = read_numbers(_decimal_points(text[a.result_at : a.result_at + 80], decimal_comma))
+        if numbers and numbers[0].start == 0:
+            out.add((a.expression, numbers[0].value))
+    return out
 
 
 def _decimal_points(text: str, decimal_comma: bool) -> str:
@@ -533,11 +551,16 @@ class Verifier:
         arithmetic, checked = [], 0
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
-                                                        self.cfg.arithmetic_prefixes)
+                                                        self.cfg.arithmetic_prefixes,
+                                                        question if self.cfg.keep_quotes else "")
+        kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
+        arithmetic = [a for a in arithmetic if "note" not in a]
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
-                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic))
+                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic)
+                       + "".join(f"- {a['expression']} = {a['stated']}: {a['note']} (would be {a['fixed']})\n"
+                                 for a in kept))
         draft, checks = run_checkers(draft, self.cfg.checkers, question if self.cfg.keep_quotes else "")
         for name in self.cfg.checkers:
             found = [c for c in checks if c["checker"] == name]

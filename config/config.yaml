@@ -139,7 +139,8 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # row, ids aside) is ignored: the claim counts as uncorrected (see above)
   keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
                                            # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
-                                           # of the material under review: checkers only report a fix inside it, a claim
+                                           # of the material under review: checkers and the arithmetic check (when the
+                                           # task writes the same a × b = c) only report a fix inside it, a claim
                                            # that is a quotation plus at most a label or verdict mark (✗ WRONG) is not
                                            # checked, and a review fix that changes quoted text is skipped; false: as before
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
