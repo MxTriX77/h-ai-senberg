@@ -382,10 +382,9 @@ def _rel(path: Path) -> str:
 
 def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path) -> dict[str, Any]:
     """What a run depends on: code, config after the mode, model file, store, eval files, GPU, sampling."""
-    store, backend, model = cfg.retrieval.layer1_encyclopedia_db, cfg.model_backend, served_model(cfg)
+    store, backend, model = cfg.retrieval.path("encyclopedia"), cfg.model_backend, served_model(cfg)
     st = store.stat() if store.is_file() else None
-    lit = cfg.retrieval.layer2_literature_db
-    lt = lit.stat() if cfg.retrieval.knowledge == "extended" and lit.is_file() else None
+    enabled = cfg.retrieval.knowledge_sets[cfg.retrieval.knowledge]
     return {
         "run_id": run_id,
         "git": _git(cfg.root),
@@ -399,8 +398,7 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "store": {"path": str(store), "size": st and st.st_size,
                   "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")},
         "knowledge": cfg.retrieval.knowledge,
-        "literature_store": lt and {"path": str(lit), "size": lt.st_size,
-                                    "mtime": datetime.fromtimestamp(lt.st_mtime).isoformat(timespec="seconds")},
+        "stores": {name: _store_id(cfg.retrieval.stores[name]) for name in enabled},  # the stores the tools read
         "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
         "gpu": gpu_info(),
@@ -408,6 +406,13 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, **backend.extra_body},
         "args": args,
     }
+
+
+def _store_id(store) -> dict[str, Any]:
+    """Kind, path, size and mtime of a knowledge store (size and mtime null when the file is missing)."""
+    st = store.path.stat() if store.path.is_file() else None
+    return {"kind": store.kind, "path": str(store.path), "size": st and st.st_size,
+            "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")}
 
 
 def open_run(folder: Path, man: dict[str, Any]) -> None:

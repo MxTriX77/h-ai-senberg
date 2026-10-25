@@ -64,7 +64,7 @@ def test_two_passages_of_one_page_are_two_sources(cfg, built_store, l2_store):
 
 
 def test_open_follows_the_setting(cfg, built_store, l2_store):
-    cfg.retrieval.layer1_encyclopedia_db, cfg.retrieval.layer2_literature_db = built_store, l2_store
+    cfg.retrieval.stores["encyclopedia"].path, cfg.retrieval.stores["literature"].path = built_store, l2_store
     assert Knowledge.open(cfg).literature is None  # base ignores an existing literature store
     cfg.retrieval.knowledge = "extended"
     assert Knowledge.open(cfg).literature is not None
@@ -73,7 +73,7 @@ def test_open_follows_the_setting(cfg, built_store, l2_store):
 @pytest.mark.parametrize("wrong", ["missing", "layer1"])
 def test_extended_without_literature_store_fails(cfg, built_store, tmp_path, wrong):
     cfg.retrieval.knowledge = "extended"
-    cfg.retrieval.layer2_literature_db = tmp_path / "none.db" if wrong == "missing" else built_store
+    cfg.retrieval.stores["literature"].path = tmp_path / "none.db" if wrong == "missing" else built_store
     with pytest.raises(ConfigError, match="KNOWLEDGE=extended.*ingest.build_l2"):
         Knowledge.open(cfg)
 
@@ -86,11 +86,13 @@ def test_manifest_tells_a_and_b_apart(cfg, l2_store, tmp_path, monkeypatch):
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
     a = run.manifest(cfg, "a", "D", [], [], tmp_path / "cache.json")
-    cfg.retrieval.knowledge, cfg.retrieval.layer2_literature_db = "extended", l2_store
+    cfg.retrieval.knowledge, cfg.retrieval.stores["literature"].path = "extended", l2_store
     b = run.manifest(cfg, "b", "D", [], [], tmp_path / "cache.json")
-    assert (a["knowledge"], a["literature_store"]) == ("base", None)
-    assert b["knowledge"] == "extended" and b["literature_store"]["path"] == str(l2_store)
-    assert b["literature_store"]["size"] == l2_store.stat().st_size and b["literature_store"]["mtime"]
+    assert (a["knowledge"], list(a["stores"])) == ("base", ["encyclopedia"])
+    assert a["stores"]["encyclopedia"]["kind"] == "encyclopedia" and a["stores"]["encyclopedia"] == b["stores"]["encyclopedia"]
+    lit = b["stores"]["literature"]
+    assert (b["knowledge"], lit["kind"], lit["path"]) == ("extended", "literature", str(l2_store))
+    assert lit["size"] == l2_store.stat().st_size and lit["mtime"]
     assert a["config_sha256"] != b["config_sha256"]
     assert (a["git"], a["mode"], a["model_id"], a["sampling"]) == (b["git"], b["mode"], b["model_id"], b["sampling"])
 

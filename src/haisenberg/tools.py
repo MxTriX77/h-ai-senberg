@@ -74,7 +74,7 @@ class Sources:
 
 class Knowledge:
     """The store plus the tools generated from it; no store (or depth 0) means no tools. With a literature store
-    (knowledge `extended`), searches also return up to retrieval.literature_k of its passages."""
+    (enabled by the knowledge setting), searches also return up to retrieval.literature_k of its passages."""
 
     def __init__(self, store: L1Store | None, cfg: Config, literature: L2Store | None = None):
         self.store = store
@@ -98,18 +98,18 @@ class Knowledge:
 
     @classmethod
     def open(cls, cfg: Config) -> Knowledge:
-        """The stores of the configured knowledge. Raises ConfigError when `extended` has no literature store."""
+        """The stores the knowledge setting enables. Raises ConfigError when it enables a literature store that
+        cannot be opened (an A/B run must never fall back to less knowledge)."""
+        r, store, literature = cfg.retrieval, None, None
         try:
-            store = L1Store(cfg.retrieval.layer1_encyclopedia_db, cfg.retrieval.top_k_proofs)
+            store = L1Store(r.path("encyclopedia"), r.top_k_proofs)
         except L1Error as e:
             log.warning("no knowledge tools: %s", e)
-            store = None
-        literature = None
-        if cfg.retrieval.knowledge == "extended":
+        if (path := r.enabled("literature")) is not None:
             try:
-                literature = L2Store(cfg.retrieval.layer2_literature_db)
+                literature = L2Store(path)
             except L2Error as e:
-                raise ConfigError(f"KNOWLEDGE=extended (retrieval.knowledge) needs the literature store: {e}") from e
+                raise ConfigError(f"KNOWLEDGE={r.knowledge} (retrieval.knowledge) needs the literature store: {e}") from e
         return cls(store, cfg, literature)
 
     def run(self, name: str, arguments: str, sources: Sources, k: int | None = None) -> tuple[str, list[str], list[str]]:

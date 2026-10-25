@@ -186,14 +186,14 @@ def build(manifest: Path, raw_dir: Path, db: Path, limit: int) -> dict[str, int 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--raw-dir", type=Path, help="default: retrieval.raw_dir from the config")
-    parser.add_argument("--db", type=Path, help="default: retrieval.layer2_literature_db")
+    parser.add_argument("--db", type=Path, help="default: the literature store in retrieval.stores")
     parser.add_argument("--manifest", type=Path, help="default: config/sources.yaml in the project")
     args = parser.parse_args(argv)
 
     try:
         cfg = load_config()
         raw_dir = args.raw_dir or cfg.retrieval.raw_dir
-        db = args.db or cfg.retrieval.layer2_literature_db
+        db = args.db or cfg.retrieval.path("literature")
         manifest = args.manifest or cfg.root / "config" / "sources.yaml"
         report = build(manifest, raw_dir, db, cfg.retrieval.layer2_chunk_chars)
     except (BuildError, ConfigError, ManifestError, OSError) as e:

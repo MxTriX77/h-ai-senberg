@@ -21,12 +21,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("query")
     p.add_argument("-k", type=int, default=5, help="maximum number of passages (default 5)")
     p.add_argument("--domain", help="only passages of this domain")
-    p.add_argument("--db", help="store path (default: retrieval.layer2_literature_db)")
+    p.add_argument("--db", help="store path (default: the literature store in retrieval.stores)")
     p.add_argument("--json", action="store_true", help="print the records as a JSON array")
     args = parser.parse_args(argv)
 
     try:
-        store = L2Store(args.db or load_config().retrieval.layer2_literature_db)
+        store = L2Store(args.db or load_config().retrieval.path("literature"))
         records = store.search(args.query, args.k, args.domain)
     except (L2Error, ConfigError) as e:
         print(f"error: {e}", file=sys.stderr)

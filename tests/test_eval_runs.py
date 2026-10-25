@@ -237,7 +237,7 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     model, store, cache = tmp_path / "m.gguf", tmp_path / "s.db", tmp_path / "evals" / ".sha-cache.json"
     model.write_bytes(b"weights")
     store.write_bytes(b"store")
-    cfg.llama_server.model_path, cfg.retrieval.layer1_encyclopedia_db = model, store
+    cfg.llama_server.model_path, cfg.retrieval.stores["encyclopedia"].path = model, store
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
     monkeypatch.setenv("MODEL_PROFILE", "p1")

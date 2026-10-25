@@ -1,4 +1,4 @@
-"""Checks on the real store (skipped unless retrieval.layer1_encyclopedia_db exists, e.g. via DATA_DIR)."""
+"""Checks on the real store (skipped unless the encyclopedia store exists, e.g. via DATA_DIR)."""
 
 import statistics
 import time
@@ -29,7 +29,7 @@ CONSTANTS = [
 
 @pytest.fixture(scope="module")
 def store():
-    return L1Store(real_path("layer1_encyclopedia_db"))
+    return L1Store(real_path("encyclopedia"))
 
 
 def p95_ms(fn, queries, rounds=5):

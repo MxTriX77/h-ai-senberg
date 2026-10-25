@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=help_)
         p.add_argument("query")
         p.add_argument("-k", type=int, default=5, help="maximum number of records (default 5)")
-        p.add_argument("--db", help="store path (default: retrieval.layer1_encyclopedia_db)")
+        p.add_argument("--db", help="store path (default: the encyclopedia store in retrieval.stores)")
         p.add_argument("--json", action="store_true", help="print the records as a JSON array")
     args = parser.parse_args(argv)
 

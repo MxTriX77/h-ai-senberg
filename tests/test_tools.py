@@ -49,7 +49,7 @@ def test_no_store_no_tools(cfg, caplog):
     with caplog.at_level(logging.WARNING):
         k = Knowledge.open(cfg)
     assert k.tools == []
-    assert str(cfg.retrieval.layer1_encyclopedia_db) in caplog.text and "ingest.build_l1" in caplog.text
+    assert str(cfg.retrieval.path("encyclopedia")) in caplog.text and "ingest.build_l1" in caplog.text
 
 
 def test_depth_zero_no_tools(cfg, built_store):
@@ -204,7 +204,7 @@ def test_real_store_keeps_the_ranked_first_hit(cfg):
     from haisenberg.config import load_config
     from l1.l1_helpers import real_path
 
-    db = real_path("layer1_encyclopedia_db")
+    db = real_path("encyclopedia")
     real = load_config()
     real.retrieval.min_term_share = 0.5
     knowledge = Knowledge(L1Store(db), real)

@@ -93,14 +93,16 @@ def test_no_dotenv_file(tmp_path):
 
 def test_default_used(tmp_path):
     cfg = load_config(write(tmp_path))
-    assert cfg.retrieval.layer1_encyclopedia_db == tmp_path.resolve() / "data" / "encyclopedia_fts.db"
+    assert cfg.retrieval.path("encyclopedia") == tmp_path.resolve() / "data" / "encyclopedia_fts.db"
+    assert cfg.retrieval.path("literature") == tmp_path.resolve() / "data" / "literature_fts.db"
 
 
 def test_variable_inside_longer_string_and_absolute_path(tmp_path, monkeypatch):
     other = tmp_path / "elsewhere" / "hdata"
     monkeypatch.setenv("DATA_DIR", other.as_posix())
     cfg = load_config(write(tmp_path / "proj"))
-    assert cfg.retrieval.layer1_encyclopedia_db == other / "encyclopedia_fts.db"
+    assert cfg.retrieval.path("encyclopedia") == other / "encyclopedia_fts.db"
+    assert cfg.retrieval.path("literature") == other / "literature_fts.db"
     assert cfg.retrieval.raw_dir == other / "raw"
 
 
@@ -392,3 +394,29 @@ def test_knowledge_switch_by_environment(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE", "everything")
     with pytest.raises(ConfigError, match="retrieval.knowledge"):
         load_config(SHIPPED)
+
+
+@pytest.mark.parametrize("change, error", [
+    ({"knowledge_sets": {"base": ["encyclopedia", "nope"]}}, "unknown stores"),
+    ({"stores": {"encyclopedia": {"kind": "encyclopedia", "path": "a.db"}, "other": {"kind": "encyclopedia", "path": "b.db"}},
+      "knowledge_sets": {"base": ["encyclopedia", "other"]}}, "one store of each kind"),
+    ({"stores": {"encyclopedia": {"kind": "graph", "path": "a.db"}}}, "retrieval.stores"),
+])
+def test_store_registry_validated(tmp_path, change, error):
+    raw = yaml.safe_load(SHIPPED.read_text(encoding="utf-8"))
+    raw["retrieval"].update(change)
+    if "stores" in change and "knowledge_sets" not in change:
+        raw["retrieval"]["knowledge_sets"] = {"base": ["encyclopedia"]}
+    raw["retrieval"]["knowledge"] = "base"
+    with pytest.raises(ConfigError, match=error):
+        load_config(write(tmp_path, raw))
+
+
+def test_enabled_stores_follow_the_knowledge_setting(monkeypatch):
+    monkeypatch.delenv("KNOWLEDGE", raising=False)
+    r = load_config(SHIPPED).retrieval
+    assert {s.kind for s in r.stores.values()} == {"encyclopedia", "literature"}
+    assert r.enabled("encyclopedia") == r.path("encyclopedia") and r.enabled("literature") is None
+    monkeypatch.setenv("KNOWLEDGE", "extended")
+    r = load_config(SHIPPED).retrieval
+    assert r.enabled("literature") == r.path("literature") == r.stores["literature"].path
