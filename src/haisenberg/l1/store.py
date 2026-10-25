@@ -276,6 +276,11 @@ class L1Store:
         """Exact title/alias match first; then articles named by a shorter phrase of the query that contain
         all its words (longer phrases first, then phrases nearer the end); then BM25 over articles with all
         words (any word if none). With a domain, only articles having that domain are considered."""
+        return [record for _, record in self.ranked_articles(query, k, domain)]
+
+    def ranked_articles(self, query: str, k: int | None = None,
+                        domain: str | None = None) -> list[tuple[int, ArticleRecord]]:
+        """search_encyclopedia's records with their article ids."""
         k = k or self.top_k
         words = [w for w in _WORD.findall(query.lower()) if w not in STOPWORDS]
         if not words:
@@ -297,7 +302,31 @@ class L1Store:
         if not first:  # a query that names an article needs no phrase matches
             first = self._named(match, [i for i, _ in self._aliased(_phrases(query), domain)], found)
         used = {r[0] for r in first}
-        rows = first + [r for r in rows if r[0] not in used]
+        rows = (first + [r for r in rows if r[0] not in used])[:k]
+        return list(zip([r[0] for r in rows], self._records(rows)))
+
+    def identity(self) -> dict[str, str | int]:
+        """The build this store comes from (a dense index records it): build time and article count."""
+        meta = dict(self.con.execute("SELECT key, value FROM meta WHERE key IN ('built_at', 'articles')"))
+        return {"store_built_at": meta["built_at"], "articles": int(meta["articles"])}
+
+    def articles(self, ids: list[int]) -> list[ArticleRecord]:
+        """The records of the articles with these ids, in that order (score 0.0, snippet from the lead's start)."""
+        if not ids:
+            return []
+        rows = {r[0]: r for r in self.con.execute(
+            "SELECT id, path, title, lead, infobox, revision, source_id, 0.0, substr(lead, 1, 200)"
+            f" FROM article WHERE id IN ({','.join('?' * len(ids))})", ids)}
+        return self._records([rows[i] for i in ids])
+
+    def in_domain(self, ids: list[int], domain: str) -> list[int]:
+        """Those of the article ids that have the domain."""
+        if not ids:
+            return []
+        sql = f"SELECT article_id FROM article_domain WHERE domain = ? AND article_id IN ({','.join('?' * len(ids))})"
+        return [r[0] for r in self.con.execute(sql, (domain, *ids))]
+
+    def _records(self, rows: list[tuple]) -> list[ArticleRecord]:
         return [
             ArticleRecord(
                 title=title,
@@ -309,7 +338,7 @@ class L1Store:
                 domains=self._article_domains(article_id),
                 citation=self.sources[sid].cite({"path": path, "revision": rev or ""}),
             )
-            for article_id, path, title, lead, infobox, rev, sid, score, snippet in rows[:k]
+            for article_id, path, title, lead, infobox, rev, sid, score, snippet in rows
         ]
 
     def _aliased(self, phrases: list[tuple[str, int]], domain: str | None) -> list[tuple[int, int]]:

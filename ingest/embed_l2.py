@@ -46,52 +46,65 @@ def build(db: Path, out: Path, embed: Embed, model: dict, factory: str, batch: i
           restart: bool = False, log: Callable[[str], None] = print) -> dict:
     """Embed every passage of the store at db into out, then index them. `model`: model_id, model_sha256 and
     query_prefix, recorded in meta.json. Returns the build report."""
-    t0 = time.monotonic()
     store = L2Store(db)
     try:
         first, last, n = store.con.execute("SELECT min(id), max(id), count(*) FROM passage").fetchone()
         if (first, last) != (1, n):
             raise BuildError(f"{db}: passage ids must run from 1 to {n} without gaps (found {first}..{last})")
-        want = {**model, **store.identity()}
-        meta = _read_meta(out) if not restart else {}
-        if meta and any(meta.get(k) != v for k, v in want.items()):
-            have = {k: meta.get(k) for k in want}
-            raise BuildError(f"{out} holds vectors of another model or literature store build ({have}, now {want});"
-                             " run again with --restart to discard them")
-        if not meta:
-            for name in (VECTORS, INDEX, META):
-                (out / name).unlink(missing_ok=True)
-            meta = {**want, "index": factory, "dim": None, "done_rows": 0, "shortened": 0, "complete": False}
-        if meta["complete"]:
-            log(f"{out} is complete; nothing to do (--restart builds it again)")
-            return _report(meta, out, t0)
-        out.mkdir(parents=True, exist_ok=True)
-        vectors = np.load(out / VECTORS, mmap_mode="r+") if meta["dim"] else None
-        done, start, run_start = meta["done_rows"], meta["done_rows"], time.monotonic()
-        saved = run_start
-        with ThreadPoolExecutor(workers) as pool:
-            while done < n:
-                stop = min(n, done + batch * workers * WINDOW)
-                texts = [passage_text(*row) for row in store.con.execute(
-                    "SELECT title, heading, text FROM passage WHERE id > ? AND id <= ? ORDER BY id", (done, stop))]
-                parts = list(pool.map(lambda b: _embed(embed, b), [texts[i:i + batch] for i in range(0, len(texts), batch)]))
-                rows = np.concatenate([p[0] for p in parts])
-                if vectors is None:
-                    meta["dim"] = int(rows.shape[1])
-                    vectors = np.lib.format.open_memmap(out / VECTORS, mode="w+", dtype=np.float16, shape=(n, meta["dim"]))
-                vectors[done:stop] = rows
-                meta["shortened"] += sum(p[1] for p in parts)
-                done = stop
-                if time.monotonic() - saved >= SAVE_S or done == n:
-                    vectors.flush()
-                    meta["done_rows"] = done
-                    _write_meta(out, meta)
-                    saved = time.monotonic()
-                    rate = (done - start) / max(saved - run_start, 1e-9)
-                    left = timedelta(seconds=round((n - done) / rate)) if rate else "?"
-                    log(f"embedded {done:,}/{n:,} passages, {rate:.1f}/s, {left} left, {meta['shortened']} shortened")
+
+        def texts(start: int, stop: int) -> list[str]:
+            return [passage_text(*row) for row in store.con.execute(
+                "SELECT title, heading, text FROM passage WHERE id > ? AND id <= ? ORDER BY id", (start, stop))]
+
+        return embed_rows(out, n, texts, {**model, **store.identity()}, embed, factory, batch, workers, restart, log,
+                          "passages")
     finally:
         store.close()
+
+
+def embed_rows(out: Path, n: int, texts: Callable[[int, int], list[str]], want: dict, embed: Embed, factory: str,
+               batch: int, workers: int, restart: bool = False, log: Callable[[str], None] = print,
+               rows_name: str = "rows") -> dict:
+    """Embed rows 1..n (`texts(start, stop)`: the texts of rows start+1..stop) into out, resuming a stopped build,
+    then index them. `want`: the model and the identity of the store the rows come from, recorded in meta.json and
+    checked on resume. Returns the build report."""
+    t0 = time.monotonic()
+    meta = _read_meta(out) if not restart else {}
+    if meta and any(meta.get(k) != v for k, v in want.items()):
+        have = {k: meta.get(k) for k in want}
+        raise BuildError(f"{out} holds vectors of another model or store build ({have}, now {want});"
+                         " run again with --restart to discard them")
+    if not meta:
+        for name in (VECTORS, INDEX, META):
+            (out / name).unlink(missing_ok=True)
+        meta = {**want, "index": factory, "dim": None, "done_rows": 0, "shortened": 0, "complete": False}
+    if meta["complete"]:
+        log(f"{out} is complete; nothing to do (--restart builds it again)")
+        return _report(meta, out, t0)
+    out.mkdir(parents=True, exist_ok=True)
+    vectors = np.load(out / VECTORS, mmap_mode="r+") if meta["dim"] else None
+    done, start, run_start = meta["done_rows"], meta["done_rows"], time.monotonic()
+    saved = run_start
+    with ThreadPoolExecutor(workers) as pool:
+        while done < n:
+            stop = min(n, done + batch * workers * WINDOW)
+            part = texts(done, stop)
+            parts = list(pool.map(lambda b: _embed(embed, b), [part[i:i + batch] for i in range(0, len(part), batch)]))
+            rows = np.concatenate([p[0] for p in parts])
+            if vectors is None:
+                meta["dim"] = int(rows.shape[1])
+                vectors = np.lib.format.open_memmap(out / VECTORS, mode="w+", dtype=np.float16, shape=(n, meta["dim"]))
+            vectors[done:stop] = rows
+            meta["shortened"] += sum(p[1] for p in parts)
+            done = stop
+            if time.monotonic() - saved >= SAVE_S or done == n:
+                vectors.flush()
+                meta["done_rows"] = done
+                _write_meta(out, meta)
+                saved = time.monotonic()
+                rate = (done - start) / max(saved - run_start, 1e-9)
+                left = timedelta(seconds=round((n - done) / rate)) if rate else "?"
+                log(f"embedded {done:,}/{n:,} {rows_name}, {rate:.1f}/s, {left} left, {meta['shortened']} shortened")
     log(f"indexing {n:,} vectors ({factory}) on the CPU")
     try:
         faiss.write_index(_index(vectors, factory), str(out / INDEX))

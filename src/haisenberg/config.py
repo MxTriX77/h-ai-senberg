@@ -97,8 +97,9 @@ class ReasoningPolicyConfig(_Section):
 class StoreConfig(_Section):
     """A knowledge store: its kind says which ingest script builds it and which code reads it."""
 
-    # Layer 1 (ingest.build_l1), Layer 2 literature (ingest.build_l2) or its vectors (ingest.embed_l2, a folder)
-    kind: Literal["encyclopedia", "literature", "literature_dense"]
+    # Layer 1 (ingest.build_l1), Layer 2 literature (ingest.build_l2), or the vectors of either (ingest.embed_l1 /
+    # ingest.embed_l2, a folder)
+    kind: Literal["encyclopedia", "literature", "literature_dense", "encyclopedia_dense"]
     path: Path
 
 
@@ -117,7 +118,8 @@ class SourceLabels(_Section):
 
 
 class DenseConfig(_Section):
-    """The literature_dense store: how ingest.embed_l2 indexes the vectors and how a hybrid search ranks."""
+    """The dense stores: how ingest.embed_l2 indexes the literature vectors (index, nprobe), and how a hybrid
+    literature search or a cross-lingual encyclopedia search ranks (the rest)."""
 
     index: str  # FAISS index factory, e.g. 'IVF4096,PQ64'
     nprobe: PositiveInt  # index lists searched per query
@@ -154,6 +156,8 @@ class RetrievalConfig(_Section):
                 raise ValueError(f"{name}: at most one store of each kind")
             if "literature_dense" in kinds and "literature" not in kinds:  # the vectors index its passages
                 raise ValueError(f"{name}: a literature_dense store needs a store of kind 'literature'")
+            if "encyclopedia_dense" in kinds and "encyclopedia" not in kinds:  # the vectors index its articles
+                raise ValueError(f"{name}: an encyclopedia_dense store needs a store of kind 'encyclopedia'")
         return v
 
     @field_validator("knowledge")
@@ -250,8 +254,8 @@ class LlamaServerConfig(_Section):
 
 
 class EmbeddingConfig(_Section):
-    """The embedding model of the literature_dense store: an OpenAI-compatible embeddings backend and its own
-    llama-server, started on demand when the knowledge setting enables that store."""
+    """The embedding model of the dense stores: an OpenAI-compatible embeddings backend and its own llama-server,
+    started on demand when the knowledge setting enables such a store."""
 
     api_base: str
     api_key: str
