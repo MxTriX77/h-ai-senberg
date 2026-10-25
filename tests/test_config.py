@@ -379,3 +379,16 @@ def test_checker_plugins(tmp_path):
     data["verifier"]["checkers"] = ["astrology"]
     with pytest.raises(ConfigError, match="verifier.checkers"):
         load_config(write(tmp_path, data))
+
+
+def test_knowledge_switch_by_environment(monkeypatch):
+    monkeypatch.delenv("KNOWLEDGE", raising=False)
+    base = load_config(SHIPPED)
+    assert base.retrieval.knowledge == "base"
+    monkeypatch.setenv("KNOWLEDGE", "extended")
+    extended = load_config(SHIPPED)
+    assert extended.retrieval.knowledge == "extended"
+    assert extended.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()  # nothing else
+    monkeypatch.setenv("KNOWLEDGE", "everything")
+    with pytest.raises(ConfigError, match="retrieval.knowledge"):
+        load_config(SHIPPED)

@@ -384,6 +384,8 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
     """What a run depends on: code, config after the mode, model file, store, eval files, GPU, sampling."""
     store, backend, model = cfg.retrieval.layer1_encyclopedia_db, cfg.model_backend, served_model(cfg)
     st = store.stat() if store.is_file() else None
+    lit = cfg.retrieval.layer2_literature_db
+    lt = lit.stat() if cfg.retrieval.knowledge == "extended" and lit.is_file() else None
     return {
         "run_id": run_id,
         "git": _git(cfg.root),
@@ -396,6 +398,9 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "model_file": {"path": str(model), "sha256": file_sha256(model, cache)},
         "store": {"path": str(store), "size": st and st.st_size,
                   "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")},
+        "knowledge": cfg.retrieval.knowledge,
+        "literature_store": lt and {"path": str(lit), "size": lt.st_size,
+                                    "mtime": datetime.fromtimestamp(lt.st_mtime).isoformat(timespec="seconds")},
         "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
         "gpu": gpu_info(),
@@ -642,12 +647,12 @@ def main(argv: list[str] | None = None) -> int:
         run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{mode}"
         folder = runs_dir() / run_id
         files = sorted({q["file"] for q in chosen})
+        knowledge = Knowledge.open(cfg)  # before the run folder: a missing literature store leaves nothing behind
         open_run(folder, manifest(cfg, run_id, mode, files, sys.argv[1:] if argv is None else argv,
                                   runs_dir() / ".sha-cache.json"))
     except (ConfigError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    knowledge = Knowledge.open(cfg)
     if not knowledge.tools and cfg.reasoning_policy.max_search_depth:
         print("warning: no knowledge tools (store missing?): answers are neither grounded nor verified", file=sys.stderr)
 

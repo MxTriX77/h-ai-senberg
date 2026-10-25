@@ -100,6 +100,8 @@ class RetrievalConfig(_Section):
     layer2_literature_index: Path
     layer2_literature_db: Path
     layer2_chunk_chars: PositiveInt  # longest passage the Layer 2 build stores
+    knowledge: Literal["base", "extended"]  # base: Layer 1 store only; extended: + the Layer 2 literature store
+    literature_k: PositiveInt  # extended: most literature passages added to one search result
     top_k_proofs: PositiveInt
     passage_chars: PositiveInt
     min_term_share: Annotated[float, Field(ge=0, le=1)]  # search hits need this share of the query's words; 0 = off
