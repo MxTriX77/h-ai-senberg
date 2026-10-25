@@ -1,7 +1,9 @@
 """Chemistry checker: element balance. Reaction equations are checked by counting atoms and rebalanced when
 exactly one positive whole-number balance exists, otherwise reported; "A → B loses/gains X" statements are
 checked by subtracting formulas and X is replaced when the difference is a plain loss (or gain). Only plain
-formulas count (H2O, Ca(OH)2, CuSO4·5H2O, subscript digits); names, ions, electrons and LaTeX are skipped."""
+formulas count (H2O, Ca(OH)2, CuSO4·5H2O, subscript digits); names, ions, electrons and LaTeX are skipped.
+A fix is doubtful (only reported, verifier.checkers_clear_only) when the equation may not be chemistry: a
+formula with an explicit count of 1 (P₁V₁, S1), a written coefficient over 20 (1000 IU) or a label (S5.)."""
 
 from __future__ import annotations
 
@@ -37,6 +39,9 @@ _LOSS = (r"loses|lose|losing|loss of|eliminat(?:es|ing|ion of)|releas(?:es|ing|e
 _GAIN = r"gains|gaining|gain of|takes? up|adds|addition of|присоедин\w*|приобрет\w*"
 _CHANGE = re.compile(rf"(?i:({_LOSS})|({_GAIN}))\s+(?:(?i:an?|one|a molecule of|one molecule of|молекулу)\s+)?"
                      rf"({_FORMULA})(?![\w(])")
+MAX_COEFFICIENT = 20  # a larger written number in front is an amount (1000 IU), not a coefficient
+# a label (S5. / **S5.** / - S5: / 1. (S5)): one capital letter and digits starting a line or list item
+_LABEL = re.compile(r"^[ \t#>]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?[*_(\[]*([A-Z]\d+)[*_]*[.:)\]]", re.M)
 
 
 def composition(formula: str) -> dict[str, int] | None:
@@ -95,6 +100,7 @@ class Equation:
     left: list[Species]
     arrow: str
     right: list[Species]
+    doubt: str | None = None  # why this may not be chemistry
 
     def balanced(self) -> bool:
         return _totals(self.left) == _totals(self.right)
@@ -168,8 +174,9 @@ def _null_vector(rows: list[list[Fraction]], n: int) -> list[Fraction] | None:
     return vector
 
 
-def find_equations(text: str) -> list[Equation]:
-    """Reaction equations written with plain formulas; lines with ions or electrons are skipped."""
+def find_equations(text: str, labels: frozenset[str] = frozenset()) -> list[Equation]:
+    """Reaction equations written with plain formulas; lines with ions or electrons are skipped. `labels`: tokens
+    used as labels (`find_labels`), which make an equation doubtful."""
     norm, out = text.translate(_SUBSCRIPTS), []
     for m in _EQUATION.finditer(norm):
         end = norm.find("\n", m.end())
@@ -178,8 +185,29 @@ def find_equations(text: str) -> list[Equation]:
         sides = [_species(text, norm, m.start(1), m.end(1)), _species(text, norm, m.start(3), m.end(3))]
         if None in sides or (m.group(2).strip() == "=" and not _chemical(sides)):
             continue
-        out.append(Equation(m.start(), m.end(), sides[0], text[m.start(2) : m.end(2)], sides[1]))
+        out.append(Equation(m.start(), m.end(), sides[0], text[m.start(2) : m.end(2)], sides[1],
+                            _doubt([*sides[0], *sides[1]], labels)))
     return out
+
+
+def find_labels(*texts: str) -> frozenset[str]:
+    """Tokens of one capital letter and digits that start a line or list item (S5. / **S5.** / - S5: / (S5)),
+    when the letter starts two or more of them (S4, S5): a lone "O2: 32 g/mol" line stays a formula."""
+    tokens = {m.group(1) for t in texts for m in _LABEL.finditer(t.translate(_SUBSCRIPTS))}
+    return frozenset(t for t in tokens if sum(u[0] == t[0] for u in tokens) > 1)
+
+
+def _doubt(species: list[Species], labels: frozenset[str]) -> str | None:
+    """Why an equation may not be chemistry: a label, an indexed symbol (explicit count of 1) or an amount."""
+    for s in species:
+        formula = s.formula.translate(_SUBSCRIPTS)
+        if formula in labels:
+            return f"{s.formula} is a label"
+        if re.search(r"(?<!\d)1(?!\d)", formula):
+            return f"{s.formula} has an explicit count of 1 (an index or a label)"
+        if s.coef > MAX_COEFFICIENT:
+            return f"{_num(s.coef)} {s.formula} is an amount, not a coefficient"
+    return None
 
 
 def _species(text: str, norm: str, start: int, end: int) -> list[Species] | None:
@@ -205,14 +233,15 @@ def _chemical(sides: list[list[Species]]) -> bool:
                for side in sides)
 
 
-def check(draft: str) -> list[Finding]:
-    """Unbalanced equations (rebalanced when one balance exists) and wrong "loses/gains X" statements."""
+def check(draft: str, task: str = "") -> list[Finding]:
+    """Unbalanced equations (rebalanced when one balance exists) and wrong "loses/gains X" statements; the fixes
+    of an equation that may not be chemistry carry a doubt (labels are read from the draft and the task)."""
     findings: list[Finding] = []
     transformations: set[int] = set()  # "A → B" lines that a loses/gains statement explains: not equations
-    norm = draft.translate(_SUBSCRIPTS)
+    norm, labelled = draft.translate(_SUBSCRIPTS), find_labels(task, draft)
     for m in _CHANGE.finditer(norm):
         line_start, line_end = norm.rfind("\n", 0, m.start()) + 1, norm.find("\n", m.end())
-        pairs = [e for e in find_equations(draft[line_start : line_end if line_end >= 0 else len(draft)])
+        pairs = [e for e in find_equations(draft[line_start : line_end if line_end >= 0 else len(draft)], labelled)
                  if len(e.left) == 1 and len(e.right) == 1]
         stated = composition(m.group(3))
         if not pairs or stated is None:
@@ -227,15 +256,16 @@ def check(draft: str) -> list[Finding]:
         verb = "loses" if m.group(1) else "gains"
         text = draft[m.start(3) : m.end(3)]
         if actual and all(n > 0 for n in actual.values()):
-            findings.append(Finding(m.start(3), m.end(3), text, hill(actual), f"{verb} {hill(actual)}, not {text}"))
+            findings.append(Finding(m.start(3), m.end(3), text, hill(actual), f"{verb} {hill(actual)}, not {text}",
+                                    pairs[0].doubt))
         else:
             findings.append(Finding(m.start(3), m.end(3), text, None, f"{verb} {text} does not match the formulas"))
-    for eq in find_equations(draft):
+    for eq in find_equations(draft, labelled):
         if eq.balanced() or eq.start in transformations:
             continue
         text, coefs = draft[eq.start : eq.end], eq.balance()
         if coefs:
-            findings.append(Finding(eq.start, eq.end, text, eq.written(coefs), "rebalanced"))
+            findings.append(Finding(eq.start, eq.end, text, eq.written(coefs), "rebalanced", eq.doubt))
         else:
             findings.append(Finding(eq.start, eq.end, text, None, f"not balanced ({eq.imbalance()})"))
     return sorted(findings, key=lambda f: f.start)

@@ -328,12 +328,17 @@ def _decimal_points(text: str, decimal_comma: bool) -> str:
     return re.sub(comma, r"\1.\2", text)
 
 
-def run_checkers(draft: str, names: list[str], task: str = "") -> tuple[str, list[dict[str, Any]]]:
-    """Run the configured domain checkers (D-034); apply their fixes in place, later spans first, skipping a fix
-    that overlaps one already applied. With the `task`, a fix whose whole span is quoted from it is only
-    reported. Returns the draft and every finding (fixed or only reported)."""
-    found = [(name, f) for name in names for f in CHECKERS[name](draft)]
-    if task:
+def run_checkers(draft: str, names: list[str], task: str = "", keep_quotes: bool = True,
+                 clear_only: bool = True) -> tuple[str, list[dict[str, Any]]]:
+    """Run the configured domain checkers (D-034) on the draft and the task; apply their fixes in place, later
+    spans first, skipping a fix that overlaps one already applied. With `clear_only`, a fix the checker doubts is
+    only reported; with `keep_quotes`, so is a fix whose whole span is quoted from the task. Returns the draft and
+    every finding (fixed or only reported)."""
+    found = [(name, f) for name in names for f in CHECKERS[name](draft, task)]
+    for _, f in found:
+        if clear_only and f.doubt and f.fixed is not None:
+            f.note, f.fixed = f"left as written: {f.doubt}; {f.note}: {f.fixed}", None
+    if task and keep_quotes:
         mask = quoted(draft, task)
         for _, f in found:
             span = [i for i in range(f.start, f.end) if not draft[i].isspace() and draft[i] not in _QUOTE_DROP]
@@ -561,7 +566,8 @@ class Verifier:
                        + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic)
                        + "".join(f"- {a['expression']} = {a['stated']}: {a['note']} (would be {a['fixed']})\n"
                                  for a in kept))
-        draft, checks = run_checkers(draft, self.cfg.checkers, question if self.cfg.keep_quotes else "")
+        draft, checks = run_checkers(draft, self.cfg.checkers, question, self.cfg.keep_quotes,
+                                     self.cfg.checkers_clear_only)
         for name in self.cfg.checkers:
             found = [c for c in checks if c["checker"] == name]
             if found:
