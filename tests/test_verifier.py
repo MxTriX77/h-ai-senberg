@@ -21,10 +21,12 @@ from haisenberg.verifier import (
     is_computation,
     parse_fixes,
     parse_verdicts,
+    quoted,
     read_formulas,
     read_numbers,
     render,
     results,
+    run_checkers,
     Verifier,
     split_claims,
     unconfirmed,
@@ -72,6 +74,11 @@ def test_labelled_answer_and_verdict_lines_are_not_claims():
              "Statement 2: false, see 12 mL\n(c): it is 7 g heavier\nNote: water boils at 100 °C [S1].\nА1: 4,2 г\n")
     assert len(split_claims(draft)) == 7  # the Russian line has no Latin letter: never a claim
     assert [c.text for c in split_claims(draft, skip_labelled=True)] == ["Note: water boils at 100 °C [S1]."]
+
+
+def test_bare_labels_are_not_claims():
+    draft = "**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG\n**C2.\n- A1)\nVitamin B12. H2O.\n"
+    assert texts(draft) == ["Harbour Instruments Ltd was founded in 1994.** ✗ WRONG", "Vitamin B12.", "H2O."]
 
 
 # --- numbers and formulas --------------------------------------------------------------------------
@@ -476,11 +483,11 @@ REPORT = ("The payback is 5000 / 1200 = 4.17 years, and the gap is 96 °C − (�
           "- **B:** True")
 
 
-async def review(cfg, fake, knowledge, reply, text=REPORT):
+async def review(cfg, fake, knowledge, reply, text=REPORT, task="Task."):
     """The answer after the consistency review answered `reply`, and the review's reasoning lines."""
     fake.scripts = [[content(reply)]]
     lines, result = [], None
-    async for item in Verifier(cfg, fake.client(cfg.model_backend), knowledge)._consistency("Task.", text):
+    async for item in Verifier(cfg, fake.client(cfg.model_backend), knowledge)._consistency(task, text):
         if isinstance(item, tuple):
             result = item
         else:
@@ -808,3 +815,116 @@ async def test_checker_findings_in_the_report_and_off_switch(cfg, fake, knowledg
     fake.scripts = [[content("Water forms as H2 + O2 → H2O.")]]
     items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
     assert next(i["content"] for i in items if "content" in i) == "Water forms as H2 + O2 → H2O."
+
+
+# --- quotations of the task (c3) ------------------------------------------------------------------------
+
+EQ_TASK = "The lab report gives Fe₂O₃ + CO → Fe + CO₂ for the furnace step. Audit it."
+EQ_DRAFT = "The report's equation Fe2O3 + CO → Fe + CO2 is not balanced: one Fe on the right, two on the left."
+AUDIT_TASK = "Audit the company profile.\nS3. Harbour Instruments Ltd was founded in 1994.\nS4. It has 120 staff."
+
+
+def test_quoted_runs():
+    task = "The report gives “Fe₂O₃ + CO → Fe + CO₂” for sodium benzoate (C₆H₅COONa) and H2 + O2 → H2O."
+    text = "Its **Fe2O3 + CO → Fe + CO2** is wrong; sodium benzoate is C6H5COONa; H2 + O2 → H2O too."
+    mask = quoted(text, task)
+
+    def marks(part):
+        at = text.index(part)
+        return mask[at : at + len(part)]
+
+    assert all(marks("Fe2O3 + CO → Fe + CO2"))  # subscripts, emphasis and quote marks ignored
+    assert not any(marks("It")) and not any(marks("is wrong"))  # ("s " is shared too: "gives Fe…")
+    for short in ("sodium benzoate", "C6H5COONa", "H2 + O2 → H2O"):  # a name, a formula, a short equation
+        assert not any(marks(short))
+    assert not any(quoted(text, ""))
+
+
+@pytest.mark.parametrize("task, draft, fixed", [
+    (EQ_TASK, EQ_DRAFT, None),  # quoted from the task: reported, left as written
+    ("Audit the furnace step of the lab report.", EQ_DRAFT, "Fe2O3 + 3CO → 2Fe + 3CO2"),  # the answer's own
+    ("", EQ_DRAFT, "Fe2O3 + 3CO → 2Fe + 3CO2"),  # keep_quotes off
+    ("Explain H2 + O2 → H2O.", "In a flame, H2 + O2 → H2O releases heat.", "2H2 + O2 → 2H2O"),  # too short
+])
+def test_quoted_equation_kept(task, draft, fixed):
+    out, (finding,) = run_checkers(draft, ["element_balance"], task)
+    assert finding["fixed"] == fixed
+    if fixed:
+        assert out == draft.replace(finding["text"], fixed) and finding["note"] == "rebalanced"
+    else:
+        assert out == draft
+        assert finding["note"] == "quoted from the task, left as written; rebalanced: Fe2O3 + 3CO → 2Fe + 3CO2"
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_quoted_equation_kept_in_the_answer(cfg, fake, knowledge, keep):
+    cfg.verifier.keep_quotes = keep
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(EQ_DRAFT)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c, [{"role": "user", "content": EQ_TASK}])
+    assert answer(r) == (EQ_DRAFT if keep else EQ_DRAFT.replace("Fe2O3 + CO → Fe + CO2", "Fe2O3 + 3CO → 2Fe + 3CO2"))
+    assert ("quoted from the task, left as written" in reasoning_text(r)) is keep
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_restated_claim_not_judged(cfg, fake, knowledge, keep):
+    cfg.verifier.keep_quotes = keep
+    draft = "**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG [S1]\nEthanol is blue [S1].\n"
+    verdicts = "C1: contradicts S1 | Harbour Instruments Ltd was founded in 1987.\nC2: contradicts S1 | Ethanol is colorless."
+    fake.scripts = [SEARCH_ETHANOL, [content(draft)], [content(verdicts)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c, [{"role": "user", "content": AUDIT_TASK}])
+    user = fake.bodies[2]["messages"][1]["content"]
+    if keep:  # the label and the verdict mark stay; the answer's own claim is still judged
+        assert user.endswith("Claims:\nC2: Ethanol is blue.")
+        assert answer(r) == "**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG\nEthanol is colorless."
+        assert "C1 unverified (quoted from the task: not checked)" in reasoning_text(r)
+    else:
+        assert "C1: Harbour Instruments Ltd was founded in 1994. ✗ WRONG" in user
+        assert answer(r) == "**S3. Harbour Instruments Ltd was founded in 1987.\nEthanol is colorless."
+
+
+QUOTING = ("**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG: the register gives 1987.\n"
+           "The report is 1994 − 1987 = 7 years off, so the gap is about 9 years.")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("keep", [True, False])
+async def test_review_fix_on_a_quote_skipped(cfg, fake, knowledge, keep):
+    cfg.verifier.keep_quotes = keep
+    reply = ("OLD: founded in 1994\nNEW: founded in 1987\nCONFLICT: the register gives 1987\nWHY: w\n"
+             "OLD: about 9 years\nNEW: about 7 years\nCONFLICT: 1994 − 1987 = 7\nWHY: w")
+    text, steps = await review(cfg, fake, knowledge, reply, QUOTING, AUDIT_TASK)
+    own = QUOTING.replace("about 9", "about 7")  # the answer's own text: fixed either way
+    assert text == (own if keep else own.replace("founded in 1994", "founded in 1987"))
+    assert ("skipped 'founded in 1994' (quoted from the task)" in steps) is keep
+
+
+COST_TASK = "The report computes the batch cost as 12 × 45 = 560 euros. Check it."
+COST_DRAFT = "The report's 12 × 45 = 560 euros is wrong."
+
+
+@pytest.mark.parametrize("task, kept", [
+    (COST_TASK, True),  # quoted from the task: left as written, listed with a note
+    ("Check the batch cost of 12 crates at 45 euros.", False),  # the answer's own product: fixed
+    ("Is 12 × 45 = 560?", False),  # shared, but shorter than a quotation
+    ("", False),  # keep_quotes off
+])
+def test_quoted_wrong_product(task, kept):
+    out, (fix,), checked = fix_arithmetic(COST_DRAFT, 0.005, task=task)
+    assert checked == 1 and out == (COST_DRAFT if kept else COST_DRAFT.replace("560", "540"))
+    assert fix == {"expression": "12 * 45", "stated": "560", "fixed": "540"} | (
+        {"note": "quoted from the task, left as written"} if kept else {})
+
+
+@pytest.mark.anyio
+async def test_quoted_wrong_product_only_in_the_trace(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(COST_DRAFT)]]
+    question = [{"role": "user", "content": COST_TASK}]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(question)]
+    assert next(i["content"] for i in items if "content" in i) == COST_DRAFT
+    assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []
+    steps = "".join(i.get("reasoning_content", "") for i in items)
+    assert "1 calculation recomputed, 0 fixed\n- 12 * 45 = 560: quoted from the task, left as written (would be 540)" in steps
