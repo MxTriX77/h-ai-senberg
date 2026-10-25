@@ -14,10 +14,11 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-MIN_CHARS = 40  # shorter passages are dropped
+MIN_CHARS = 100  # shorter passages are dropped (captions, link lines: BM25 ranks such stubs too high)
 STOP_HEADINGS = frozenset(
     "references|external links|see also|further reading|notes|bibliography|sources|citations|footnotes"
-    "|notes and references|references and notes".split("|")
+    "|notes and references|references and notes|contributors and attributions|contributors|attributions"
+    "|licensing".split("|")
 )
 SKIP_TAGS = frozenset("head script style table figure nav footer noscript svg button form select textarea".split())
 SKIP_CLASSES = frozenset(

@@ -34,24 +34,32 @@ def test_worked_example_kept_together():
         Block(ex + ("Strategy",), "Combine the two equilibria."),
         Block(ex + ("Solution",), "K = Ksp / Ka2 = 180."),
         Block(ex + ("Significance",), "Acid dissolves limestone."),
-        Block((), "Coupled equilibria also govern complex-ion formation with ammonia and silver ions."),
+        Block((), " ".join(["Coupled equilibria also govern complex-ion formation with ammonia and silver ions."] * 2)),
     ], 1200)
     heading, text = found[0]
     assert heading == "Example 1"
     lines = text.splitlines()
     assert lines[1:] == ["Strategy: Combine the two equilibria.", "Solution: K = Ksp / Ka2 = 180.",
                          "Significance: Acid dissolves limestone."]
-    assert found[1] == ("", "Coupled equilibria also govern complex-ion formation with ammonia and silver ions.")
+    tail = "Coupled equilibria also govern complex-ion formation with ammonia and silver ions."
+    assert found[1] == ("", f"{tail} {tail}")
 
 
 def test_short_sections_merge_under_shared_headings():
-    first, second = "First block of text under B, long enough.", "Second block of text under C, long enough."
+    first = "First block of text under B, long enough to stay in."
+    second = "Second block of text under C, kept here as well."
     found = chunks([Block(("A", "B"), first), Block(("A", "C"), second)], 1200)
-    assert found == [("A", f"B: {first}\nC: {second}")]
+    assert found == [("A", f"B: {first}\nC: {second}")]  # over MIN_CHARS only together
 
 
 def test_tiny_passages_dropped():
-    assert chunks([Block(("X",), "Too short.")], 1200) == []
+    assert chunks([Block(("X",), "Video 1: A summary of enthalpy and Hess' law from a video course.")], 1200) == []
+
+
+def test_attribution_sections_dropped():
+    page = ("<h2>Hess's law</h2><p>" + "Enthalpy is a state function. " * 5 + "</p>"
+            "<h2>Contributors and Attributions</h2><p>" + "Authored by someone. License: CC BY. " * 5 + "</p>")
+    assert [b.path for b in blocks(page)] == [("Hess's law",)]
 
 
 def test_root_class_limits_text():

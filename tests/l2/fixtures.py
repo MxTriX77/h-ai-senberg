@@ -191,7 +191,8 @@ def make_raw(raw: Path) -> Path:
     _zim(raw / "kiwix/top.zim", "Wikipedia top", [
         _Entry("Benzene", BENZENE), _Entry("Some_Film", FILM), _Entry("Electron", ELECTRON),
         _Entry("Caffeine", CAFFEINE), _Entry("Marie_Curie", CURIE_TOP)])
-    _zim(raw / "kiwix/mini.zim", "Wikipedia mini", [_Entry("Caffeine", CAFFEINE_MINI), _Entry("Marie_Curie", CURIE_MINI)])
+    _zim(raw / "kiwix/mini.zim", "Wikipedia mini",
+         [_Entry("Caffeine", CAFFEINE_MINI), _Entry("Marie_Curie", CURIE_MINI)])
     pages = [{"id": "1", "title": "Home", "path": ""},
              {"id": "2", "title": "15.4: Coupled Equilibria",
               "path": "Bookshelves/General_Chemistry/15.04:_Coupled_Equilibria"},
