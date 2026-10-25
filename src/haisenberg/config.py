@@ -142,6 +142,7 @@ class VerifierConfig(_Section):
     consistency_prompt: str
     consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
     consistency_keep_answer_lines: bool  # the review never changes a labelled answer/verdict line
+    keep_quotes: bool  # text the answer quotes from the task is never rewritten by checkers, judge or review
 
     @field_validator("checkers")
     @classmethod

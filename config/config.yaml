@@ -137,6 +137,11 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
                                            # row, ids aside) is ignored: the claim counts as uncorrected (see above)
+  keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
+                                           # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
+                                           # of the material under review: checkers only report a fix inside it, a claim
+                                           # that is a quotation plus at most a label or verdict mark (✗ WRONG) is not
+                                           # checked, and a review fix that changes quoted text is skipped; false: as before
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer

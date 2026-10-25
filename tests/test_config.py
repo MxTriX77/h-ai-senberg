@@ -357,8 +357,8 @@ def test_conservative_check_settings(tmp_path):
 
 def test_conservative_review_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
-    assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_answer_lines is True
-    for key in ("consistency_quotes", "ignore_prompt_echo", "consistency_keep_answer_lines"):
+    assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_answer_lines is v.keep_quotes is True
+    for key in ("consistency_quotes", "ignore_prompt_echo", "consistency_keep_answer_lines", "keep_quotes"):
         data = base()
         del data["verifier"][key]
         with pytest.raises(ConfigError, match=f"verifier.{key}"):
