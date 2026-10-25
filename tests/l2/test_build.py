@@ -43,6 +43,7 @@ def test_wikipedia_articles(l2_store):
     assert {d for *_, d in found["Electron"]} == {"chemistry physics"}  # stored once, both topic ZIMs' domains
     assert rows(l2_store, "SELECT count(*) FROM doc WHERE path = 'Electron'")[0][0] == 1
     assert {d for *_, d in found["Benzene"]} == {"chemistry"}  # from the filtered ZIM, by its chembox
+    assert {d for *_, d in found["Caffeine"]} == {"chemistry"}  # rated by WikiProject Chemicals in the mini ZIM
     sub = "Emission mechanism › Experimental observation of photoelectric emission"
     full = [f"{h} › {t}" if h else t for _, h, t, _ in found["Photoelectric_effect"]]  # heading, then line headings
     assert any(f"{sub}: The emitted electrons" in x or x.startswith(f"{sub} › The emitted electrons") for x in full)
@@ -90,6 +91,13 @@ def test_provenance(l2_store):
     assert src["libretexts_fixture"][1:] == ("2026-10-01", "LibreTexts Chemistry", "test licence")
     assert src["chebi_fixture"][1:3] == ("255", "ChEBI")
     assert all(len(sha) == 64 for sha, *_ in src.values())
+
+
+def test_mini_ratings_are_an_input(tmp_path):
+    raw = make_raw(tmp_path / "raw")
+    (raw / "kiwix/mini.zim").unlink()
+    with pytest.raises(BuildError, match="mini_fixture"):
+        build(write_manifest(tmp_path / "sources.yaml"), raw, tmp_path / "l2.db", LIMIT)
 
 
 def test_missing_input(tmp_path):

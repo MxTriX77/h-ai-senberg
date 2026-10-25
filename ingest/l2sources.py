@@ -49,7 +49,7 @@ class Scan:
     dropped: dict[str, int]  # report counts, e.g. skipped person articles
 
 
-def _parallel(job, args: list[tuple]) -> Iterator[Scan]:
+def _parallel(job, args: list[tuple]) -> Iterator:
     """Run job over args in worker processes, results in order."""
     workers = max(1, min(8, (os.cpu_count() or 2) - 1))
     if len(args) == 1 or workers == 1:
@@ -73,19 +73,21 @@ def _article(html: bytes, limit: int) -> list[tuple[str, str]]:
     return chunks(blocks(html[: end.start() if end else len(html)].decode("utf-8", "replace")), limit)
 
 
-def scan_wiki(zim_path: str, ids: list[int], limit: int, mini: MiniFilter | None, skip: frozenset[str]) -> Scan:
-    """Articles of a Wikipedia ZIM: every non-person article, or (with mini) the relevant ones not in skip."""
+def scan_wiki(zim_path: str, ids: list[int], limit: int, mini: MiniFilter | None, skip: frozenset[str],
+              rated: dict[str, list[str]]) -> Scan:
+    """Articles of a Wikipedia ZIM: every non-person article, or (with mini) the ones not in skip that are relevant
+    under mini by their own page or, by path, in rated (a page without WikiProject ratings rated elsewhere)."""
     docs, dropped = [], {"skipped_person_articles": 0}
     with Zim(zim_path) as z:
         for i in ids:
             html = z.content(i)
             if stub_target(html):
                 continue
+            path, title = z.strings(i)
             page_projects = projects(html)
-            domains = mini_relevant(html, page_projects, mini) if mini else set()
+            domains = mini_relevant(html, page_projects, mini) | set(rated.get(path, ())) if mini else set()
             if mini and not domains:
                 continue
-            path, title = z.strings(i)
             if path in skip:
                 continue
             if is_person(html, page_projects):
@@ -114,12 +116,37 @@ def scan_books(zim_path: str, ids: list[int], limit: int, books: BookFilter) -> 
 
 
 def wiki_scans(zim: Zim, limit: int, mini: MiniFilter | None = None, skip: frozenset[str] = frozenset(),
-               books: BookFilter | None = None) -> Iterator[Scan]:
+               books: BookFilter | None = None, rated: dict[str, list[str]] | None = None) -> Iterator[Scan]:
     ids = zim.html_by_cluster()
     if books is not None:
         yield from _parallel(_books_job, [(str(zim.path), part, limit, books) for part in _jobs(ids)])
     else:
-        yield from _parallel(_wiki_job, [(str(zim.path), part, limit, mini, skip) for part in _jobs(ids)])
+        yield from _parallel(_wiki_job, [(str(zim.path), part, limit, mini, skip, rated or {}) for part in _jobs(ids)])
+
+
+def scan_rated(zim_path: str, ids: list[int], rules: MiniFilter) -> dict[str, list[str]]:
+    """Path -> domains of the non-person articles of a ZIM relevant under rules (the mini ZIM's WikiProject ratings)."""
+    found = {}
+    with Zim(zim_path) as z:
+        for i in ids:
+            html = z.content(i)
+            page_projects = projects(html)
+            domains = mini_relevant(html, page_projects, rules)
+            if domains and not stub_target(html) and not is_person(html, page_projects):
+                found[z.strings(i)[0]] = sorted(domains)
+    return found
+
+
+def _rated_job(args) -> dict[str, list[str]]:
+    return scan_rated(*args)
+
+
+def rated(zim: Zim, rules: MiniFilter) -> dict[str, list[str]]:
+    """scan_rated over the whole ZIM."""
+    found: dict[str, list[str]] = {}
+    for part in _parallel(_rated_job, [(str(zim.path), ids, rules) for ids in _jobs(zim.html_by_cluster())]):
+        found.update(part)
+    return found
 
 
 def _wiki_job(args) -> Scan:

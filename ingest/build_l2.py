@@ -5,7 +5,8 @@
 Inputs are found through the manifest's `use` tags; the Layer 1 store is never opened. The store is built into
 `<db>.building` and moved over `<db>` only when the build succeeds. A passage whose text (whitespace collapsed,
 case ignored) was stored before is left out. A Wikipedia article is stored from the first ZIM that holds it
-(manifest order, topic ZIMs first); later ZIMs holding it only add their domains.
+(manifest order, topic ZIMs first); later ZIMs holding it only add their domains. A filtered ZIM's pages are rated
+on their own WikiProject assessments or, as the top-1M dump has none, on their copy in the all-articles mini ZIM.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ class Writer:
     seen: set[int] = field(default_factory=set)  # digests of the stored passages' normalized text
     wiki: dict[str, int] = field(default_factory=dict)  # Wikipedia article path -> doc id
     more: dict[int, set[str]] = field(default_factory=dict)  # doc id -> domains of later ZIMs holding it
+    minis: list[Path] = field(default_factory=list)  # all-articles mini ZIMs: WikiProject ratings for filtered ZIMs
 
     def source(self, entry: Entry, version: str, title: str) -> int:
         cur = self.con.execute(
@@ -85,8 +87,14 @@ class Writer:
 def load_wikipedia(w: Writer, entry: Entry, path: Path) -> None:
     with Zim(path) as z:
         sid = w.source(entry, z.metadata.get("Date", ""), z.metadata.get("Title", entry.name))
-        skip = frozenset(w.wiki) if entry.use == "wikipedia-filtered-zim" else frozenset()
-        for scan in l2sources.wiki_scans(z, w.limit, entry.filter, skip):
+        skip, rated = frozenset(), {}
+        if entry.use == "wikipedia-filtered-zim":
+            skip = frozenset(w.wiki)
+            for mini in w.minis:  # its pages may lack WikiProject ratings; the mini ZIM's copies have them
+                with Zim(mini) as m:
+                    rated.update(l2sources.rated(m, entry.filter))
+            w.report[f"{entry.name}: rated in a mini ZIM"] = len(rated)
+        for scan in l2sources.wiki_scans(z, w.limit, entry.filter, skip, rated=rated):
             w.report.update(scan.dropped)
             for doc in scan.docs:
                 if (doc_id := w.wiki.get(doc.path)) is not None:
@@ -135,7 +143,9 @@ def build(manifest: Path, raw_dir: Path, db: Path, limit: int) -> dict[str, int 
     t0 = time.monotonic()
     entries = load_manifest(manifest)
     todo = [(e, loader) for use, loader in LOADERS for e in entries if e.use == use]
-    for e, _ in todo:
+    filtered = any(e.use == "wikipedia-filtered-zim" for e in entries)
+    minis = [e for e in entries if e.use == "wikipedia-mini-zim"] if filtered else []  # inputs too: their ratings
+    for e in [*(e for e, _ in todo), *minis]:
         if not e.path(raw_dir).is_file():
             raise BuildError(f"missing input for entry {e.name}: {e.path(raw_dir)}")
 
@@ -149,7 +159,7 @@ def build(manifest: Path, raw_dir: Path, db: Path, limit: int) -> dict[str, int 
                           " PRAGMA cache_size=-262144;" + DDL)
         con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         con.execute(f"PRAGMA application_id={APPLICATION_ID}")
-        w = Writer(con, raw_dir, limit)
+        w = Writer(con, raw_dir, limit, minis=[e.path(raw_dir) for e in minis])
         for entry, loader in todo:
             loader(w, entry, entry.path(raw_dir))
             con.commit()

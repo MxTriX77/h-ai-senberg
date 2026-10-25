@@ -78,6 +78,11 @@ CURIE = wiki_page("Marie Curie", [(2, "Life", "<p>She studied radioactivity in P
 BENZENE = wiki_page("Benzene", [(2, "Structure", "<p>Benzene is a planar ring of six carbon atoms with delocalised "
                                  "pi electrons, the archetypal aromatic compound.</p>")],
                     box='<table class="infobox ib-chembox"><tr><td>Benzene</td></tr></table>')
+CAFFEINE = wiki_page("Caffeine", [(2, "Pharmacology", "<p>Caffeine blocks adenosine receptors in the brain and so "
+                                     "acts as a central nervous system stimulant.</p>")])  # no ratings, no chembox
+CURIE_TOP = wiki_page("Marie Curie", [(2, "Work", "<p>Fixture text about the discovery of polonium and radium.</p>")])
+CAFFEINE_MINI = wiki_page("Caffeine", [], projects={"Chemicals": "Mid"})  # the mini copy carries the ratings
+CURIE_MINI = wiki_page("Marie Curie", [], projects={"Biography": "", "Chemistry": "High"})
 FILM = wiki_page("Some Film", [(2, "Plot", "<p>A fixture film whose plot has nothing to do with science at all.</p>")])
 
 INTRO = " ".join(["The solubility of calcium carbonate rises in acid as carbonate ions are protonated."] * 5)
@@ -184,7 +189,9 @@ def make_raw(raw: Path) -> Path:
     _zim(raw / "kiwix/phys.zim", "Wikipedia Physics", [
         _Entry("Photoelectric_effect", PHOTO), _Entry("Electron", ELECTRON)])
     _zim(raw / "kiwix/top.zim", "Wikipedia top", [
-        _Entry("Benzene", BENZENE), _Entry("Some_Film", FILM), _Entry("Electron", ELECTRON)])
+        _Entry("Benzene", BENZENE), _Entry("Some_Film", FILM), _Entry("Electron", ELECTRON),
+        _Entry("Caffeine", CAFFEINE), _Entry("Marie_Curie", CURIE_TOP)])
+    _zim(raw / "kiwix/mini.zim", "Wikipedia mini", [_Entry("Caffeine", CAFFEINE_MINI), _Entry("Marie_Curie", CURIE_MINI)])
     pages = [{"id": "1", "title": "Home", "path": ""},
              {"id": "2", "title": "15.4: Coupled Equilibria",
               "path": "Bookshelves/General_Chemistry/15.04:_Coupled_Equilibria"},
@@ -218,6 +225,8 @@ SOURCES = [
     _entry("chem_fixture", "wikipedia-zim", ["chemistry"], "kiwix/chem.zim", WIKI_CITE),
     _entry("phys_fixture", "wikipedia-zim", ["physics"], "kiwix/phys.zim", WIKI_CITE),
     _entry("top_fixture", "wikipedia-filtered-zim", ["chemistry", "physics"], "kiwix/top.zim", WIKI_CITE, MINI_FILTER),
+    {**_entry("mini_fixture", "wikipedia-mini-zim", ["chemistry", "physics"], "kiwix/mini.zim", WIKI_CITE, MINI_FILTER),
+     "layer": 1},  # a Layer 1 input; the Layer 2 build reads only its ratings
     _entry("libretexts_fixture", "libretexts-zim", ["chemistry"], "kiwix/libretexts.zim",
            "https://chem.libretexts.org/{path}"),
     _entry("se_fixture", "stackexchange-zim", ["chemistry"], "stackexchange/chem_se.zim",
