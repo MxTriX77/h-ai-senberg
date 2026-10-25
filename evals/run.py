@@ -47,6 +47,7 @@ PROBLEMS = Path(__file__).resolve().parent / "reasoning.yaml"
 MODES = Path(__file__).resolve().parent / "modes.yaml"
 ROOT = Path(__file__).resolve().parents[1]
 KINDS = ("number", "formula", "text")
+FACT_LABEL = "A1"  # the answer line a fact question's answer target asks for (questions.yaml answer_target)
 PART_KINDS = ("number", "text", "verdict", "ids")
 SETS = ("facts", "reasoning", "all")
 AUTHORED_SETS = ("S3", "S4", "S5", "S6", "U")
@@ -73,9 +74,12 @@ ARTEFACTS = {
 
 
 def load_questions(path: Path = QUESTIONS) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """(source key -> license note, questions); raises ValueError naming the bad question."""
+    """(source key -> license note, questions, each with the file's answer target appended); raises ValueError
+    naming the bad question."""
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    sources, questions = data["sources"], data["questions"]
+    sources, questions, target = data["sources"], data["questions"], data.get("answer_target") or ""
+    if f"{FACT_LABEL}:" not in target:
+        raise ValueError(f"{path}: needs an answer_target asking for the {FACT_LABEL}: line")
     seen: set[str] = set()
     for q in questions:
         qid = q.get("id")
@@ -92,7 +96,7 @@ def load_questions(path: Path = QUESTIONS) -> tuple[dict[str, str], list[dict[st
             raise ValueError(f"{path}: question {qid}: a number answer needs abs_tol or rel_tol")
         if "text" in answer and not (isinstance(answer["text"], list) and answer["text"]):
             raise ValueError(f"{path}: question {qid}: text answer must be a non-empty list")
-        q.update(set="S1", file=path)
+        q.update(set="S1", file=path, question=f"{q['question']}\n\n{target}")
     return sources, questions
 
 
@@ -238,12 +242,22 @@ def score_parts(answer: str, problem: dict[str, Any]) -> list[bool]:
     return [part_correct(p, lines.get(p["label"].upper()), problem["lang"]) for p in problem["parts"]]
 
 
+def fact_correct(line: str | None, gold: dict[str, Any]) -> bool:
+    """A fact answer scored strictly on its answer line (None: no line, wrong): a number or text as a reasoning
+    part, a formula as is_correct does."""
+    return is_correct(line, gold) if line is not None and "formula" in gold else part_correct(gold, line)
+
+
 def score(answer: str, item: dict[str, Any]) -> dict[str, Any] | None:
     """Code score of an answer: part label -> right, the labels without an answer line, the verdict parts.
-    A fact question is one part, `answer`. None when the item has no code key (graded by the reviewer only)."""
+    A fact question is one part, `answer`, scored on its answer line, and also has `loose_correct` (any match in
+    the answer). None when the item has no code key (graded by the reviewer only)."""
     if "answer" in item:
-        parts, missing, verdicts = {"answer": is_correct(answer, item["answer"])}, [], {}
-    elif item.get("parts"):
+        line, gold = answer_lines(answer).get(FACT_LABEL), item["answer"]
+        right = fact_correct(line, gold)
+        return {"correct": right, "parts": {"answer": right}, "missing": ["answer"] if line is None else [],
+                "verdicts": {}, "loose_correct": is_correct(answer, gold)}
+    if item.get("parts"):
         lines = answer_lines(answer)
         parts = {p["label"]: ok for p, ok in zip(item["parts"], score_parts(answer, item))}
         missing = [p["label"] for p in item["parts"] if p["label"].upper() not in lines]
@@ -341,9 +355,10 @@ def wsl_path(path: str) -> str:
 
 
 def _git(root: Path) -> dict[str, Any] | None:
-    """Commit and dirty flag. Line endings are compared as Windows git checks them out (core.autocrlf), so a
-    Windows checkout read from WSL does not look all modified. A worktree made by Windows git has a
-    `gitdir: C:/...` file that Linux git cannot follow: then git runs with that gitdir converted to /mnt/c/..."""
+    """Commit, dirty flag and, when dirty, the sha256 of the uncommitted changes. Line endings are compared as
+    Windows git checks them out (core.autocrlf), so a Windows checkout read from WSL does not look all modified.
+    A worktree made by Windows git has a `gitdir: C:/...` file that Linux git cannot follow: then git runs with
+    that gitdir converted to /mnt/c/..."""
     git = ["git", "-c", "core.autocrlf=true", "--no-optional-locks"]
     for attempt in range(2):
         try:
@@ -352,10 +367,22 @@ def _git(root: Path) -> dict[str, Any] | None:
                 git += [f"--git-dir={wsl_path(gitdir)}", f"--work-tree={root}"]
             sha = subprocess.run([*git, "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
             status = subprocess.run([*git, "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True)
-            return {"sha": sha.stdout.strip(), "dirty": bool(status.stdout.strip())}
+            dirty = bool(status.stdout.strip())
+            return {"sha": sha.stdout.strip(), "dirty": dirty, "diff_sha256": _changes(git, root) if dirty else None}
         except (OSError, subprocess.SubprocessError):
             continue
     return None
+
+
+def _changes(git: list[str], root: Path) -> str:
+    """sha256 of the uncommitted changes: the diff against the commit, and each untracked (not ignored) file's
+    name and content."""
+    diff, untracked = (subprocess.run([*git, *args], cwd=root, capture_output=True, check=True).stdout
+                       for args in (["diff", "HEAD", "--binary"], ["ls-files", "--others", "--exclude-standard", "-z"]))
+    digest = hashlib.sha256(diff)
+    for name in sorted(filter(None, untracked.split(b"\0"))):
+        digest.update(name + b"\0" + (root / name.decode()).read_bytes())
+    return digest.hexdigest()
 
 
 def served_model(cfg: Config) -> Path:
@@ -380,11 +407,20 @@ def _rel(path: Path) -> str:
         return str(path)
 
 
+def store_identity(path: Path) -> dict[str, Any]:
+    """Path, size and mtime of a knowledge store file, or of a store folder the total size and newest mtime of
+    its files; size and mtime are None when it is missing."""
+    stats = [p.stat() for p in ([path] if path.is_file() else path.rglob("*")) if p.is_file()]
+    if not stats:
+        return {"path": str(path), "size": None, "mtime": None}
+    return {"path": str(path), "size": sum(s.st_size for s in stats),
+            "mtime": datetime.fromtimestamp(max(s.st_mtime for s in stats)).isoformat(timespec="seconds")}
+
+
 def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path) -> dict[str, Any]:
-    """What a run depends on: code, config after the mode, model file, store, eval files, GPU, sampling."""
-    store, backend, model = cfg.retrieval.path("encyclopedia"), cfg.model_backend, served_model(cfg)
-    st = store.stat() if store.is_file() else None
-    enabled = cfg.retrieval.knowledge_sets[cfg.retrieval.knowledge]
+    """What a run depends on: code, config after the mode, model file, knowledge setting and stores (see
+    store_identities), eval files, GPU, sampling."""
+    backend, model = cfg.model_backend, served_model(cfg)
     return {
         "run_id": run_id,
         "git": _git(cfg.root),
@@ -395,10 +431,8 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "backend": backend.api_base,
         "config_sha256": hashlib.sha256(cfg.model_dump_json().encode()).hexdigest(),
         "model_file": {"path": str(model), "sha256": file_sha256(model, cache)},
-        "store": {"path": str(store), "size": st and st.st_size,
-                  "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")},
         "knowledge": cfg.retrieval.knowledge,
-        "stores": {name: _store_id(cfg.retrieval.stores[name]) for name in enabled},  # the stores the tools read
+        "stores": store_identities(cfg),
         "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
         "gpu": gpu_info(),
@@ -408,22 +442,40 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
     }
 
 
-def _store_id(store) -> dict[str, Any]:
-    """Kind, path, size and mtime of a knowledge store (size and mtime null when the file is missing)."""
-    st = store.path.stat() if store.path.is_file() else None
-    return {"kind": store.kind, "path": str(store.path), "size": st and st.st_size,
-            "mtime": st and datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")}
+def store_identities(cfg: Config) -> dict[str, dict[str, Any]]:
+    """Every store of the registry (kind, whether the knowledge setting enables it, path, size, mtime), then every
+    other store path of the retrieval settings; raw_dir holds the downloads they are built from."""
+    r = cfg.retrieval
+    enabled = r.knowledge_sets[r.knowledge]
+    found = {name: {"kind": s.kind, "enabled": name in enabled, **store_identity(s.path)}
+             for name, s in r.stores.items()}
+    found.update({name: store_identity(path) for name, path in r if isinstance(path, Path) and name != "raw_dir"})
+    return found
+
+
+def identity(man: dict[str, Any]) -> dict[str, Any]:
+    """The manifest fields that define a run's experiment, besides its eval files (see open_run)."""
+    git = man.get("git") or {}
+    return {"mode": man.get("mode"), "config_sha256": man.get("config_sha256"), "commit": git.get("sha"),
+            "dirty": git.get("dirty"), "diff_sha256": git.get("diff_sha256"),
+            "model_sha256": (man.get("model_file") or {}).get("sha256"), "stores": man.get("stores"),
+            "sampling": man.get("sampling")}
 
 
 def open_run(folder: Path, man: dict[str, Any]) -> None:
-    """Write the manifest of a new run. A resumed run must have the same mode, config and commit (ValueError)."""
+    """Write the manifest of a new run. A resumed run must match the stored manifest on every identity field, and
+    each of its eval files must be stored with the same sha256 (fewer files are fine); else ValueError naming
+    what differs."""
     path = folder / "manifest.json"
     if path.is_file():
         old = json.loads(path.read_text(encoding="utf-8"))
-        same = (old["mode"], old["config_sha256"], (old["git"] or {}).get("sha")) == \
-               (man["mode"], man["config_sha256"], (man["git"] or {}).get("sha"))
-        if not same:
-            raise ValueError(f"run {folder.name} was made with another mode, config or commit; use a new --run-id")
+        was, now = identity(old), identity(man)
+        changed = [field for field in now if now[field] != was[field]]
+        stored = {(f["path"], f["sha256"]) for f in old.get("eval_files") or []}
+        if any((f["path"], f["sha256"]) not in stored for f in man.get("eval_files") or []):
+            changed.append("eval_files")
+        if changed:
+            raise ValueError(f"run {folder.name} differs from its manifest in {', '.join(changed)}; use a new --run-id")
         return
     folder.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -515,6 +567,7 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {o: sum(r["verification"].get("counts", {}).get(o, 0) for r in logs) for o in OUTCOMES}
     claims = sum(counts.values())
     solved = sum(s["final"]["correct"] for s in scored)
+    facts = [s["final"] for s in scored if "loose_correct" in s["final"]]
     summary: dict[str, Any] = {
         "items": len(logs),
         "errors": len(logs) - len(ok),
@@ -522,6 +575,9 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
         "scored": len(scored),
         "correct": solved,
         "correct_pct": _pct(solved, len(scored)),
+        "facts": len(facts),
+        "facts_correct": sum(f["correct"] for f in facts),
+        "loose_correct": sum(f["loose_correct"] for f in facts),
         "parts_right": sum(parts),
         "parts_total": len(parts),
         "parts_pct": _pct(sum(parts), len(parts)),

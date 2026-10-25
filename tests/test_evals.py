@@ -5,9 +5,11 @@ import re
 import sqlite3
 
 import pytest
+import yaml
 
 from conftest import content, finish, tool_call
 from evals.run import (
+    QUESTIONS,
     answer_lines,
     answer_text,
     is_correct,
@@ -17,6 +19,7 @@ from evals.run import (
     pick,
     read_logs,
     run_eval,
+    score,
     score_parts,
     select,
     summarize,
@@ -33,6 +36,17 @@ def test_shipped_eval_set():
     assert {q["domain"] for q in questions} == {"chemistry", "physics"}
     assert set(sources) == {q["source"] for q in questions}
     assert all(re.search(r"public domain|no restrictions|CC BY", v) for v in sources.values())  # license stated
+    target = yaml.safe_load(QUESTIONS.read_text(encoding="utf-8"))["answer_target"]
+    assert "A1:" in target and all(q["question"].endswith(f"?\n\n{target}") for q in questions)
+
+
+def test_questions_need_an_answer_target(tmp_path):
+    data = yaml.safe_load(QUESTIONS.read_text(encoding="utf-8"))
+    for target in (None, "Finish with: Answer: <value>"):
+        path = tmp_path / "q.yaml"
+        path.write_text(yaml.safe_dump({**data, "answer_target": target}), encoding="utf-8")
+        with pytest.raises(ValueError, match="q.yaml: needs an answer_target"):
+            load_questions(path)
 
 
 def test_known_answers_match_the_store():
@@ -65,6 +79,24 @@ def test_is_correct(answer, gold, ok):
     assert is_correct(answer, gold) is ok
 
 
+BENZENE = {"id": "q", "set": "S1", "question": "bp?", "answer": {"number": 80.1, "abs_tol": 0.5}}
+
+
+@pytest.mark.parametrize("answer, gold, strict, loose", [
+    ("Benzene boils at 80.1 °C, far below 100 °C.\nA1: 90 °C", BENZENE["answer"], False, True),
+    ("Benzene boils at 80.1 °C.\n**A1:** 80.1 °C", BENZENE["answer"], True, True),
+    ("Benzene boils at 80.1 °C.", BENZENE["answer"], False, True),
+    ("Ethanol is CH3CH2OH.\nA1: CH3CH2OH", {"formula": "C2H6O"}, True, True),
+    ("Ethanol is CH3CH2OH, not CH3OH.\nA1: CH3OH", {"formula": "C2H6O"}, False, True),
+    ("It is Boyle's law.\nA1: Charles's law", {"text": ["Boyle"]}, False, True),
+    ("A1: Boyle's law", {"text": ["Boyle"]}, True, True),
+])
+def test_fact_score_strict_and_loose(answer, gold, strict, loose):
+    s = score(answer, {**BENZENE, "answer": gold})
+    assert (s["correct"], s["parts"], s["loose_correct"]) == (strict, {"answer": strict}, loose)
+    assert s["missing"] == ([] if "A1:" in answer else ["answer"])
+
+
 def test_answer_text_drops_sources_summary_and_ids():
     text = "A [S1].\n\n*Verification: 1 claim: 1 supported, 0 unverified, 0 corrected, 0 removed.*\n\nSources:\n- [S1] x"
     assert answer_text(text).strip() == "A ."
@@ -95,7 +127,7 @@ async def test_run_eval_with_fake_backend(cfg, fake, built_store, tmp_path):
     fake.scripts = [
         # q1: looked up, cited, supported in code
         [tool_call("lookup_compound", '{"query": "caffeine"}', call_id="c1"), finish("tool_calls")],
-        [content("The molar mass of caffeine is 194.19 g/mol [S1].")],
+        [content("The molar mass of caffeine is 194.19 g/mol [S1].\nA1: 194.19 g/mol")],
         # q2: wrong, and the judge wrongly supports it -> an unmarked contradiction
         [content("Benzene boils at 90 °C.")], [content("C1: supports S1")],
         # q3: wrong, but left unverified -> marked
@@ -109,6 +141,7 @@ async def test_run_eval_with_fake_backend(cfg, fake, built_store, tmp_path):
     assert not by_id["q3"]["correct"] and not by_id["q3"]["unmarked_contradiction"]
     s = summary["all"]
     assert (s["items"], s["correct_pct"], s["unmarked_contradictions"]) == (3, 33.3, 1)
+    assert (s["facts"], s["facts_correct"], s["loose_correct"]) == (3, 1, 1)
     assert (s["claims"], s["supported_claims"], s["unverified_claims"], s["supported_claims_pct"]) == (3, 2, 1, 66.7)
     assert json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8")) == summary
     assert set(summary["sets"]) == {"S1"}
@@ -220,7 +253,7 @@ async def test_reasoning_problem_end_to_end(cfg, fake, built_store, tmp_path):
             "answer": {"number": 80.1, "abs_tol": 0.5}}
     fake.scripts = [
         [content("The yield is 2.61 g.\nA1: 2.61 g\nA2: false")], [content("C1: not_said")],
-        [content("Benzene boils at 80.1 °C.")], [content("C1: not_said")],
+        [content("Benzene boils at 80.1 °C.\nA1: 80.1 °C")], [content("C1: not_said")],
     ]
     agent = Agent(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))
     summary = await run_eval(agent, [problem, fact], tmp_path / "run")

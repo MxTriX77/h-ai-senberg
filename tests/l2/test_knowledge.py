@@ -85,14 +85,15 @@ def no_backend(url, timeout):
 def test_manifest_tells_a_and_b_apart(cfg, l2_store, tmp_path, monkeypatch):
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
+    cfg.retrieval.stores["literature"].path = l2_store
     a = run.manifest(cfg, "a", "D", [], [], tmp_path / "cache.json")
-    cfg.retrieval.knowledge, cfg.retrieval.stores["literature"].path = "extended", l2_store
+    cfg.retrieval.knowledge = "extended"
     b = run.manifest(cfg, "b", "D", [], [], tmp_path / "cache.json")
-    assert (a["knowledge"], list(a["stores"])) == ("base", ["encyclopedia"])
-    assert a["stores"]["encyclopedia"]["kind"] == "encyclopedia" and a["stores"]["encyclopedia"] == b["stores"]["encyclopedia"]
-    lit = b["stores"]["literature"]
-    assert (b["knowledge"], lit["kind"], lit["path"]) == ("extended", "literature", str(l2_store))
-    assert lit["size"] == l2_store.stat().st_size and lit["mtime"]
+    assert (a["knowledge"], b["knowledge"]) == ("base", "extended")
+    lit_a, lit_b = a["stores"]["literature"], b["stores"]["literature"]
+    assert (lit_a["kind"], lit_a["enabled"], lit_b["enabled"]) == ("literature", False, True)
+    assert lit_b["path"] == str(l2_store) and lit_b["size"] == l2_store.stat().st_size and lit_b["mtime"]
+    assert a["stores"]["encyclopedia"] == b["stores"]["encyclopedia"] and a["stores"]["encyclopedia"]["enabled"]
     assert a["config_sha256"] != b["config_sha256"]
     assert (a["git"], a["mode"], a["model_id"], a["sampling"]) == (b["git"], b["mode"], b["model_id"], b["sampling"])
 

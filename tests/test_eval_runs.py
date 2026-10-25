@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -212,39 +213,81 @@ async def test_resume_and_retry_errors(cfg, fake, tmp_path):
     items = [{"id": f"q{n}", "set": "S1", "question": "bp?", "answer": {"number": 80.1, "abs_tol": 0.5}} for n in (1, 2)]
     agent = Agent(cfg, fake.client(cfg.model_backend), no_store(cfg))
     folder = tmp_path / "run"
-    fake.scripts = [[content("80.1 °C")], CONNECT_ERROR]
+    fake.scripts = [[content("A1: 80.1 °C")], CONNECT_ERROR]
     s = await run_eval(agent, items, folder)
     assert s["all"]["errors"] == 1 and "unreachable" in read_logs(folder)[1]["error"]
     s = await run_eval(agent, items, folder)  # resume: nothing left to do
     assert len(fake.requests) == 2 and s["all"]["errors"] == 1
-    fake.scripts = [[content("80.2 °C")]]
+    fake.scripts = [[content("A1: 80.2 °C")]]
     s = await run_eval(agent, items, folder, retry_errors=True)
     assert len(fake.requests) == 3 and s["all"]["errors"] == 0 and s["all"]["correct"] == 2
-    assert read_logs(folder)[0]["answer"] == "80.1 °C"  # the done item was not run again
+    assert read_logs(folder)[0]["answer"] == "A1: 80.1 °C"  # the done item was not run again
+
+
+RUN = {"mode": "A", "config_sha256": "c1", "git": {"sha": "g1", "dirty": False, "diff_sha256": None}, "date": "d1",
+       "model_file": {"path": "m.gguf", "sha256": "m1"}, "gpu": [{"power_draw": "10 W"}],
+       "stores": {"layer1_encyclopedia_db": {"path": "s.db", "size": 5, "mtime": "2026-10-25T10:00:00"},
+                  "layer2_literature_db": {"path": "l.db", "size": 7, "mtime": "2026-10-25T10:00:00"}},
+       "eval_files": [{"path": "evals/questions.yaml", "sha256": "q1"}, {"path": "evals/reasoning.yaml", "sha256": "p1"}],
+       "sampling": {"temperature": 0.6, "max_tokens": 100}}
 
 
 def test_resumed_run_must_match(tmp_path):
-    man = {"mode": "A", "config_sha256": "c1", "git": {"sha": "g1", "dirty": False}, "date": "d1"}
-    open_run(tmp_path / "r", man)
-    open_run(tmp_path / "r", {**man, "date": "d2", "git": {"sha": "g1", "dirty": True}})
+    open_run(tmp_path / "r", RUN)
+    open_run(tmp_path / "r", {**RUN, "date": "d2", "gpu": [{"power_draw": "60 W"}]})  # nothing that defines it changed
+    open_run(tmp_path / "r", {**RUN, "eval_files": RUN["eval_files"][:1]})  # fewer eval files (--ids, --set)
     assert json.loads((tmp_path / "r" / "manifest.json").read_text(encoding="utf-8"))["date"] == "d1"
-    for change in ({"mode": "B"}, {"config_sha256": "c2"}, {"git": {"sha": "g2", "dirty": False}}):
-        with pytest.raises(ValueError, match="new --run-id"):
-            open_run(tmp_path / "r", {**man, **change})
+    store = RUN["stores"]["layer2_literature_db"]
+    for change, field in [
+        ({"mode": "B"}, "mode"), ({"config_sha256": "c2"}, "config_sha256"),
+        ({"git": {**RUN["git"], "sha": "g2"}}, "commit"),
+        ({"git": {"sha": "g1", "dirty": True, "diff_sha256": "d1"}}, "dirty, diff_sha256"),
+        ({"model_file": {"path": "m.gguf", "sha256": "m2"}}, "model_sha256"),
+        ({"stores": {**RUN["stores"], "layer2_literature_db": {**store, "mtime": "2026-10-25T11:00:00"}}}, "stores"),
+        ({"stores": {**RUN["stores"], "layer3": store}}, "stores"),
+        ({"eval_files": [{"path": "evals/questions.yaml", "sha256": "q2"}]}, "eval_files"),
+        ({"eval_files": [{"path": "data/evals/b1/s3.yaml", "sha256": "x"}]}, "eval_files"),
+        ({"sampling": {"temperature": 0.7, "max_tokens": 100}}, "sampling"),
+    ]:
+        with pytest.raises(ValueError, match=f"differs from its manifest in {field}; use a new --run-id"):
+            open_run(tmp_path / "r", {**RUN, **change})
+    dirty = tmp_path / "dirty"
+    open_run(dirty, {**RUN, "git": {"sha": "g1", "dirty": True, "diff_sha256": "d1"}})
+    with pytest.raises(ValueError, match="in diff_sha256;"):  # other uncommitted changes on the same commit
+        open_run(dirty, {**RUN, "git": {"sha": "g1", "dirty": True, "diff_sha256": "d2"}})
+    old = tmp_path / "old"  # made before the stores and the diff hash were recorded
+    open_run(old, {k: v for k, v in RUN.items() if k != "stores"} | {"git": {"sha": "g1", "dirty": False}})
+    with pytest.raises(ValueError, match="in stores;"):
+        open_run(old, RUN)
 
 
 def test_manifest(cfg, tmp_path, monkeypatch):
     model, store, cache = tmp_path / "m.gguf", tmp_path / "s.db", tmp_path / "evals" / ".sha-cache.json"
     model.write_bytes(b"weights")
     store.write_bytes(b"store")
+    index = tmp_path / "index"  # a store folder: the total size and the newest mtime of its files
+    (index / "sub").mkdir(parents=True)
+    (index / "a.bin").write_bytes(b"12")
+    (index / "sub" / "b.bin").write_bytes(b"345")
+    os.utime(index / "a.bin", (1e9, 1e9))
+    os.utime(index / "sub" / "b.bin", (2e9, 2e9))
     cfg.llama_server.model_path, cfg.retrieval.stores["encyclopedia"].path = model, store
+    cfg.retrieval.layer2_literature_index = index
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
     monkeypatch.setenv("MODEL_PROFILE", "p1")
     man = manifest(cfg, "r1", "A", [QUESTIONS], ["--mode", "A"], cache)
     assert man["model_file"]["sha256"] == hashlib.sha256(b"weights").hexdigest() and man["gpu"] is None
     assert (man["run_id"], man["mode"], man["model_profile"], man["args"], man["seed"]) == ("r1", "A", "p1", ["--mode", "A"], None)
-    assert man["store"]["path"] == str(store) and man["store"]["size"] == 5 and man["store"]["mtime"]
+    stores = man["stores"]
+    enc = stores["encyclopedia"]  # registry stores carry their kind and whether the knowledge setting enables them
+    assert (enc["kind"], enc["enabled"], enc["path"], enc["size"]) == ("encyclopedia", True, str(store), 5)
+    assert enc["mtime"] and "raw_dir" not in stores
+    assert (stores["literature"]["kind"], stores["literature"]["enabled"]) == ("literature", False)
+    assert stores["layer2_literature_index"] == {"path": str(index), "size": 5,
+                                                 "mtime": datetime.fromtimestamp(2e9).isoformat(timespec="seconds")}
+    cfg.retrieval.layer2_literature_index = tmp_path / "missing"
+    assert manifest(cfg, "r1", "A", [], [], cache)["stores"]["layer2_literature_index"]["size"] is None
     assert man["eval_files"] == [{"path": "evals/questions.yaml", "sha256": file_sha256(QUESTIONS)}]
     assert man["context_tokens"] == cfg.context_tokens and man["sampling"]["temperature"] == cfg.model_backend.temperature
     assert set(man["sampling"]) >= {"max_tokens", *cfg.model_backend.extra_body} and "git" in man and man["date"]
@@ -311,16 +354,22 @@ def test_git_state_and_windows_worktree(tmp_path, monkeypatch):
     sha = git("rev-parse", "HEAD", cwd=repo)
     os.utime(repo / "a.txt", (1e9, 1e9))  # read from WSL: the index's stat data no longer match, git rereads files
     assert git("-c", "core.autocrlf=false", "--no-optional-locks", "status", "--porcelain", cwd=repo)  # plain: modified
-    assert run._git(repo) == {"sha": sha, "dirty": False}
-    (repo / "a.txt").write_bytes(b"bb\r\n")
-    assert run._git(repo)["dirty"] is True
+    assert run._git(repo) == {"sha": sha, "dirty": False, "diff_sha256": None}
+    # every other uncommitted change, untracked files included, has another hash
+    hashes = []
+    for name, data in [("a.txt", b"bb\r\n"), ("a.txt", b"cc\r\n"), ("new.txt", b"x"), ("new.txt", b"y")]:
+        (repo / name).write_bytes(data)
+        state = run._git(repo)
+        assert state["sha"] == sha and state["dirty"] is True
+        hashes.append(state["diff_sha256"])
+    assert len(set(hashes)) == 4 and run._git(repo)["diff_sha256"] == hashes[-1]
     # a worktree made by Windows git: its .git file names C:/..., which git here cannot follow
     tree.mkdir()
     (tree / "a.txt").write_bytes(b"a\r\n")
     (tree / ".git").write_text("gitdir: C:/dev/repo/.git\n", encoding="utf-8")
     converted = []
     monkeypatch.setattr(run, "wsl_path", lambda p: converted.append(p) or str(repo / ".git"))
-    assert run._git(tree) == {"sha": sha, "dirty": False} and converted == ["C:/dev/repo/.git"]
+    assert run._git(tree) == {"sha": sha, "dirty": False, "diff_sha256": None} and converted == ["C:/dev/repo/.git"]
     assert run._git(tmp_path / "nothing") is None
 
 
@@ -366,9 +415,18 @@ def test_report_with_paired_deltas(tmp_path):
                                               item_log("i2", {"A1": False, "A2": False}, total=4.0),
                                               item_log("i3", {"A1": True, "A2": True})])
     text = report([base, new], base)
-    assert "| run-a | S3 | A | 2 | 0 | 0 | 0/2 (0 %) | 1/4 (25 %) |" in text
+    assert "| run-a | S3 | A | 2 | 0 | 0 | 0/2 (0 %) | – | 1/4 (25 %) |" in text
     assert "| run-b | all | B | 3 |" in text and "mean score" not in text
     assert "| run-b | S3 | 2 | 0 → 1 | +1 | 1 / 0 | 1 → 0 | +2 | – |" in text  # i3 is not in the base: not paired
+
+
+def test_report_shows_strict_and_loose_fact_scores(tmp_path):
+    logs = [item_log(f"f{n}", {"answer": ok}) for n, ok in enumerate((True, True, False))]
+    for r in logs:
+        r["set"], r["scores"]["final"]["loose_correct"] = "S1", True
+    text = report([write_run(tmp_path / "run-f", "D", logs)])
+    for name in ("S1", "all"):
+        assert f"| run-f | {name} | D | 3 | 0 | 0 | 2/3 (66.7 %) | 2 / 3 of 3 |" in text
 
 
 @pytest.fixture

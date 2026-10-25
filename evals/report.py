@@ -32,16 +32,18 @@ def _rows(runs: list[tuple[str, dict]]) -> list[tuple[str, str, str, dict]]:
 
 
 def code_table(runs: list[tuple[str, dict]]) -> list[str]:
-    lines = ["| run | set | mode | items | errors | empty | solved | parts | verdict parts | missing lines"
-             " | false / true corrections | with artefacts | tool-call leaks | S6 ok: artefacts / chars / latency"
-             " | latency p50 / p90 s |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| run | set | mode | items | errors | empty | solved | facts strict / loose | parts | verdict parts"
+             " | missing lines | false / true corrections | with artefacts | tool-call leaks"
+             " | S6 ok: artefacts / chars / latency | latency p50 / p90 s |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for run, name, mode, s in _rows(runs):
         c = s.get("conversation")
         conv = f"{c['artefact_free']} / {c['max_chars']} / {c['max_latency']} of {c['items']}" if c else "–"
+        # summaries written before the strict fact score have no fact counts
+        facts = f"{s['facts_correct']} / {s['loose_correct']} of {s['facts']}" if s.get("facts") else "–"
         lines.append(
             f"| {run} | {name} | {mode} | {s['items']} | {s['errors']} | {s['empty_answers']}"
-            f" | {s['correct']}/{s['scored']} ({_f(s['correct_pct'])} %) | {s['parts_right']}/{s['parts_total']}"
+            f" | {s['correct']}/{s['scored']} ({_f(s['correct_pct'])} %) | {facts} | {s['parts_right']}/{s['parts_total']}"
             f" ({_f(s['parts_pct'])} %) | {s['verdict_parts_right']}/{s['verdict_parts_total']} | {s['missing_lines']}"
             f" | {s['false_corrections']} / {s['true_corrections']} | {s['with_artefacts']} | {s['tool_call_leaks']}"
             f" | {conv} | {_f(s['latency_median_s'])} / {_f(s['latency_p90_s'])} |")
