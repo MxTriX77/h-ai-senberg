@@ -384,6 +384,13 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[^\W\d_]+", text.casefold())
 
 
+def _answer_line(text: str, start: int, end: int) -> bool:
+    """A line that text[start:end] touches is a labelled answer or verdict line (`A1: …`, as in split_claims)."""
+    stop = text.find("\n", end)
+    lines = text[text.rfind("\n", 0, start) + 1 : stop if stop >= 0 else len(text)].splitlines()
+    return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
+
+
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     """Why a review fix whose OLD text occurs once in the answer does not resolve a conflict inside the answer,
     or "" when it does: its CONFLICT quote is elsewhere in the answer, NEW adds something, every number NEW adds
@@ -395,6 +402,9 @@ def unconfirmed(answer: str, fix: dict[str, str]) -> str:
         return "no conflicting passage quoted"
     if quote not in f"{answer[:at]}\0{answer[at + len(old) :]}":
         return "conflicting passage not elsewhere in the answer"
+    labelled = _answer_line(answer, at, at + len(old))
+    if labelled and not _answer_line(f"{answer[:at]}{new}{answer[at + len(old) :]}", at, at + len(new)):
+        return "the answer line would lose its label"
     comma = bool(re.search("[А-Яа-яЁё]", answer))  # Russian text: every comma between digits is a decimal comma
     stated, computed = read_numbers(_decimal_points(quote, comma)), computations(quote, comma)
     had = {n.value for n in read_numbers(_decimal_points(old, comma))}
@@ -406,9 +416,6 @@ def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     words = [w for w in _words(new) if w not in set(_words(old))]
     if not numbers and not words:
         return "it adds nothing from the quoted passage"
-    end = answer.find("\n", at + len(old))
-    lines = answer[answer.rfind("\n", 0, at) + 1 : end if end >= 0 else len(answer)].splitlines()
-    labelled = any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
     missing = [w for w in words if w not in set(_words(quote))]
     if missing and (labelled or not numbers):
         return f"{'answer line' if labelled else 'no value changed'}: {', '.join(missing)} not in the quoted passage"
@@ -551,6 +558,9 @@ class Verifier:
             count = answer.count(f["old"]) if f["old"] else 0
             if count != 1 or f["new"] == f["old"]:
                 why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
+            elif self.cfg.consistency_keep_answer_lines and _answer_line(
+                    answer, at := answer.find(f["old"]), at + len(f["old"])):
+                why = f"answer line kept; conflict: {f.get('conflict') or f['why'] or 'not named'!r}"
             else:
                 why = unconfirmed(answer, f) if self.cfg.consistency_quotes else ""
             if why:

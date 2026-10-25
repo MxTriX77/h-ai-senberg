@@ -164,6 +164,9 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # answer, every number NEW adds is stated there or computed there (in code),
                                            # and, for an answer/verdict line (A1: …) or a fix without a number, every word
                                            # NEW adds is in it; false: any OLD that occurs once is replaced
+  consistency_keep_answer_lines: true      # the review never changes a labelled answer/verdict line (A1: …, Claim C: …,
+                                           # as for skip_derived_claims): the reasoning says it was kept and names the
+                                           # conflict; false: such lines follow consistency_quotes like other text
   request:                                 # fields merged into every judge call (per-model quirks, D-013)
     temperature: 0.0
     max_tokens: 1024

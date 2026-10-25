@@ -497,6 +497,7 @@ async def review(cfg, fake, knowledge, reply, text=REPORT):
     ("about 120 °C", "about 114 °C", "ΔT = 96 − (−18) ≈ 114 °C"),
 ])
 async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, old, new, conflict):
+    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
     text, steps = await review(cfg, fake, knowledge, f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w")
     assert text == REPORT.replace(old, new) and f"{old!r} → {new!r} (w)" in steps
 
@@ -514,8 +515,10 @@ async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, o
      "no value changed: warmed, slowly not in the quoted passage"),  # a rewording
     ("The mixture is heated gently.", "The mixture is heated.", "so the statement is false",
      "it adds nothing from the quoted passage"),
+    ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "the answer line would lose its label"),
 ])
 async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, new, conflict, why):
+    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
     reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: clarity"
     text, steps = await review(cfg, fake, knowledge, reply)
     assert text == REPORT and f"skipped {old!r} ({why})" in steps
@@ -523,9 +526,30 @@ async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, 
 
 @pytest.mark.anyio
 async def test_review_quotes_switched_off(cfg, fake, knowledge):
-    cfg.verifier.consistency_quotes = False
+    cfg.verifier.consistency_quotes = cfg.verifier.consistency_keep_answer_lines = False
     text, _ = await review(cfg, fake, knowledge, "OLD: A1: 4.17\nNEW: A1: 3.65\nWHY: the sheet's formula")
     assert text == REPORT.replace("A1: 4.17", "A1: 3.65")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("old, new, conflict, named", [
+    ("A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C", "'ΔT = 96 − (−18) ≈ 114 °C'"),  # even with a good quote
+    ("A2: 120", "A2: 114", None, "'w'"),  # without one, its reason is named
+    ("True", "False", "so the statement is false", "'so the statement is false'"),  # on "- **B:** True"
+    ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "'5000 / 1200 = 4.17'"),  # would drop the label
+])
+async def test_review_keeps_answer_lines(cfg, fake, knowledge, old, new, conflict, named):
+    assert cfg.verifier.consistency_keep_answer_lines  # shipped default
+    reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: w"
+    text, steps = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT and f"skipped {old!r} (answer line kept; conflict: {named})" in steps
+
+
+@pytest.mark.anyio
+async def test_review_with_answer_lines_kept_still_fixes_other_text(cfg, fake, knowledge):
+    reply = "OLD: about 120 °C\nNEW: about 114 °C\nCONFLICT: ΔT = 96 − (−18) ≈ 114 °C\nWHY: w"
+    text, _ = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT.replace("about 120 °C", "about 114 °C")
 
 
 @pytest.mark.parametrize("new, why", [("A4: неверно", ""), ("A4: 486,5", ""), ("A4: 486,4", "486,4 is not stated")])

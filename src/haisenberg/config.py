@@ -141,6 +141,7 @@ class VerifierConfig(_Section):
     consistency_check: bool  # one review call over the whole answer and the task (conclusions vs calculations...)
     consistency_prompt: str
     consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
+    consistency_keep_answer_lines: bool  # the review never changes a labelled answer/verdict line
 
     @field_validator("checkers")
     @classmethod

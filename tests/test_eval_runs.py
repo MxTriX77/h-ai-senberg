@@ -146,6 +146,7 @@ async def test_draft_scores_and_corrections(cfg, fake, built_store, tmp_path):
     apply_mode(cfg, load_modes()["D"])
     cfg.verifier.max_research = 0  # no re-search: the review is the only call after the draft
     cfg.verifier.consistency_quotes = False  # the review's unquoted edits stand in for any false/true correction
+    cfg.verifier.consistency_keep_answer_lines = False  # ... and they change answer lines
     item = {"id": "s4-1", "set": "S4", "question": "Q?", "lang": "en",
             "turns": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}],
             "parts": [{"label": "A1", "number": 6, "abs_tol": 0}, {"label": "A2", "verdict": ["true"]},
