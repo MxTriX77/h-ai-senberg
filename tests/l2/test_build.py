@@ -152,3 +152,7 @@ def test_cli_json(l2_store, capsys):
     records = json.loads(capsys.readouterr().out)
     assert records and all(r["citation"]["url"] for r in records)
     assert records[0]["citation"]["url"] == "https://chemistry.stackexchange.com/a/11"
+
+
+def test_large_pages(l2_store):
+    assert rows(l2_store, "PRAGMA page_size") == [(65536,)]
