@@ -16,6 +16,7 @@ from haisenberg.verifier import (
     SUPPORTED,
     UNVERIFIED,
     code_check,
+    echoes,
     fix_arithmetic,
     is_computation,
     parse_fixes,
@@ -26,6 +27,7 @@ from haisenberg.verifier import (
     results,
     Verifier,
     split_claims,
+    unconfirmed,
 )
 from test_server import chat, events
 
@@ -392,7 +394,8 @@ async def test_judge_leaves_out_passages_that_do_not_fit(cfg, fake, knowledge):
 # --- consistency review -------------------------------------------------------------------------------
 
 DRAFT = "The theoretical yield is 23.75 g, so 23.4 g is a 98.6 % yield.\n\n| Check | Result |\n|---|---|\n| Yield | 85 % (consistent) |"
-REVIEW = "OLD: 85 % (consistent)\nNEW: 98.6 % (implausibly high)\nWHY: the calculation above gives 98.6 %"
+REVIEW = ("OLD: 85 % (consistent)\nNEW: 98.6 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\n"
+          "WHY: the calculation above gives 98.6 %")
 
 
 @pytest.fixture
@@ -407,6 +410,8 @@ def reviewing(cfg, fake, knowledge):
 def test_parse_fixes():
     assert parse_fixes("OK") == []
     assert parse_fixes('**OLD:** "a | b"\n**NEW**: c\nWHY: d\nOLD: lone') == [{"old": "a | b", "new": "c", "why": "d"}]
+    assert parse_fixes("OLD: a\nNEW: b\n**CONFLICT:** `c = 2`\nWHY: d") == [
+        {"old": "a", "new": "b", "why": "d", "conflict": "c = 2"}]
 
 
 def test_conclusion_fixed(reviewing, fake, cfg):
@@ -461,6 +466,99 @@ def test_review_skipped_when_too_long(cfg, fake, knowledge):
     assert "Consistency review skipped" in reasoning_text(r) and answer(r) == DRAFT
 
 
+# --- conservative review (c2): a fix must resolve a conflict inside the answer ----------------------------
+
+REPORT = ("The payback is 5000 / 1200 = 4.17 years, and the gap is 96 °C − (−18 °C), about 120 °C.\n"
+          "ΔT = 96 − (−18) ≈ 114 °C, so the statement is false.\n"
+          "The mixture is heated gently.\n\n"
+          "A1: 4.17\n"
+          "A2: 120\n"
+          "- **B:** True")
+
+
+async def review(cfg, fake, knowledge, reply, text=REPORT):
+    """The answer after the consistency review answered `reply`, and the review's reasoning lines."""
+    fake.scripts = [[content(reply)]]
+    lines, result = [], None
+    async for item in Verifier(cfg, fake.client(cfg.model_backend), knowledge)._consistency("Task.", text):
+        if isinstance(item, tuple):
+            result = item
+        else:
+            lines.append(item["reasoning_content"])
+    return result[0], "".join(lines)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("old, new, conflict", [
+    ("A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C"),  # the value the other statement states
+    ("A2: 120", "A2: 114", "96 °C − (−18 °C)"),  # ... or computes, recomputed in code
+    ("A1: 4.17", "A1: 4.2", "5000 / 1200 = 4.17"),  # numbers compared with their rounding
+    ("True", "False", "so the statement is false"),  # the verdict word the answer uses (on "- **B:** True")
+    ("about 120 °C", "about 114 °C", "ΔT = 96 − (−18) ≈ 114 °C"),
+])
+async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, old, new, conflict):
+    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
+    text, steps = await review(cfg, fake, knowledge, f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w")
+    assert text == REPORT.replace(old, new) and f"{old!r} → {new!r} (w)" in steps
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("old, new, conflict, why", [
+    ("A2: 120", "A2: 114", None, "no conflicting passage quoted"),
+    ("A1: 4.17", "A1: 3.65", "5000 / 1370 = 3.65", "conflicting passage not elsewhere in the answer"),  # its own sum
+    ("about 120 °C", "about 114 °C", "about 120 °C", "conflicting passage not elsewhere in the answer"),
+    ("A1: 4.17", "A1: 3.65", "The payback is 5000 / 1200 = 4.17 years", "3.65 is not stated in the quoted passage"),
+    ("A2: 120", "A2: 110", "96 °C − (−18 °C)", "110 is not stated in the quoted passage"),
+    ("True", "Not established", "so the statement is false",
+     "answer line: not, established not in the quoted passage"),
+    ("heated gently", "warmed slowly", "so the statement is false",
+     "no value changed: warmed, slowly not in the quoted passage"),  # a rewording
+    ("The mixture is heated gently.", "The mixture is heated.", "so the statement is false",
+     "it adds nothing from the quoted passage"),
+    ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "the answer line would lose its label"),
+])
+async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, new, conflict, why):
+    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
+    reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: clarity"
+    text, steps = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT and f"skipped {old!r} ({why})" in steps
+
+
+@pytest.mark.anyio
+async def test_review_quotes_switched_off(cfg, fake, knowledge):
+    cfg.verifier.consistency_quotes = cfg.verifier.consistency_keep_answer_lines = False
+    text, _ = await review(cfg, fake, knowledge, "OLD: A1: 4.17\nNEW: A1: 3.65\nWHY: the sheet's formula")
+    assert text == REPORT.replace("A1: 4.17", "A1: 3.65")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("old, new, conflict, named", [
+    ("A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C", "'ΔT = 96 − (−18) ≈ 114 °C'"),  # even with a good quote
+    ("A2: 120", "A2: 114", None, "'w'"),  # without one, its reason is named
+    ("True", "False", "so the statement is false", "'so the statement is false'"),  # on "- **B:** True"
+    ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "'5000 / 1200 = 4.17'"),  # would drop the label
+])
+async def test_review_keeps_answer_lines(cfg, fake, knowledge, old, new, conflict, named):
+    assert cfg.verifier.consistency_keep_answer_lines  # shipped default
+    reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: w"
+    text, steps = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT and f"skipped {old!r} (answer line kept; conflict: {named})" in steps
+
+
+@pytest.mark.anyio
+async def test_review_with_answer_lines_kept_still_fixes_other_text(cfg, fake, knowledge):
+    reply = "OLD: about 120 °C\nNEW: about 114 °C\nCONFLICT: ΔT = 96 − (−18) ≈ 114 °C\nWHY: w"
+    text, _ = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT.replace("about 120 °C", "about 114 °C")
+
+
+@pytest.mark.parametrize("new, why", [("A4: неверно", ""), ("A4: 486,5", ""), ("A4: 486,4", "486,4 is not stated")])
+def test_unconfirmed_reads_decimal_commas(new, why):
+    text = "Среднее 486,5 мг, значит утверждение неверно.\nA4: верно"
+    result = unconfirmed(text, {"old": "A4: верно", "new": new, "conflict": "Среднее 486,5 мг, значит утверждение неверно"})
+    assert result.startswith(why) and bool(result) == bool(why)
+
+
 def test_annotated_no_claim_loses_its_citation(client, fake):
     fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. Let me know if you need more [S1].")],
                     [content("C1: supports S1\nC2: no_claim")]]
@@ -506,6 +604,34 @@ def test_contradiction_without_a_correction(cfg, fake, knowledge, keep, expected
     assert ("no correction: kept" in reasoning_text(r)) is keep
 
 
+def test_echoes(cfg):
+    prompt = cfg.verifier.judge_prompt  # its format example: "C2: contradicts S1 | the claim rewritten so that ..."
+    assert echoes("the claim rewritten so that it agrees with S1", prompt)
+    assert echoes("The claim, rewritten so that it agrees with S3.", prompt)
+    assert echoes("Formula: the claim rewritten so that it agrees with S2", prompt)
+    assert echoes("not_said", prompt)
+    assert not echoes("Ethanol is colorless.", prompt)
+    assert not echoes("Ethanol boils at 78.23 °C, so the claim is wrong.", prompt)
+    assert not echoes("", prompt)
+
+
+ECHO = "C1: supports S1\nC2: contradicts S1 | the claim rewritten so that it agrees with S1"
+
+
+@pytest.mark.parametrize("ignore, keep, expected", [
+    (True, True, "Ethanol is a liquid. It is blue."),
+    (True, False, "Ethanol is a liquid."),
+    (False, True, "Ethanol is a liquid. the claim rewritten so that it agrees with S1"),
+])
+def test_judge_echo_not_applied(cfg, fake, knowledge, ignore, keep, expected):
+    cfg.verifier.ignore_prompt_echo, cfg.verifier.keep_uncorrected = ignore, keep
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. It is blue [S1].")], [content(ECHO)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == expected
+    assert ("correction repeats the judge instructions: ignored" in reasoning_text(r)) is ignore
+
+
 # --- arithmetic ---------------------------------------------------------------------------------------
 
 
@@ -514,6 +640,18 @@ def test_wrong_product_fixed_in_place():
     fixed, fixes, checked = fix_arithmetic(draft, 0.005)
     assert fixed == "The mass of CaO is 0.0500 × 56.08 = 2.80 g, so 5.00 − 2.80 = 2.20 g of CO2 leaves."
     assert fixes == [{"expression": "0.0500 * 56.08", "stated": "3.80", "fixed": "2.80"}] and checked == 2
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("Margin:\n- (800 - 2) / 800 × 100 = 99.75%", None),
+    ("Margin:\n  - (800 - 2) / 800 × 100 = 90.00%", "Margin:\n  - (800 - 2) / 800 × 100 = 99.75%"),
+    ("> * (6 - 1) × 2 = 10 kg", None),
+    ("-5 × 2 = -10", None),
+    ("-5 × 2 = 10", "-5 × 2 = -10"),
+])
+def test_list_marker_results_not_negated(draft, expected):
+    fixed, fixes, checked = fix_arithmetic(draft, 0.005)
+    assert checked == 1 and fixed == (expected or draft) and len(fixes) == (expected is not None)
 
 
 @pytest.mark.parametrize("draft", [

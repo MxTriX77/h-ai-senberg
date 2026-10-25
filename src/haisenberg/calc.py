@@ -129,6 +129,7 @@ _EQUALS = re.compile(r"(?<![<>=!≤≥])=(?![=>])")
 _RESULT_LEAD = re.compile(r"[ \t]*(?:\\[,;! ]|[$])?[ \t]*\{?[ \t]*")
 _NEXT_OP = re.compile(r"[ \t]*[×*/·÷+^−-](?!\s*$)")
 _NUMBER_IN_UNITS = re.compile(rf"({_NUM}|\))(?:{_UNIT})")
+_LIST_MARKER = re.compile(r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d+[.)])[ \t]+)?")  # "- ", "  * ", "> 1. ": not a sign
 
 
 @dataclass
@@ -151,6 +152,8 @@ def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmet
     Expressions with names other than units and functions, or that cannot be computed, are skipped."""
     for eq in _EQUALS.finditer(text):
         line_start = max(text.rfind("\n", 0, eq.start()), text.rfind("=", 0, eq.start())) + 1
+        if line_start == text.rfind("\n", 0, eq.start()) + 1:  # the left side starts its line
+            line_start = _LIST_MARKER.match(text, line_start).end()
         lhs = normalize(text[max(line_start, eq.start() - 200) : eq.start()], decimal_comma)
         m = _EXPR.search(lhs)
         if not m or re.search(r"\d\s+$", lhs[: m.start()]):  # "6.626 070 15 × 2", "2 (3 + 4)": not one reading
@@ -172,6 +175,22 @@ def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmet
             continue
         yield Arithmetic(expression, fraction, plain, at, as_percent, "%" in core,
                          bool(re.search(r"\*\s*100(?:\.0+)?(?![\d.])", expression)))
+
+
+_ANY_EXPR = re.compile(rf"(?<![\w.,]){_OPERAND}(?:{_OP}{_OPERAND})+")
+
+
+def computations(text: str, decimal_comma: bool = False) -> list[float]:
+    """The value of every arithmetic expression written in the text, with or without a result after it
+    (`96 °C − (−18 °C)` gives 114), under both readings of its % signs; what cannot be computed is skipped."""
+    values = []
+    for m in _ANY_EXPR.finditer(normalize(text, decimal_comma)):
+        for percent_is_fraction in (True, False):
+            try:
+                values.append(evaluate(_python(m.group(), percent_is_fraction)))
+            except CalcError:
+                pass
+    return values
 
 
 _AS_PERCENT = re.compile(r"\s*\*\s*100(?:\.0+)?\s*%\s*$")  # a final "× 100%"

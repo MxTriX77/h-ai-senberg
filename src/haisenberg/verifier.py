@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from .config import Config
-from .calc import Arithmetic, find_arithmetic, prefixed
+from .calc import Arithmetic, computations, find_arithmetic, prefixed
 from .checkers import CHECKERS
 from .l1.text import parse_formula, to_hill
 from .llm import LLMClient, UpstreamError, estimate_tokens
@@ -66,7 +66,7 @@ class Claim:
 class Verification:
     answer: str  # the draft rendered by verifier.answer_style (see render), after the consistency review
     claims: list[Claim]
-    consistency: list[dict[str, str]] = field(default_factory=list)  # applied review fixes: old, new, why
+    consistency: list[dict[str, str]] = field(default_factory=list)  # applied review fixes: old, new, why, conflict
     arithmetic: list[dict[str, str]] = field(default_factory=list)  # fixed results: expression, stated, fixed
     checks: list[dict[str, Any]] = field(default_factory=list)  # domain checker findings: checker, text, fixed, note
 
@@ -215,9 +215,7 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[s
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
     for a in find_arithmetic(draft, decimal_comma):
-        window = draft[a.result_at : a.result_at + 80]
-        comma = r"(\d),(\d)" if decimal_comma else r"(\d),(\d{1,2}(?!\d)|\d{4,})"
-        window = re.sub(comma, r"\1.\2", window)  # same length: spans stay valid
+        window = _decimal_points(draft[a.result_at : a.result_at + 80], decimal_comma)
         numbers = read_numbers(window)
         if not numbers or numbers[0].start != 0:
             continue
@@ -244,6 +242,13 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[s
         start, end = f.pop("at")
         draft = draft[:start] + f["fixed"] + draft[end:]
     return draft, fixes, checked
+
+
+def _decimal_points(text: str, decimal_comma: bool) -> str:
+    """Commas between digits as decimal points (same length: spans stay valid): every one with
+    `decimal_comma` (Russian text), otherwise not before exactly three digits (1,900)."""
+    comma = r"(\d),(\d)" if decimal_comma else r"(\d),(\d{1,2}(?!\d)|\d{4,})"
+    return re.sub(comma, r"\1.\2", text)
 
 
 def run_checkers(draft: str, names: list[str]) -> tuple[str, list[dict[str, Any]]]:
@@ -358,11 +363,11 @@ def is_computation(claim: Claim, given: list[float], computed: list[float], rel_
 
 
 def parse_fixes(text: str) -> list[dict[str, str]]:
-    """The consistency review's OLD/NEW/WHY blocks (an `OK` reply has none). Markdown emphasis around the
-    keys is ignored; a block needs an OLD and a NEW line."""
+    """The consistency review's OLD/NEW/CONFLICT/WHY blocks (an `OK` reply has none). Markdown emphasis around
+    the keys is ignored; a block needs an OLD and a NEW line."""
     blocks: list[dict] = []
     for line in text.splitlines():
-        m = re.match(r"^\W*(OLD|NEW|WHY)\W*?:\s?(.*)$", line.strip(), re.I)
+        m = re.match(r"^\W*(OLD|NEW|CONFLICT|WHY)\W*?:\s?(.*)$", line.strip(), re.I)
         if not m:
             continue
         key, value = m.group(1).lower(), m.group(2).strip().lstrip("*_").strip()
@@ -373,6 +378,48 @@ def parse_fixes(text: str) -> list[dict[str, str]]:
         elif blocks:
             blocks[-1][key] = value
     return [b for b in blocks if b["old"] and b["new"] is not None]
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[^\W\d_]+", text.casefold())
+
+
+def _answer_line(text: str, start: int, end: int) -> bool:
+    """A line that text[start:end] touches is a labelled answer or verdict line (`A1: …`, as in split_claims)."""
+    stop = text.find("\n", end)
+    lines = text[text.rfind("\n", 0, start) + 1 : stop if stop >= 0 else len(text)].splitlines()
+    return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
+
+
+def unconfirmed(answer: str, fix: dict[str, str]) -> str:
+    """Why a review fix whose OLD text occurs once in the answer does not resolve a conflict inside the answer,
+    or "" when it does: its CONFLICT quote is elsewhere in the answer, NEW adds something, every number NEW adds
+    is stated in the quote (within the rounding of either) or is the value of a computation written there, and
+    every word NEW adds is in the quote too when it adds no number or OLD is on a labelled answer/verdict line."""
+    old, new, quote = fix["old"], fix["new"], fix.get("conflict", "")
+    at = answer.find(old)
+    if not quote:
+        return "no conflicting passage quoted"
+    if quote not in f"{answer[:at]}\0{answer[at + len(old) :]}":
+        return "conflicting passage not elsewhere in the answer"
+    labelled = _answer_line(answer, at, at + len(old))
+    if labelled and not _answer_line(f"{answer[:at]}{new}{answer[at + len(old) :]}", at, at + len(new)):
+        return "the answer line would lose its label"
+    comma = bool(re.search("[А-Яа-яЁё]", answer))  # Russian text: every comma between digits is a decimal comma
+    stated, computed = read_numbers(_decimal_points(quote, comma)), computations(quote, comma)
+    had = {n.value for n in read_numbers(_decimal_points(old, comma))}
+    numbers = [n for n in read_numbers(_decimal_points(new, comma)) if n.value not in had]
+    for n in numbers:
+        if not (any(abs(n.value - s.value) <= max(n.half, s.half) for s in stated)
+                or any(abs(n.value - v) <= n.half for v in computed)):
+            return f"{new[n.start : n.end]} is not stated in the quoted passage"
+    words = [w for w in _words(new) if w not in set(_words(old))]
+    if not numbers and not words:
+        return "it adds nothing from the quoted passage"
+    missing = [w for w in words if w not in set(_words(quote))]
+    if missing and (labelled or not numbers):
+        return f"{'answer line' if labelled else 'no value changed'}: {', '.join(missing)} not in the quoted passage"
+    return ""
 
 
 def parse_verdicts(text: str, given: set[str]) -> dict[int, tuple[str, list[str], str | None]]:
@@ -389,6 +436,21 @@ def parse_verdicts(text: str, given: set[str]) -> dict[int, tuple[str, list[str]
             verdict = "not_said"
         out.setdefault(int(m.group(1)), (verdict, ids, correction.strip() or None))
     return out
+
+
+_ECHO_RUN = 5  # words in a row shared with the judge's instructions that make a correction an echo of them
+
+
+def echoes(text: str, instructions: str) -> bool:
+    """The text repeats the instructions: all its words, or a run of five of them, appear in a row in them
+    (case ignored; ids such as S1 or C2 count as one same word, so `agrees with S3` repeats `agrees with S1`)."""
+
+    def words(s: str) -> list[str]:
+        return re.findall(r"\w+", re.sub(r"\b[SC]\d+\b", "ID", s).lower())
+
+    said, given = words(text), f" {' '.join(words(instructions))} "
+    runs = [said[i : i + _ECHO_RUN] for i in range(max(1, len(said) - _ECHO_RUN + 1))]
+    return bool(said) and any(f" {' '.join(run)} " in given for run in runs)
 
 
 class Verifier:
@@ -494,13 +556,19 @@ class Verifier:
         yield _say(f"\n\nConsistency review: {len(blocks)} fix{'es' if len(blocks) != 1 else ''} proposed\n")
         for f in blocks:
             count = answer.count(f["old"]) if f["old"] else 0
-            if count == 1 and f["new"] != f["old"]:
-                answer = answer.replace(f["old"], f["new"])
-                applied.append(f)
-                yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
-            else:
+            if count != 1 or f["new"] == f["old"]:
                 why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
+            elif self.cfg.consistency_keep_answer_lines and _answer_line(
+                    answer, at := answer.find(f["old"]), at + len(f["old"])):
+                why = f"answer line kept; conflict: {f.get('conflict') or f['why'] or 'not named'!r}"
+            else:
+                why = unconfirmed(answer, f) if self.cfg.consistency_quotes else ""
+            if why:
                 yield _say(f"- skipped {f['old']!r} ({why})\n")
+                continue
+            answer = answer.replace(f["old"], f["new"])
+            applied.append(f)
+            yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
         yield answer, applied
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
@@ -528,6 +596,9 @@ class Verifier:
         for c in claims:
             verdict, ids, correction = verdicts.get(c.n, ("not_said", [], None))
             c.note = f"judge: {verdict}" + (f" {' '.join(ids)}" if ids else "")
+            if (verdict == "contradicts" and correction and self.cfg.ignore_prompt_echo
+                    and echoes(correction, self.cfg.judge_prompt)):
+                correction, c.note = None, f"{c.note}, correction repeats the judge instructions: ignored"
             if verdict == "supports":
                 c.outcome, c.ids = SUPPORTED, ids
             elif verdict == "contradicts" and not correction and self.cfg.keep_uncorrected:
