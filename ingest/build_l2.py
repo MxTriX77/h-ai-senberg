@@ -94,6 +94,9 @@ def load_wikipedia(w: Writer, entry: Entry, path: Path) -> None:
                 with Zim(mini) as m:
                     rated.update(l2sources.rated(m, entry.filter))
             w.report[f"{entry.name}: rated in a mini ZIM"] = len(rated)
+            for path, domains in rated.items():  # stored from a topic ZIM: still gains the domains it is rated for
+                if (doc_id := w.wiki.get(path)) is not None:
+                    w.more.setdefault(doc_id, set()).update(domains)
         for scan in l2sources.wiki_scans(z, w.limit, entry.filter, skip, rated=rated):
             w.report.update(scan.dropped)
             for doc in scan.docs:

@@ -44,6 +44,7 @@ def test_wikipedia_articles(l2_store):
     assert rows(l2_store, "SELECT count(*) FROM doc WHERE path = 'Electron'")[0][0] == 1
     assert {d for *_, d in found["Benzene"]} == {"chemistry"}  # from the filtered ZIM, by its chembox
     assert {d for *_, d in found["Caffeine"]} == {"chemistry"}  # rated by WikiProject Chemicals in the mini ZIM
+    assert {d for *_, d in found["Photoelectric_effect"]} == {"chemistry physics"}  # physics ZIM + Chemistry rating
     sub = "Emission mechanism › Experimental observation of photoelectric emission"
     full = [f"{h} › {t}" if h else t for _, h, t, _ in found["Photoelectric_effect"]]  # heading, then line headings
     assert any(f"{sub}: The emitted electrons" in x or x.startswith(f"{sub} › The emitted electrons") for x in full)
@@ -133,7 +134,7 @@ def test_search_ranks_page(l2_store):
 def test_search_domain_filter(l2_store):
     store = L2Store(l2_store)
     assert store.search("photoelectric", 5)
-    assert store.search("photoelectric", 5, "chemistry") == []
+    assert store.search("photoelectric", 5, "biology") == []
     assert all("physics" in r.domains for r in store.search("electron", 5, "physics"))
 
 

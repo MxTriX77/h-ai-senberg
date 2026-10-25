@@ -83,6 +83,7 @@ CAFFEINE = wiki_page("Caffeine", [(2, "Pharmacology", "<p>Caffeine blocks adenos
 CURIE_TOP = wiki_page("Marie Curie", [(2, "Work", "<p>Fixture text about the discovery of polonium and radium.</p>")])
 CAFFEINE_MINI = wiki_page("Caffeine", [], projects={"Chemicals": "Mid"})  # the mini copy carries the ratings
 CURIE_MINI = wiki_page("Marie Curie", [], projects={"Biography": "", "Chemistry": "High"})
+PHOTO_MINI = wiki_page("Photoelectric effect", [], projects={"Physics": "Top", "Chemistry": "Mid"})
 FILM = wiki_page("Some Film", [(2, "Plot", "<p>A fixture film whose plot has nothing to do with science at all.</p>")])
 
 INTRO = " ".join(["The solubility of calcium carbonate rises in acid as carbonate ions are protonated."] * 5)
@@ -192,7 +193,8 @@ def make_raw(raw: Path) -> Path:
         _Entry("Benzene", BENZENE), _Entry("Some_Film", FILM), _Entry("Electron", ELECTRON),
         _Entry("Caffeine", CAFFEINE), _Entry("Marie_Curie", CURIE_TOP)])
     _zim(raw / "kiwix/mini.zim", "Wikipedia mini",
-         [_Entry("Caffeine", CAFFEINE_MINI), _Entry("Marie_Curie", CURIE_MINI)])
+         [_Entry("Caffeine", CAFFEINE_MINI), _Entry("Marie_Curie", CURIE_MINI),
+          _Entry("Photoelectric_effect", PHOTO_MINI)])
     pages = [{"id": "1", "title": "Home", "path": ""},
              {"id": "2", "title": "15.4: Coupled Equilibria",
               "path": "Bookshelves/General_Chemistry/15.04:_Coupled_Equilibria"},
