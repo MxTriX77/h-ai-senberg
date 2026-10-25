@@ -112,6 +112,7 @@ sources:
     dest: kiwix/libretexts.org_en_phys_2026-01.zim
     sha256: ace498581e085093cc86383439342d9ff5a4604bd87f6b82448c019e1264830f
     license: mostly CC BY-NC-SA (per page)
+    cite_url: https://phys.libretexts.org/{path}
 
   - name: libretexts_en_chem_2025-01
     use: libretexts-zim
@@ -121,3 +122,239 @@ sources:
     dest: kiwix/libretexts.org_en_chem_2025-01.zim
     sha256: 83ba2fbfe36d72abe919661de5548103bb6674749bc26531cd61f83d8a825764
     license: mostly CC BY-NC-SA (per page)
+    cite_url: https://chem.libretexts.org/{path}
+
+# Layer 2 (literature store, `uv run python -m ingest.build_l2`). The Layer 1 topic ZIMs above (wikipedia-zim) and
+# the LibreTexts ZIMs are read too: full articles and textbook pages.
+
+  - name: wikipedia_en_climate-change_nopic_2026-10
+    use: wikipedia-text-zim
+    layer: 2
+    domains: [geoscience]
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_climate-change_nopic_2026-10.zim
+    dest: kiwix/wikipedia_en_climate-change_nopic_2026-10.zim
+    sha256: 2a3f2aa5a4c6011f9f73e5b119546763fff099f2c3bb8a1787e750236f555ae5
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: wikipedia_en_molcell_nopic_2026-10
+    use: wikipedia-text-zim
+    layer: 2
+    domains: [biology]
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_molcell_nopic_2026-10.zim
+    dest: kiwix/wikipedia_en_molcell_nopic_2026-10.zim
+    sha256: 8fb46450e31310a65e9ada144a3a6ea80ddf722cd9603051f9a7a3b656387f5d
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: wikipedia_en_mathematics_nopic_2026-09
+    use: wikipedia-text-zim
+    layer: 2
+    domains: [mathematics]
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_mathematics_nopic_2026-09.zim
+    dest: kiwix/wikipedia_en_mathematics_nopic_2026-09.zim
+    sha256: d7dddf8f5f0f6f6f6681a6347ba2ac7782f6e32bad1a57747131ebbf99aac3b5
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: wikipedia_en_astronomy_nopic_2026-08
+    use: wikipedia-text-zim
+    layer: 2
+    domains: [astronomy, physics]
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_astronomy_nopic_2026-08.zim
+    dest: kiwix/wikipedia_en_astronomy_nopic_2026-08.zim
+    sha256: 05eeb2dacfa1e79d66f43b01fb9531eaf22cf2d5b829ff856e75504863e6526c
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: mattermodeling.stackexchange.com_en_all_2026-10
+    use: stackexchange-zim
+    layer: 2
+    domains: [chemistry, physics]
+    filter: {min_answer_score: 3}         # answers voted at least this; question bodies are not stored
+    url: https://download.kiwix.org/zim/stack_exchange/mattermodeling.stackexchange.com_en_all_2026-10.zim
+    dest: stackexchange/mattermodeling.stackexchange.com_en_all_2026-10.zim
+    sha256: 668eb0ff28529abf57d7947c5724bd8e7bc81a3c9a1799b8fa9ecf8e88f67486
+    license: CC BY-SA (2.5, 3.0 or 4.0 by post date; Stack Exchange contributors)
+    cite_url: https://mattermodeling.stackexchange.com/{path}
+
+  - name: earthscience.stackexchange.com_en_all_2026-10
+    use: stackexchange-zim
+    layer: 2
+    domains: [geoscience]
+    filter: {min_answer_score: 3}         # answers voted at least this; question bodies are not stored
+    url: https://download.kiwix.org/zim/stack_exchange/earthscience.stackexchange.com_en_all_2026-10.zim
+    dest: stackexchange/earthscience.stackexchange.com_en_all_2026-10.zim
+    sha256: af63d199e3ec876a31d2a9fdd335853acc1655ff73995854f488d03402f55c72
+    license: CC BY-SA (2.5, 3.0 or 4.0 by post date; Stack Exchange contributors)
+    cite_url: https://earthscience.stackexchange.com/{path}
+
+  - name: astronomy.stackexchange.com_en_all_2026-10
+    use: stackexchange-zim
+    layer: 2
+    domains: [astronomy, physics]
+    filter: {min_answer_score: 3}         # answers voted at least this; question bodies are not stored
+    url: https://download.kiwix.org/zim/stack_exchange/astronomy.stackexchange.com_en_all_2026-10.zim
+    dest: stackexchange/astronomy.stackexchange.com_en_all_2026-10.zim
+    sha256: ec56939c346c0488665d0ff101003440aa560865a1af53e0dd53fcfd96d4f39b
+    license: CC BY-SA (2.5, 3.0 or 4.0 by post date; Stack Exchange contributors)
+    cite_url: https://astronomy.stackexchange.com/{path}
+
+  - name: engineering.stackexchange.com_en_all_2026-10
+    use: stackexchange-zim
+    layer: 2
+    domains: [engineering]
+    filter: {min_answer_score: 3}         # answers voted at least this; question bodies are not stored
+    url: https://download.kiwix.org/zim/stack_exchange/engineering.stackexchange.com_en_all_2026-10.zim
+    dest: stackexchange/engineering.stackexchange.com_en_all_2026-10.zim
+    sha256: 5c0e625750963139cd274c4d75f310ed742a5eaf305b790e0c619f80a9d572a1
+    license: CC BY-SA (2.5, 3.0 or 4.0 by post date; Stack Exchange contributors)
+    cite_url: https://engineering.stackexchange.com/{path}
+
+  - name: chemistry.stackexchange.com_en_all_2026-10
+    use: stackexchange-zim
+    layer: 2
+    domains: [chemistry]
+    filter: {min_answer_score: 3}         # answers voted at least this; question bodies are not stored
+    url: https://download.kiwix.org/zim/stack_exchange/chemistry.stackexchange.com_en_all_2026-10.zim
+    dest: stackexchange/chemistry.stackexchange.com_en_all_2026-10.zim
+    sha256: 29df06f911373044997678301ebe894ef10fdf15c8e83d39ab83f7ae91f65394
+    license: CC BY-SA (2.5, 3.0 or 4.0 by post date; Stack Exchange contributors)
+    cite_url: https://chemistry.stackexchange.com/{path}
+
+  - name: physics.stackexchange.com_en_all_2026-10
+    use: stackexchange-zim
+    layer: 2
+    domains: [physics]
+    filter: {min_answer_score: 3}         # answers voted at least this; question bodies are not stored
+    url: https://download.kiwix.org/zim/stack_exchange/physics.stackexchange.com_en_all_2026-10.zim
+    dest: stackexchange/physics.stackexchange.com_en_all_2026-10.zim
+    sha256: 1f1767bcca84d5af7c8fb44d2e45c6fc1a28117b33bc5aa75f55cff9e4d3735e
+    license: CC BY-SA (2.5, 3.0 or 4.0 by post date; Stack Exchange contributors)
+    cite_url: https://physics.stackexchange.com/{path}
+
+  - name: libretexts_en_eng_2025-01
+    use: libretexts-zim
+    layer: 2
+    domains: [engineering]
+    url: https://download.kiwix.org/zim/libretexts/libretexts.org_en_eng_2025-01.zim
+    dest: kiwix/libretexts.org_en_eng_2025-01.zim
+    sha256: 3d4b25d03082172f4793625163b366a7d21655a5f8868d0758a9c3649ce9d5c2
+    license: mostly CC BY-NC-SA (per page)
+    cite_url: https://eng.libretexts.org/{path}
+
+  - name: libretexts_en_math_2026-01
+    use: libretexts-zim
+    layer: 2
+    domains: [mathematics]
+    url: https://download.kiwix.org/zim/libretexts/libretexts.org_en_math_2026-01.zim
+    dest: kiwix/libretexts.org_en_math_2026-01.zim
+    sha256: 7a07f9a4c7ad1ca51c300d573bc74df27a5556f7c4c6fe9407bc337ad9b7b4c8
+    license: mostly CC BY-NC-SA (per page)
+    cite_url: https://math.libretexts.org/{path}
+
+  - name: libretexts_en_bio_2025-01
+    use: libretexts-zim
+    layer: 2
+    domains: [biology]
+    url: https://download.kiwix.org/zim/libretexts/libretexts.org_en_bio_2025-01.zim
+    dest: kiwix/libretexts.org_en_bio_2025-01.zim
+    sha256: aa914c19a690429b5d41ccbc91ba8cf7bc2980211b998c8a4a82ef3a21375321
+    license: mostly CC BY-NC-SA (per page)
+    cite_url: https://bio.libretexts.org/{path}
+
+  - name: wikibooks_en_all_nopic_2026-10
+    use: wikibooks-zim
+    layer: 2
+    domains: [chemistry, physics, biology, astronomy, engineering, mathematics]
+    filter:                      # only these books (first segment of a page path), each with its domain
+      books:
+        General_Chemistry: chemistry
+        High_School_Chemistry: chemistry
+        A-level_Chemistry: chemistry
+        AP_Chemistry: chemistry
+        IB_Chemistry: chemistry
+        OCR_Advanced_GCE_in_Chemistry: chemistry
+        Organic_Chemistry: chemistry
+        Inorganic_Chemistry: chemistry
+        Advanced_Inorganic_Chemistry: chemistry
+        Quantum_Chemistry: chemistry
+        Statistical_Thermodynamics_and_Rate_Theories: chemistry
+        Molecular_Simulation: chemistry
+        Analytical_Chemiluminescence: chemistry
+        Mathematics_for_Chemistry: chemistry
+        'Chemical_Sciences:_A_Manual_for_CSIR-UGC_National_Eligibility_Test_for_Lectureship_and_JRF': chemistry
+        Structural_Biochemistry: biology
+        Biochemistry: biology
+        Principles_of_Biochemistry: biology
+        Physics_Study_Guide: physics
+        Physics_Course: physics
+        FHSST_Physics: physics
+        High_School_Physics: physics
+        A-level_Physics: physics
+        A-level_Physics_(Advancing_Physics): physics
+        AQA_A-Level_Physics: physics
+        OCR_A-Level_Physics: physics
+        IB_Physics: physics
+        VCE_Physics: physics
+        Physics_Exercises: physics
+        Physics_Textbook: physics
+        Physics_with_Calculus: physics
+        Fundamentals_of_Physics: physics
+        Fundamentals_of_Mechanics: physics
+        General_Mechanics: physics
+        Electricity_and_magnetism: physics
+        Electrodynamics: physics
+        Modern_Physics: physics
+        This_Quantum_World: physics
+        Quantum_Mechanics: physics
+        Statistical_Mechanics: physics
+        Special_Relativity: physics
+        General_Relativity: physics
+        A_Roller_Coaster_Ride_through_Relativity: physics
+        Introduction_to_Mathematical_Physics: physics
+        Fluid_Mechanics: physics
+        Basic_Physics_of_Nuclear_Medicine: physics
+        Introduction_to_Astrophysics: physics
+        Astrodynamics: physics
+        General_Astronomy: astronomy
+        Engineering_Thermodynamics: engineering
+        Fluid_Mechanics_Applications: engineering
+        Materials_Science: engineering
+        Introduction_to_Chemical_Engineering_Processes: engineering
+        Calculus: mathematics
+        Linear_Algebra: mathematics
+        Ordinary_Differential_Equations: mathematics
+        Partial_Differential_Equations: mathematics
+        Calculus_of_Variations: mathematics
+        Advanced_Mathematics_for_Engineers_and_Scientists: mathematics
+        Statistics: mathematics
+    url: https://download.kiwix.org/zim/wikibooks/wikibooks_en_all_nopic_2026-10.zim
+    dest: kiwix/wikibooks_en_all_nopic_2026-10.zim
+    sha256: bda3410005656daeb523c81774e151b750cd5a8828f081ded0848cd7fdccba7c
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikibooks.org/wiki/{path}
+
+  - name: wikipedia_en_top1m_nopic_2026-04
+    use: wikipedia-filtered-zim
+    layer: 2
+    domains: [chemistry, physics]
+    filter:                      # full articles not in a topic ZIM, same relevance rules as the mini ZIM
+      infoboxes: {ib-chembox: chemistry, ib-element: chemistry}
+      projects: {Chemistry: chemistry, Chemicals: chemistry, Elements: chemistry, Physics: physics}
+      importance: [Top, High, Mid]
+    url: https://download.kiwix.org/zim/wikipedia/wikipedia_en_top1m_nopic_2026-04.zim
+    dest: kiwix/wikipedia_en_top1m_nopic_2026-04.zim
+    sha256: f0ad000be866fa576448a861e42cbaecd87df0d376c1f97f36e12aef58082662
+    license: CC BY-SA 4.0
+    cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  - name: chebi_rel255
+    use: chebi-obo
+    layer: 2
+    domains: [chemistry]
+    url: https://ftp.ebi.ac.uk/pub/databases/chebi/archive/rel255/ontology/chebi.obo.gz
+    dest: chebi/chebi_rel255.obo.gz
+    sha256: c2765eb4599fbcbb265385f5280a241c83ef3cecb302f92afdc2879f9c7e7d6c
+    license: CC BY 4.0 (ChEBI, EMBL-EBI)
+    cite_url: https://www.ebi.ac.uk/chebi/searchId.do?chebiId={path}

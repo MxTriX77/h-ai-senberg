@@ -77,6 +77,8 @@ retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
   layer1_encyclopedia_db: "${DATA_DIR:-data}/encyclopedia_fts.db"   # Layer 1 store, rebuilt from raw_dir
   layer2_literature_index: "${DATA_DIR:-data}/vector_store/"
+  layer2_literature_db: "${DATA_DIR:-data}/literature_fts.db"     # Layer 2 store, rebuilt from raw_dir by ingest.build_l2
+  layer2_chunk_chars: 1200                 # longest passage the Layer 2 build stores
   top_k_proofs: 5                          # records per search or lookup (agent tools, encyclopedia search default)
   passage_chars: 1500                      # longest article passage handed to the model per record
   min_term_share: 0.5                      # search hits must show this share of the query's words (title or named-article hits always kept); 0 = off
