@@ -6,10 +6,10 @@ from haisenberg.checkers import CHECKERS
 from haisenberg.checkers.element_balance import check, composition, find_equations, hill
 
 
-def fixed(draft):
+def fixed(draft, task=""):
     out = draft
-    for f in sorted(check(draft), key=lambda f: f.start, reverse=True):
-        if f.fixed is not None:
+    for f in sorted(check(draft, task), key=lambda f: f.start, reverse=True):
+        if f.fixed is not None and f.doubt is None:  # doubtful fixes are only reported (checkers_clear_only)
             out = out[: f.start] + f.fixed + out[f.end :]
     return out
 
@@ -80,6 +80,49 @@ def test_right_loss_or_gain_left_alone(draft):
 def test_mixed_change_reported():
     (f,) = check("CH4 → CO2 loses H4")
     assert f.fixed is None and "does not match" in f.note
+
+
+LABELLED_TASK = "Order the steps.\nS4. Mix.\nS5. Heat.\nS6. Filter."
+
+
+@pytest.mark.parametrize("draft, task, doubt", [
+    ("Plan: S1 → S2, then S3.", "", "S1 has an explicit count of 1 (an index or a label)"),
+    ("S1→S2", "S1. Mix.\nS2. Heat.", "S1 is a label"),
+    ("So S5 → S6.", LABELLED_TASK, "S5 is a label"),
+    ("Then S3 → S2.", "1. **S2.** Mix.\n2. (S3) Heat.", "S3 is a label"),
+    ("**S4.** Mix first.\n**S6.** Filter last.\nOrder: S4 → S6.", "", "S4 is a label"),  # labels of the answer
+    ("P₁V₁ = P₂V₂", "", "P₁V₁ has an explicit count of 1 (an index or a label)"),
+    ("V₂ = V₁", "", "V₁ has an explicit count of 1 (an index or a label)"),
+    ("1000 IU = 3000 IU", "", "1000 IU is an amount, not a coefficient"),
+])
+def test_not_clear_chemistry_left_alone(draft, task, doubt):
+    assert fixed(draft, task) == draft
+    assert {f.doubt for f in check(draft, task)} == {doubt}
+
+
+@pytest.mark.parametrize("draft", ["A3 → A5", "T₂ = T₁", "500 mg = 0.5 g"])
+@pytest.mark.parametrize("task", ["", "A3. Mix.\nA5. Heat."])
+def test_not_formulas_left_alone(draft, task):
+    assert check(draft, task) == []
+
+
+MOLAR_MASSES = "- H2: 2.016 g/mol\n- O2: 32.00 g/mol\n- H2O: 18.02 g/mol\n"  # one formula per letter: not labels
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("H2 + O2 → H2O", "2H2 + O2 → 2H2O"),
+    ("O3 → O2", "2O3 → 3O2"),
+    ("C3H8 + O2 → CO2 + H2O", "C3H8 + 5O2 → 3CO2 + 4H2O"),
+    ("Fe + O2 → Fe2O3", "4Fe + 3O2 → 2Fe2O3"),
+])
+@pytest.mark.parametrize("before, task", [("", ""), (MOLAR_MASSES, ""), ("", LABELLED_TASK)])
+def test_real_equations_still_rebalanced(draft, expected, before, task):
+    assert fixed(before + draft, task) == before + expected
+
+
+def test_loss_on_a_doubtful_arrow_is_doubtful():
+    (f,) = check("P₂V₁ → P₂ loses V₂")
+    assert f.fixed == "V" and f.doubt == "P₂V₁ has an explicit count of 1 (an index or a label)"
 
 
 def test_equations_found_with_spans():

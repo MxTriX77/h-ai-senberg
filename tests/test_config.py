@@ -374,8 +374,13 @@ def test_relevance_threshold(tmp_path):
 
 
 def test_checker_plugins(tmp_path):
-    assert load_config(write(tmp_path)).verifier.checkers == ["element_balance"]
+    v = load_config(write(tmp_path)).verifier
+    assert v.checkers == ["element_balance"] and v.checkers_clear_only is True
     data = base()
     data["verifier"]["checkers"] = ["astrology"]
     with pytest.raises(ConfigError, match="verifier.checkers"):
+        load_config(write(tmp_path, data))
+    data = base()
+    del data["verifier"]["checkers_clear_only"]
+    with pytest.raises(ConfigError, match="verifier.checkers_clear_only"):
         load_config(write(tmp_path, data))

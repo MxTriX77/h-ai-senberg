@@ -817,6 +817,25 @@ async def test_checker_findings_in_the_report_and_off_switch(cfg, fake, knowledg
     assert next(i["content"] for i in items if "content" in i) == "Water forms as H2 + O2 → H2O."
 
 
+@pytest.mark.parametrize("clear_only, out", [(True, "Then S1 → S2."), (False, "Then 2S1 → S2.")])
+def test_doubtful_fix_reported(clear_only, out):
+    got, (finding,) = run_checkers("Then S1 → S2.", ["element_balance"], "", clear_only=clear_only)
+    assert got == out
+    assert finding["note"] == ("left as written: S1 has an explicit count of 1 (an index or a label); "
+                               "rebalanced: 2S1 → S2" if clear_only else "rebalanced")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("keep", [True, False])
+async def test_task_labels_reach_the_checker(cfg, fake, knowledge, keep):
+    cfg.verifier.keep_quotes = keep
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("So S5 → S6.")]]
+    task = "Order the steps.\nS4. Mix.\nS5. Heat.\nS6. Filter."
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": task}])]
+    assert next(i["content"] for i in items if "content" in i) == "So S5 → S6."
+
+
 # --- quotations of the task (c3) ------------------------------------------------------------------------
 
 EQ_TASK = "The lab report gives Fe₂O₃ + CO → Fe + CO₂ for the furnace step. Audit it."
