@@ -14,7 +14,9 @@ from haisenberg.launcher import (
     build_command,
     build_env,
     describe_exit,
+    embedding_view,
     ensure_llama_server,
+    health_url,
     stop,
 )
 
@@ -49,6 +51,18 @@ def test_flags_mapping(cfg):
 def test_vulkan_device_env(cfg):
     cfg.llama_server.env = {"GGML_VK_VISIBLE_DEVICES": "1"}
     assert build_env(cfg)["GGML_VK_VISIBLE_DEVICES"] == "1"
+
+
+def test_embedding_server_command(cfg):
+    view = embedding_view(cfg)
+    cmd, e = build_command(view), cfg.embedding.server
+    assert cmd[cmd.index("--model") + 1] == str(e.model_path)
+    assert cmd[cmd.index("--alias") + 1] == cfg.embedding.model_id
+    assert (cmd[cmd.index("--port") + 1], cmd[cmd.index("--device") + 1]) == (str(e.port), "none")
+    assert "--embedding" in cmd and cmd[cmd.index("--pooling") + 1] == "cls"
+    assert build_env(view)["CUDA_VISIBLE_DEVICES"] == ""  # no CUDA context: the reasoner keeps the GPU
+    assert health_url(view) == f"http://{e.host}:{e.port}/health"
+    assert build_command(cfg)[build_command(cfg).index("--alias") + 1] == cfg.model_backend.model_id  # cfg untouched
 
 
 def test_reuse_running_server(cfg):

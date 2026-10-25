@@ -1,15 +1,23 @@
-"""The knowledge switch: base (Layer 1 only) vs extended (+ literature passages in search_knowledge)."""
+"""The knowledge switch: base (Layer 1 only) vs extended (+ literature passages in search_knowledge) vs hybrid
+(the literature passages ranked by BM25 and embeddings together)."""
 
 import json
+import shutil
 
 import httpx
 import pytest
 
 import evals.run as run
+import haisenberg.tools as tools
 from haisenberg.config import ConfigError
 from haisenberg.l1.store import L1Store
+from haisenberg.l2.dense import HybridSearch
 from haisenberg.l2.store import L2Store
+from haisenberg.llm import UpstreamError
 from haisenberg.tools import SEARCH, Knowledge, Sources
+
+from .test_dense import DIM, MODEL, fake_embed
+from .test_dense import build as build_dense
 
 
 def search(k: Knowledge, query: str, sources: Sources | None = None, **args):
@@ -147,3 +155,119 @@ def test_eval_run_with_bad_b_makes_no_run_folder(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "KNOWLEDGE=extended" in err and "ingest.build_l2" in err
     assert not (tmp_path / "data" / "evals" / "b-run").exists()
+
+
+# --- hybrid ---
+
+class FakeClient:
+    """Stands in for EmbeddingClient in Knowledge.open: the fake embedder, or an unreachable backend."""
+
+    fail = False
+
+    def __init__(self, cfg):
+        pass
+
+    def embed(self, texts):
+        if FakeClient.fail:
+            raise UpstreamError("embeddings backend unreachable at http://127.0.0.1:8092/v1")
+        return fake_embed(texts)
+
+
+@pytest.fixture
+def hybrid_cfg(cfg, built_store, l2_store, tmp_path, monkeypatch):
+    """cfg with every store on the fixtures, KNOWLEDGE=hybrid, the dense index built by the fake embedder and no
+    embedding server (FakeClient answers)."""
+    r = cfg.retrieval
+    r.stores["encyclopedia"].path, r.stores["literature"].path = built_store, l2_store
+    r.stores["literature_dense"].path = tmp_path / "literature_dense"
+    build_dense(l2_store, r.stores["literature_dense"].path, model={**MODEL, "model_id": cfg.embedding.model_id})
+    r.knowledge = "hybrid"
+    cfg.embedding.server.enabled = False
+    FakeClient.fail = False
+    monkeypatch.setattr(tools, "EmbeddingClient", FakeClient)
+    return cfg
+
+
+def test_hybrid_results_look_like_extended(hybrid_cfg, built_store, l2_store):
+    cfg = hybrid_cfg
+    base_k, ext_k = Knowledge(L1Store(built_store), cfg), Knowledge(L1Store(built_store), cfg, L2Store(l2_store))
+    hyb_k = Knowledge.open(cfg)
+    assert isinstance(hyb_k.literature, HybridSearch) and hyb_k.tools == ext_k.tools == base_k.tools
+    text_a, ids_a, _ = search(base_k, "electron")
+    text_h, ids_h, sources = search(hyb_k, "electron")
+    assert ids_a and text_h.startswith(text_a) and ids_h[: len(ids_a)] == ids_a
+    added = [sources.get(i) for i in ids_h[len(ids_a):]]
+    assert 0 < len(added) <= cfg.retrieval.literature_k
+    assert all(f"[{s.id}] {s.record.label()}" in text_h for s in added)
+
+
+def test_hybrid_finds_a_paraphrase_extended_misses(hybrid_cfg, built_store, l2_store):
+    ext_k = Knowledge(L1Store(built_store), hybrid_cfg, L2Store(l2_store))
+    assert search(ext_k, "guaranine")[1] == []
+    _, ids, sources = search(Knowledge.open(hybrid_cfg), "guaranine")
+    assert ids and {sources.get(i).record.title.lower() for i in ids} == {"caffeine"}
+
+
+def test_embedding_error_in_a_search_is_an_error_line(hybrid_cfg):
+    k = Knowledge.open(hybrid_cfg)
+    FakeClient.fail = True
+    text, lines, ids = k.run(SEARCH, json.dumps({"query": "electron"}), Sources())
+    assert text.startswith("Error: lookup failed") and "unreachable" in text and ids == []
+
+
+def test_open_starts_the_embedding_server(hybrid_cfg, monkeypatch):
+    started = []
+
+    class StubSupervisor:
+        def __init__(self, view):
+            self.view = view
+
+        def start(self):
+            started.append(self.view)
+
+    monkeypatch.setattr(tools, "Supervisor", StubSupervisor)
+    hybrid_cfg.embedding.server.enabled = True
+    Knowledge.open(hybrid_cfg)
+    (view,) = started
+    assert view.llama_server is hybrid_cfg.embedding.server and view.model_backend.model_id == hybrid_cfg.embedding.model_id
+
+
+def test_hybrid_open_failures(hybrid_cfg, l2_store, tmp_path, monkeypatch):
+    dense = hybrid_cfg.retrieval.stores["literature_dense"]
+    FakeClient.fail = True  # the server does not answer
+    with pytest.raises(ConfigError, match="KNOWLEDGE=hybrid.*embedding server.*unreachable"):
+        Knowledge.open(hybrid_cfg)
+    FakeClient.fail = False
+    monkeypatch.setattr(FakeClient, "embed", lambda self, texts: fake_embed(texts)[:, : DIM // 2])
+    with pytest.raises(ConfigError, match="dimensions"):
+        Knowledge.open(hybrid_cfg)
+    stale = tmp_path / "stale"
+    shutil.copytree(dense.path, stale)
+    meta = json.loads((stale / "meta.json").read_text(encoding="utf-8"))
+    (stale / "meta.json").write_text(json.dumps({**meta, "store_built_at": "2000-01-01T00:00:00Z"}), encoding="utf-8")
+    dense.path = stale
+    with pytest.raises(ConfigError, match="KNOWLEDGE=hybrid.*ingest.embed_l2 --restart"):
+        Knowledge.open(hybrid_cfg)
+    dense.path = tmp_path / "missing"
+    with pytest.raises(ConfigError, match="KNOWLEDGE=hybrid.*missing.*ingest.embed_l2"):
+        Knowledge.open(hybrid_cfg)
+
+
+def test_base_and_extended_never_open_the_dense_store(hybrid_cfg, monkeypatch):
+    monkeypatch.setattr(tools, "DenseIndex", None)  # would fail if used
+    for knowledge in ("base", "extended"):
+        hybrid_cfg.retrieval.knowledge = knowledge
+        k = Knowledge.open(hybrid_cfg)
+        assert k.literature is None or isinstance(k.literature, L2Store)
+
+
+def test_eval_run_with_bad_hybrid_makes_no_run_folder(l2_store, tmp_path, monkeypatch, capsys):
+    data = tmp_path / "data"
+    data.mkdir()
+    shutil.copy(l2_store, data / "literature_fts.db")  # the literature store is there, its dense index is not
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("KNOWLEDGE", "hybrid")
+    assert run.main(["--set", "facts", "--limit", "1", "--run-id", "h-run"]) == 1
+    err = capsys.readouterr().err
+    assert "KNOWLEDGE=hybrid" in err and "ingest.embed_l2" in err
+    assert not (data / "evals" / "h-run").exists()
