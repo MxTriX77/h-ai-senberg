@@ -441,7 +441,7 @@ def test_embedding_section(tmp_path):
     cfg = load_config(write(tmp_path))
     e = cfg.embedding
     assert e.api_base == "http://127.0.0.1:8092/v1" and e.model_id and e.batch > 0 and e.workers > 0
-    assert e.server.model_path == tmp_path.resolve() / "data" / "raw" / "models" / "bge-base-en-v1.5-f16.gguf"
+    assert e.server.model_path == tmp_path.resolve() / "data" / "raw" / "models" / "bge-m3-FP16.gguf"
     assert e.server.env["CUDA_VISIBLE_DEVICES"] == "" and e.server.flags["device"] == "none"  # CPU only by default
     assert e.server.flags["embedding"] is True
 
