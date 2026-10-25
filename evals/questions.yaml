@@ -9,7 +9,14 @@ sources:
 #
 # answer kinds:
 #   number: value, with abs_tol or rel_tol    formula: Hill-order match    text: accepted words (any, whole word)
+# Scored on the answer line the answer target asks for (A1:, as in the reasoning problems; no line is wrong); a
+# match anywhere in the answer, the score of earlier runs, stays as loose_correct.
 # No questions about people (D-017).
+
+# Appended to every question after a blank line.
+answer_target: |-
+  Finish your answer with exactly this line:
+  A1: <your final answer, with its unit if it has one>
 
 questions:
   # --- CODATA 2022 ---------------------------------------------------------------------------------
