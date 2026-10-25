@@ -90,6 +90,8 @@ retrieval:                                 # used from the Layer 1 step on
     rerank: 200                            # index hits re-scored exactly with the stored vectors
     candidates: 50                         # length of the BM25 ranking and of the dense ranking that are fused
     rrf_k: 60                              # reciprocal rank fusion: a passage scores the sum of 1 / (rrf_k + rank)
+    min_similarity: 0.65                   # a dense hit this similar passes min_term_share (paraphrases, other languages);
+                                           # per model: bge-base-en-v1.5 0.65, bge-m3 0.50 (above ~95 % of random passages)
   layer2_chunk_chars: 1200                 # longest passage the Layer 2 build stores
   literature_k: 2                          # literature passages appended to each search_knowledge result (if enabled)
   top_k_proofs: 5                          # records per search or lookup (agent tools, encyclopedia search default)

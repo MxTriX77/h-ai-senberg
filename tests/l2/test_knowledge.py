@@ -271,3 +271,14 @@ def test_eval_run_with_bad_hybrid_makes_no_run_folder(l2_store, tmp_path, monkey
     err = capsys.readouterr().err
     assert "KNOWLEDGE=hybrid" in err and "ingest.embed_l2" in err
     assert not (data / "evals" / "h-run").exists()
+
+
+@pytest.mark.parametrize("floor, kept", [(0.1, True), (0.99, False)])
+def test_similar_dense_hits_pass_the_term_share_filter(hybrid_cfg, floor, kept):
+    hybrid_cfg.retrieval.min_term_share = 0.5  # as shipped: a paraphrase shares none of the query's words
+    hybrid_cfg.retrieval.dense.min_similarity = floor
+    text, lines, ids = Knowledge.open(hybrid_cfg).run(SEARCH, json.dumps({"query": "guaranine"}), Sources())
+    if kept:
+        assert ids and "caffeine" in text.lower()
+    else:
+        assert ids == [] and text.startswith("Nothing relevant found") and any("weak match" in x for x in lines)

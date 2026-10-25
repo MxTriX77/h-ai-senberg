@@ -17,7 +17,7 @@ from typing import Any
 from . import calc
 from .config import Config, ConfigError
 from .l1.store import STOPWORDS, L1Error, L1Store, Record
-from .l2.dense import DenseIndex, HybridSearch
+from .l2.dense import DenseIndex, DensePassageRecord, HybridSearch
 from .l2.store import L2Error, L2Store, PassageRecord
 from .launcher import LauncherError, Supervisor, embedding_view
 from .llm import EmbeddingClient, UpstreamError
@@ -88,6 +88,7 @@ class Knowledge:
         self.top_k = cfg.retrieval.top_k_proofs
         self.passage_chars = cfg.retrieval.passage_chars
         self.min_share = cfg.retrieval.min_term_share
+        self.min_similarity = cfg.retrieval.dense.min_similarity
         labelled = literature is not None and cfg.retrieval.label_sources  # base: no labels, no extra tool text
         self.labels = cfg.retrieval.source_labels if labelled else None
         kinds = store.kinds() if store is not None and cfg.reasoning_policy.max_search_depth > 0 else {}
@@ -135,6 +136,7 @@ class Knowledge:
         weak: list[str] = []
         if kind == TEXT and self.min_share > 0:  # drop hits that share little more than a word with the query
             relevant = [getattr(r, "score", None) == 0  # the store matched its title or alias
+                        or isinstance(r, DensePassageRecord) and r.similarity >= self.min_similarity  # near in meaning
                         or term_share(query, f"{r.label()} {r.passage(query, self.passage_chars)}") >= self.min_share
                         for r in records]
             weak = [f"weak match, not used: {r.label()}" for r, ok in zip(records, relevant) if not ok]

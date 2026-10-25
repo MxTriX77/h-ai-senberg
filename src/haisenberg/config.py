@@ -124,6 +124,8 @@ class DenseConfig(_Section):
     rerank: PositiveInt  # index hits re-scored exactly with the stored vectors
     candidates: PositiveInt  # length of the BM25 ranking and of the dense ranking that are fused
     rrf_k: NonNegativeInt  # reciprocal rank fusion: score = sum of 1 / (rrf_k + rank)
+    # a passage of the dense ranking at least this similar (cosine) to the query passes min_term_share's filter
+    min_similarity: Annotated[float, Field(ge=-1, le=1)]
 
 
 class RetrievalConfig(_Section):

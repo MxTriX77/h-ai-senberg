@@ -11,15 +11,15 @@ import pytest
 
 import ingest.embed_l2 as embed_l2
 from haisenberg.config import DenseConfig
-from haisenberg.l2.dense import INDEX, META, VECTORS, DenseIndex, HybridSearch, passage_text
-from haisenberg.l2.store import L2Error, L2Store, content_words
+from haisenberg.l2.dense import INDEX, META, VECTORS, DenseIndex, DensePassageRecord, HybridSearch, passage_text
+from haisenberg.l2.store import L2Error, L2Store, PassageRecord, content_words
 from haisenberg.llm import UpstreamError
 from ingest.l1base import BuildError
 
 DIM = 256
 SAME = {"guaranine": "caffeine"}  # the fake embedder's one paraphrase: another name of caffeine
 MODEL = {"model_id": "fake-embedder", "query_prefix": "", "model_sha256": None}
-DENSE = DenseConfig(index="Flat", nprobe=1, rerank=12, candidates=50, rrf_k=60)
+DENSE = DenseConfig(index="Flat", nprobe=1, rerank=12, candidates=50, rrf_k=60, min_similarity=0.5)
 
 
 def fake_embed(texts: list[str]) -> np.ndarray:
@@ -57,13 +57,13 @@ def hybrid(store, dense_dir):
 
 
 class StubIndex:
-    """A dense ranking given by the test."""
+    """A dense ranking given by the test (similarities falling from 0.9)."""
 
     def __init__(self, ids):
         self.ids = ids
 
     def search(self, vector, rerank):
-        return self.ids[:rerank]
+        return [(pid, 0.9 - i / 100) for i, pid in enumerate(self.ids[:rerank])]
 
 
 # --- build ---
@@ -163,7 +163,9 @@ def test_index_finds_a_passage_from_its_own_vector(l2_store, store, tmp_path, fa
     build(l2_store, out, factory=factory)
     index = DenseIndex(out, MODEL["model_id"], store, nprobe=2)
     vector = fake_embed([texts_of(store)[6]])[0]
-    assert index.search(vector, rerank=5)[0] == 7
+    hits = index.search(vector, rerank=5)
+    assert hits[0][0] == 7 and hits[0][1] == pytest.approx(1, abs=1e-3)
+    assert [s for _, s in hits] == sorted((s for _, s in hits), reverse=True)
 
 
 # --- opening ---
@@ -208,14 +210,19 @@ def test_agreement_wins_and_ties_go_to_the_lower_id(store):
     assert ids[0] == bm25[1]  # second in both rankings beats first in one
     assert ids[1:] == sorted([bm25[0], other])  # 1 / 61 each
     assert got[0].score == round(2 / 62, 6) and got[1].score == round(1 / 61, 6)
+    by_id = dict(zip(ids, got))  # passages of the dense ranking carry their similarity, the others do not
+    assert isinstance(by_id[bm25[1]], DensePassageRecord) and by_id[bm25[1]].similarity == 0.89
+    assert isinstance(by_id[other], DensePassageRecord) and by_id[other].similarity == 0.9
+    assert type(by_id[bm25[0]]) is PassageRecord
 
 
 def test_records_match_the_keyword_search(store, hybrid):
     keyword = {r.citation.locator["passage"]: r for r in store.search("photoelectric effect", 50)}
+    base_fields = [f.name for f in dataclasses.fields(PassageRecord) if f.name != "score"]
     for r in hybrid.search("photoelectric effect", 5):
         pid = r.citation.locator["passage"]
         if pid in keyword:
-            assert dataclasses.replace(r, score=0) == dataclasses.replace(keyword[pid], score=0)
+            assert {f: getattr(r, f) for f in base_fields} == {f: getattr(keyword[pid], f) for f in base_fields}
 
 
 def test_domain_filter(store):
