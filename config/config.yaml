@@ -145,7 +145,18 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
                                            # row, ids aside) is ignored: the claim counts as uncorrected (see above)
+  keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
+                                           # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
+                                           # of the material under review: checkers and the arithmetic check (when the
+                                           # task writes the same a × b = c) only report a fix inside it, a claim
+                                           # that is a quotation plus at most a label or verdict mark (✗ WRONG) is not
+                                           # checked, and a review fix that changes quoted text is skipped; false: as before
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
+  checkers_clear_only: true                # a checker rewrites only what is clearly its subject; a fix it doubts is
+                                           # only reported (element_balance: a formula with an explicit count of 1
+                                           # such as P₁V₁ or S1, a written number over 20 in front such as 1000 IU,
+                                           # or a label of the task or answer such as S4 in a line "S4. …" next to
+                                           # "S5. …"); false: as before
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the

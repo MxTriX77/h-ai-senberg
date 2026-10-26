@@ -170,6 +170,7 @@ class VerifierConfig(_Section):
     rel_tol: NonNegativeFloat
     arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
     checkers: list[str] = []  # domain checker plug-ins run on every draft (haisenberg.checkers), e.g. element_balance
+    checkers_clear_only: bool  # a checker's fix that the checker doubts (maybe not its subject) is only reported
     arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
     arithmetic_prefixes: bool  # c may also be scaled by an SI prefix of its chain (2452 W = 2.45 kW)
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
@@ -183,6 +184,7 @@ class VerifierConfig(_Section):
     consistency_prompt: str
     consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
     consistency_keep_answer_lines: bool  # the review never changes a labelled answer/verdict line
+    keep_quotes: bool  # text the answer quotes from the task is never rewritten by checkers, judge or review
 
     @field_validator("checkers")
     @classmethod

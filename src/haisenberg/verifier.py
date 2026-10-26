@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -47,6 +48,11 @@ _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]cla
 _LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
+_BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
+# Quotations of the task: runs this long (after _quote_text) that the answer shares with the task.
+_QUOTE_MIN = 20
+_QUOTE_MAP = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻₀₁₂₃₄₅₆₇₈₉₊₋", "0123456789+-0123456789+-")
+_QUOTE_DROP = frozenset("*_`\"'“”‘’«»„")  # Markdown emphasis and quote marks
 
 
 @dataclass
@@ -132,13 +138,66 @@ def plain(text: str) -> str:
 
 def _is_claim(text: str) -> bool:
     p = plain(text)
-    if not re.search(r"[A-Za-z]", p) or p.endswith((":", "?")):
+    if not re.search(r"[A-Za-z]", p) or p.endswith((":", "?")) or _BARE_LABEL.fullmatch(p):
         return False
     return len(p.split()) >= 3 or bool(re.search(r"\d", p))
 
 
 def cites(text: str) -> list[str]:
     return [f"S{n}" for m in _CITES.finditer(text) for n in re.findall(r"\d+", m.group())]
+
+
+# --- quotations of the task -----------------------------------------------------------------------
+
+
+def _quote_text(text: str) -> tuple[str, list[int]]:
+    """The text as compared for quotations (sub/superscripts as plain digits and signs, no emphasis or quote
+    marks, whitespace runs as one space) and the position in `text` of each of its characters."""
+    out: list[str] = []
+    at: list[int] = []
+    for i, ch in enumerate(text.translate(_QUOTE_MAP)):
+        if ch in _QUOTE_DROP or (ch.isspace() and out and out[-1] == " "):
+            continue
+        out.append(" " if ch.isspace() else ch)
+        at.append(i)
+    return "".join(out), at
+
+
+def quoted(text: str, task: str) -> list[bool]:
+    """Per character of `text`: part of a run of at least _QUOTE_MIN characters that also occurs in the task
+    (both read by _quote_text), that is a quotation of the material under review. Whitespace after the first
+    of a run, emphasis and quote marks are never marked."""
+    mask = [False] * len(text)
+    norm, at = _quote_text(text)
+    hay = _quote_text(task)[0]
+    windows = {hay[i : i + _QUOTE_MIN] for i in range(len(hay) - _QUOTE_MIN + 1)}
+    for i in range(len(norm) - _QUOTE_MIN + 1):
+        if norm[i : i + _QUOTE_MIN] in windows:
+            for j in at[i : i + _QUOTE_MIN]:
+                mask[j] = True
+    return mask
+
+
+def is_quotation(text: str, mask: list[bool], start: int, end: int) -> bool:
+    """text[start:end] quotes the task (see quoted) and, apart from the quotation and its citation markers, has
+    no number and at most two words: a label or a verdict mark (`✗ WRONG`), not a statement of its own."""
+    if not any(mask[start:end]):
+        return False
+    rest = plain("".join(" " if mask[i] else text[i] for i in range(start, end)))
+    return not read_numbers(rest) and len(_words(rest)) <= 2
+
+
+def rewrites_quote(answer: str, task: str, old: str, new: str) -> bool:
+    """Replacing `old` (once in the answer) by `new` changes quoted text: the part of `old` that differs from
+    `new` (after their common beginning and end) is quoted in part, or, when `new` only inserts text, a
+    character next to the insertion is."""
+    mask, at = quoted(answer, task), answer.find(old)
+    head = len(os.path.commonprefix([old, new]))
+    tail = len(os.path.commonprefix([old[head:][::-1], new[head:][::-1]]))
+    lo, hi = at + head, at + len(old) - tail
+    if lo == hi:
+        lo, hi = lo - 1, hi + 1
+    return any(mask[max(lo, 0) : hi])
 
 
 # --- numbers and formulas -----------------------------------------------------------------------
@@ -205,15 +264,20 @@ def _result_units(tail: str) -> str:
     return " ".join(units)
 
 
-def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[str, list[dict[str, str]], int]:
+def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
+                   task: str = "") -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
     A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
     result in % as itself or as a fraction) and, with `prefixes`, of the SI prefixes in its chain (a unit
     with a prefix on an operand, right after the result or after the next `=`: the result may be scaled by
     10^±3, ±6, ±9): off by more than half a unit of its last digit and rel_tol. It is rewritten only when the
-    right value is clear; otherwise it is left as written, and so is a number that cannot be read as one."""
+    right value is clear; otherwise it is left as written, and so is a number that cannot be read as one.
+    With the `task`, a wrong result that is quoted from it (the task writes the same expression with the same
+    result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
+    in_task = _written_results(task, decimal_comma) if task else set()
+    mask = quoted(draft, task) if task else []
     for a in find_arithmetic(draft, decimal_comma):
         window = _decimal_points(draft[a.result_at : a.result_at + 80], decimal_comma)
         numbers = read_numbers(window)
@@ -236,12 +300,25 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True) -> tuple[s
         if right is None:
             continue
         start, end = a.result_at + n.start, a.result_at + n.end
-        fixed = _format(right, n)
-        fixes.append({"expression": a.expression, "stated": draft[start:end], "fixed": fixed, "at": (start, end)})
+        fix = {"expression": a.expression, "stated": draft[start:end], "fixed": _format(right, n), "at": (start, end)}
+        if (a.expression, n.value) in in_task and all(mask[start:end]):
+            fix["note"] = "quoted from the task, left as written"
+        fixes.append(fix)
     for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
         start, end = f.pop("at")
-        draft = draft[:start] + f["fixed"] + draft[end:]
+        if "note" not in f:
+            draft = draft[:start] + f["fixed"] + draft[end:]
     return draft, fixes, checked
+
+
+def _written_results(text: str, decimal_comma: bool) -> set[tuple[str, float]]:
+    """(expression, stated result) of every `expression = result` written in the text."""
+    out = set()
+    for a in find_arithmetic(text, decimal_comma):
+        numbers = read_numbers(_decimal_points(text[a.result_at : a.result_at + 80], decimal_comma))
+        if numbers and numbers[0].start == 0:
+            out.add((a.expression, numbers[0].value))
+    return out
 
 
 def _decimal_points(text: str, decimal_comma: bool) -> str:
@@ -251,10 +328,22 @@ def _decimal_points(text: str, decimal_comma: bool) -> str:
     return re.sub(comma, r"\1.\2", text)
 
 
-def run_checkers(draft: str, names: list[str]) -> tuple[str, list[dict[str, Any]]]:
-    """Run the configured domain checkers (D-034); apply their fixes in place, later spans first, skipping a fix
-    that overlaps one already applied. Returns the draft and every finding (fixed or only reported)."""
-    found = [(name, f) for name in names for f in CHECKERS[name](draft)]
+def run_checkers(draft: str, names: list[str], task: str = "", keep_quotes: bool = True,
+                 clear_only: bool = True) -> tuple[str, list[dict[str, Any]]]:
+    """Run the configured domain checkers (D-034) on the draft and the task; apply their fixes in place, later
+    spans first, skipping a fix that overlaps one already applied. With `clear_only`, a fix the checker doubts is
+    only reported; with `keep_quotes`, so is a fix whose whole span is quoted from the task. Returns the draft and
+    every finding (fixed or only reported)."""
+    found = [(name, f) for name in names for f in CHECKERS[name](draft, task)]
+    for _, f in found:
+        if clear_only and f.doubt and f.fixed is not None:
+            f.note, f.fixed = f"left as written: {f.doubt}; {f.note}: {f.fixed}", None
+    if task and keep_quotes:
+        mask = quoted(draft, task)
+        for _, f in found:
+            span = [i for i in range(f.start, f.end) if not draft[i].isspace() and draft[i] not in _QUOTE_DROP]
+            if f.fixed is not None and all(mask[i] for i in span):
+                f.note, f.fixed = f"quoted from the task, left as written; {f.note}: {f.fixed}", None
     applied_from = len(draft) + 1
     for _, f in sorted(found, key=lambda nf: nf[1].start, reverse=True):
         if f.fixed is not None and f.end <= applied_from:
@@ -467,12 +556,18 @@ class Verifier:
         arithmetic, checked = [], 0
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
-                                                        self.cfg.arithmetic_prefixes)
+                                                        self.cfg.arithmetic_prefixes,
+                                                        question if self.cfg.keep_quotes else "")
+        kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
+        arithmetic = [a for a in arithmetic if "note" not in a]
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
-                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic))
-        draft, checks = run_checkers(draft, self.cfg.checkers)
+                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic)
+                       + "".join(f"- {a['expression']} = {a['stated']}: {a['note']} (would be {a['fixed']})\n"
+                                 for a in kept))
+        draft, checks = run_checkers(draft, self.cfg.checkers, question, self.cfg.keep_quotes,
+                                     self.cfg.checkers_clear_only)
         for name in self.cfg.checkers:
             found = [c for c in checks if c["checker"] == name]
             if found:
@@ -484,8 +579,12 @@ class Verifier:
         yield _say(f"\n\nVerification: {len(claims)} claims\n")
         pending = []
         given, computed = [n.value for n in read_numbers(question)], results(draft)
+        mask = quoted(draft, question) if self.cfg.keep_quotes else []
         for c in claims:
-            if found := code_check(c, sources, self.cfg.rel_tol):
+            if is_quotation(draft, mask, c.start, c.end):  # before the code checks: they would rewrite it too
+                c.outcome, c.note = UNVERIFIED, "quoted from the task: not checked"
+                yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
+            elif found := code_check(c, sources, self.cfg.rel_tol):
                 c.outcome, c.ids, c.fixed, c.note = found
                 c.note = f"code: {c.note}"
                 yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
@@ -558,6 +657,8 @@ class Verifier:
             count = answer.count(f["old"]) if f["old"] else 0
             if count != 1 or f["new"] == f["old"]:
                 why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
+            elif self.cfg.keep_quotes and rewrites_quote(answer, question, f["old"], f["new"]):
+                why = "quoted from the task"
             elif self.cfg.consistency_keep_answer_lines and _answer_line(
                     answer, at := answer.find(f["old"]), at + len(f["old"])):
                 why = f"answer line kept; conflict: {f.get('conflict') or f['why'] or 'not named'!r}"
