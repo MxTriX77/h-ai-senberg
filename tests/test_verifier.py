@@ -18,6 +18,7 @@ from haisenberg.verifier import (
     UNVERIFIED,
     code_check,
     echoes,
+    fix_answer_lines,
     fix_arithmetic,
     is_computation,
     parse_fixes,
@@ -193,6 +194,97 @@ def test_melting_point_citing_a_compound_goes_to_the_judge(store):
 def test_every_number_must_match(store):
     s = sources_with(store, store.lookup_compound("caffeine")[0])
     assert code_check(claim("Caffeine (194.19 g/mol) is found in 95 mg per cup [S1]."), s, 0.001) is None
+
+
+# c3: a record's number counts only as the same quantity: its unit (or an equal one) and its property.
+
+
+@pytest.mark.parametrize("text", [
+    "The Planck constant is 6.626e-34 J s [S1].",
+    "The Planck constant is 6.626 × 10⁻³⁴ J·s [S1].",
+    "The Planck constant is 6.626e-34 J Hz^-1 [S1].",
+    "The Planck constant is 6.626e-34 J/Hz [S1].",
+    r"The Planck constant is $6.626 \times 10^{-34}\,\mathrm{J\,s}$ [S1].",
+    "The Planck constant is 6.626e-34 kg m² s⁻¹ [S1].",
+    "The Planck constant is 6.626e-34 [S1].",
+])
+def test_equal_unit_spellings_supported(store, text):
+    s = sources_with(store, store.lookup_constant("Planck constant")[0])
+    assert code_check(claim(text), s, 0.001)[:2] == (SUPPORTED, ["S1"])
+
+
+@pytest.mark.parametrize("text", [
+    "The speed of light in vacuum is 299 792 458 m/s [S1].",
+    "The speed of light in vacuum is 299 792 458 m s⁻¹ [S1].",
+    "The speed of light in vacuum is 299 792 458 metres per second [S1].",
+])
+def test_speed_spellings_supported(store, text):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0])
+    assert code_check(claim(text), s, 0.001)[0] == SUPPORTED
+
+
+@pytest.mark.parametrize("text", [
+    "The Planck constant is 6.626e-34 eV s [S1].",  # right number, another unit
+    "The quantum of action is h = 6.626 × 10⁻³⁴ eV·s.",
+])
+def test_right_number_wrong_unit_not_supported(store, text):
+    s = sources_with(store, store.lookup_constant("Planck constant")[0])
+    assert code_check(claim(text), s, 0.001) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Ethanol boils at 46.07 °C [S1].",
+    "Ethanol boils at 46.07 [S1].",
+    "The density of ethanol is 46.07 g/mol [S1].",
+    "A flask holds 46.07 g of ethanol [S1].",
+])
+def test_record_value_of_another_property_not_supported(store, text):
+    s = sources_with(store, store.lookup_compound("ethanol")[0])
+    assert code_check(claim(text), s, 0.001) is None
+
+
+def test_two_masses_of_one_compound(store):
+    s = sources_with(store, store.lookup_compound("sodium chloride")[0])  # 58.44 g/mol, monoisotopic 57.96 Da
+    both = "Sodium chloride has a molar mass of 58.44 g/mol and a monoisotopic mass of 57.96 Da [S1]."
+    assert code_check(claim(both), s, 0.001)[0] == SUPPORTED
+    outcome, _, fixed, _ = code_check(claim("The monoisotopic mass of sodium chloride is 58.44 Da [S1]."), s, 0.001)
+    assert outcome == CORRECTED and fixed == "The monoisotopic mass of sodium chloride is 57.96 Da [S1]."
+    outcome, _, fixed, _ = code_check(claim("The molar mass of sodium chloride is 57.96 g/mol [S1]."), s, 0.001)
+    assert outcome == CORRECTED and fixed == "The molar mass of sodium chloride is 58.44 g/mol [S1]."
+
+
+@pytest.mark.parametrize("text", [
+    "Light covers 299 792 458 m per second, about 1.08e9 km per hour [S1].",  # a derived number in another unit
+    "Sound travels at 343 m/s, far slower than light [S1].",  # another speed: same unit, not the constant's size
+    "The ratio is 7.1e-3 [S2].",  # a pure number: corrected only when the constant is named
+    "The fine-structure constant is about 1/137 [S2].",  # named, but not a number of its size
+    "The speed of light in vacuum (one of 7 defining constants) is 299 792 458 m/s [S1].",
+])
+def test_other_quantities_not_corrected(store, text):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0],
+                     store.lookup_constant("fine-structure constant")[0])
+    assert code_check(claim(text), s, 0.001) is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("The speed of light in vacuum is 3.10 × 10^8 m/s [S1].", "2.998 × 10^8 m/s"),
+    ("c = 3.10 × 10^8 m/s [S1].", "2.998 × 10^8 m/s"),  # the record's unit and the same size
+    ("The fine-structure constant is 7.1e-3 [S2].", "7.297 × 10^-3"),  # named
+])
+def test_wrong_value_of_the_same_quantity_corrected(store, text, expected):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0],
+                     store.lookup_constant("fine-structure constant")[0])
+    outcome, _, fixed, _ = code_check(claim(text), s, 0.001)
+    assert outcome == CORRECTED and expected in fixed
+
+
+def test_unit_checks_switched_off(store):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0],
+                     store.lookup_constant("fine-structure constant")[0])
+    derived = claim("Light covers 299 792 458 m per second, about 1.08e9 km per hour [S1].")
+    assert code_check(derived, s, 0.001, units=False)[0] == CORRECTED  # by magnitude alone, as before
+    assert code_check(claim("Some ratio is 7.297e-3."), s, 0.001, units=False)[0] == SUPPORTED
+    assert code_check(claim("Some ratio is 7.297e-3."), s, 0.001) is None
 
 
 PUMP_TASK = "A pump lifts 0.04 m³/s of water by 6 m; its motor gives 2.2 kW. Is the motor big enough?"
@@ -776,6 +868,40 @@ def test_grouped_numbers_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+@pytest.mark.parametrize("draft, expected", [
+    ("m = 0.0500 × 56.08 = 3.80 g.\n\nA1: 3.80 g", "m = 0.0500 × 56.08 = 2.80 g.\n\nA1: 2.80 g"),
+    ("m = 0.0500 × 56.08 = 3.80 g.\n- **A1:** 3.80 g of CaO", "m = 0.0500 × 56.08 = 2.80 g.\n- **A1:** 2.80 g of CaO"),
+    ("m = 0,0500 × 56,08 = 3,80 г\nА1: 3,80 г", "m = 0,0500 × 56,08 = 2.80 г\nА1: 2.80 г"),
+])
+def test_answer_line_with_the_old_wrong_result_fixed(draft, expected):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    out, lines = fix_answer_lines(fixed, fixes)
+    assert out == expected and lines[0]["on"] == "answer line" and lines[0]["fixed"] == "2.80"
+
+
+@pytest.mark.parametrize("draft", [
+    "m = 0.0500 × 56.08 = 3.80 g.\nA1: 3.8 g",  # not exactly the old value
+    "m = 0.0500 × 56.08 = 3.80 g.\nSo the mass is 3.80 g.",  # not a labelled answer line
+    "m = 0.0500 × 56.08 = 3.80 g.\nA1: 13.80 g",  # part of another number
+    "m = 0.0500 × 56.08 = 3.80 g.\nA1: 3.80 g, not 3.80 kg",  # stated twice on the line
+    "a = 2 × 3 = 7, b = 2 × 4 = 7.\nA1: 7",  # the old value fixed two ways
+])
+def test_answer_lines_otherwise_kept(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixes and fix_answer_lines(fixed, fixes) == (fixed, [])
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_answer_line_follows_the_arithmetic_fix(cfg, fake, knowledge, on):
+    cfg.verifier.arithmetic_answer_lines = on
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("The mass of CaO is 0.0500 × 56.08 = 3.80 g.\n\nA1: 3.80 g")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r).endswith("A1: 2.80 g" if on else "A1: 3.80 g")
+    assert ("answer line: 3.80 → 2.80" in reasoning_text(r)) is on
+
+
 def test_plain_answer_shows_the_fixed_result(cfg, fake, knowledge):
     fake.chunks = [content("C1: not_said")]
     fake.scripts = [[content("The mass of CaO is 0.0500 × 56.08 = 3.80 g.")]]
@@ -1040,3 +1166,22 @@ async def test_literature_only_support_unverified(cfg, fake, knowledge, on):
         assert "C1 unverified (only literature supports 356 kg/m3, but reference S1 gives 322 kg/m3)" in steps
     else:
         assert (c.outcome, c.ids) == (SUPPORTED, ["S2"]) and "only literature" not in steps
+
+
+@pytest.mark.parametrize("task, line", [
+    (COST_TASK, "A1: 560 euros"),  # the wrong product is quoted, not fixed: the answer line keeps it
+    ("Check the batch cost of 12 crates at 45 euros.", "A1: 540 euros"),  # the answer's own product: follows
+])
+def test_quoted_wrong_product_keeps_the_answer_line(task, line):
+    out, fixes, _ = fix_arithmetic(f"{COST_DRAFT}\nA1: 560 euros", 0.005, task=task)
+    assert fix_answer_lines(out, fixes)[0].endswith(line)
+
+
+@pytest.mark.anyio
+async def test_quoted_wrong_product_answer_line_in_the_loop(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(f"{COST_DRAFT}\n\nA1: 560 euros")]]
+    question = [{"role": "user", "content": COST_TASK}]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(question)]
+    assert next(i["content"] for i in items if "content" in i) == f"{COST_DRAFT}\n\nA1: 560 euros"
+    assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []

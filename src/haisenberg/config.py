@@ -186,11 +186,13 @@ class ToolText(_Section):
 class VerifierConfig(_Section):
     judge_prompt: str
     rel_tol: NonNegativeFloat
+    unit_checks: bool  # code checks compare a number with a record value only as the same quantity (unit, property)
     arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
     checkers: list[str] = []  # domain checker plug-ins run on every draft (haisenberg.checkers), e.g. element_balance
     checkers_clear_only: bool  # a checker's fix that the checker doubts (maybe not its subject) is only reported
     arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
     arithmetic_prefixes: bool  # c may also be scaled by an SI prefix of its chain (2452 W = 2.45 kW)
+    arithmetic_answer_lines: bool  # an answer line stating exactly a fixed wrong c gets the fixed value too
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
