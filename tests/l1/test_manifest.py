@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ingest.manifest import ManifestError, MiniFilter, load_manifest
+from ingest.manifest import FILTER_FIELDS, BookFilter, ManifestError, MiniFilter, ScoreFilter, load_manifest
 
 from .l1_helpers import MINI_FILTER
 
@@ -49,7 +49,8 @@ def write(tmp_path: Path, *entries: dict) -> Path:
 
 def test_shipped_manifest_reproduces_bootstrap():
     entries = load_manifest(SHIPPED)
-    assert {e.url: e.dest for e in entries} == BOOTSTRAP | EXTRA
+    assert BOOTSTRAP.items() <= {e.url: e.dest for e in entries}.items()
+    assert {e.url: e.dest for e in entries if e.url not in BOOTSTRAP and e.layer == 1} == EXTRA  # the rest is Layer 2
 
 
 def test_shipped_manifest_checksum_kinds():
@@ -88,6 +89,12 @@ def test_valid_entry(tmp_path):
         ({"use": "wikipedia-mini-zim"}, "filter"),  # mini entry without its filter
         ({"use": "wikipedia-mini-zim", "filter": MINI_FILTER}, "filter"),  # filter names chemistry, entry only physics
         ({"use": "wikipedia-mini-zim", "domains": ["chemistry", "physics"], "filter": {**MINI_FILTER, "importance": "Top"}}, "filter"),
+        ({"use": "wikipedia-filtered-zim"}, "filter"),  # filtered ZIM without its filter
+        ({"use": "stackexchange-zim"}, "filter"),  # no score threshold
+        ({"use": "stackexchange-zim", "filter": {"min_answer_score": -1}}, "filter"),
+        ({"use": "stackexchange-zim", "filter": {"min_answer_score": 1.5}}, "filter"),
+        ({"use": "wikibooks-zim", "filter": {"books": {"General_Chemistry": "chemistry"}}}, "filter"),  # undeclared domain
+        ({"use": "wikibooks-zim", "filter": {"books": ["General_Chemistry"]}}, "filter"),
     ],
 )
 def test_invalid_entry_names_entry_and_field(tmp_path, over, field):
@@ -107,4 +114,14 @@ def test_shipped_manifest_domains_and_mini_filter():
     assert by_name["codata_2022_allascii"].domains == ("physics", "chemistry")
     mini = by_name["wikipedia_en_all_mini_2026-09"].filter
     assert mini == MiniFilter(**{**MINI_FILTER, "importance": tuple(MINI_FILTER["importance"])})
-    assert all(e.filter is None for n, e in by_name.items() if n != "wikipedia_en_all_mini_2026-09")
+    assert all((e.filter is None) == (e.use not in FILTER_FIELDS) for e in by_name.values())
+
+
+def test_layer2_filters(tmp_path):
+    se, books = load_manifest(write(
+        tmp_path,
+        entry(name="se", use="stackexchange-zim", layer=2, filter={"min_answer_score": 3}),
+        entry(name="wb", use="wikibooks-zim", layer=2, dest="kiwix/wb.zim", filter={"books": {"Physics_Study_Guide": "physics"}}),
+    ))
+    assert se.filter == ScoreFilter(3)
+    assert books.filter == BookFilter({"Physics_Study_Guide": "physics"})

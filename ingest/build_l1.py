@@ -90,7 +90,7 @@ def build(manifest: Path, raw_dir: Path, db: Path) -> dict[str, int | float | st
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--raw-dir", type=Path, help="default: retrieval.raw_dir from the config")
-    parser.add_argument("--db", type=Path, help="default: retrieval.layer1_encyclopedia_db")
+    parser.add_argument("--db", type=Path, help="default: the encyclopedia store in retrieval.stores")
     parser.add_argument("--manifest", type=Path, help="default: config/sources.yaml in the project")
     args = parser.parse_args(argv)
 
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         if None in (raw_dir, db, manifest):
             cfg = load_config()
             raw_dir = raw_dir or cfg.retrieval.raw_dir
-            db = db or cfg.retrieval.layer1_encyclopedia_db
+            db = db or cfg.retrieval.path("encyclopedia")
             manifest = manifest or cfg.root / "config" / "sources.yaml"
         report = build(manifest, raw_dir, db)
     except (BuildError, ConfigError, ManifestError, OSError) as e:

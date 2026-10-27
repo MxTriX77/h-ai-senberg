@@ -271,7 +271,7 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     (index / "sub" / "b.bin").write_bytes(b"345")
     os.utime(index / "a.bin", (1e9, 1e9))
     os.utime(index / "sub" / "b.bin", (2e9, 2e9))
-    cfg.llama_server.model_path, cfg.retrieval.layer1_encyclopedia_db = model, store
+    cfg.llama_server.model_path, cfg.retrieval.stores["encyclopedia"].path = model, store
     cfg.retrieval.layer2_literature_index = index
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
@@ -280,8 +280,10 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     assert man["model_file"]["sha256"] == hashlib.sha256(b"weights").hexdigest() and man["gpu"] is None
     assert (man["run_id"], man["mode"], man["model_profile"], man["args"], man["seed"]) == ("r1", "A", "p1", ["--mode", "A"], None)
     stores = man["stores"]
-    assert stores["layer1_encyclopedia_db"]["path"] == str(store) and stores["layer1_encyclopedia_db"]["size"] == 5
-    assert stores["layer1_encyclopedia_db"]["mtime"] and "raw_dir" not in stores
+    enc = stores["encyclopedia"]  # registry stores carry their kind and whether the knowledge setting enables them
+    assert (enc["kind"], enc["enabled"], enc["path"], enc["size"]) == ("encyclopedia", True, str(store), 5)
+    assert enc["mtime"] and "raw_dir" not in stores
+    assert (stores["literature"]["kind"], stores["literature"]["enabled"]) == ("literature", False)
     assert stores["layer2_literature_index"] == {"path": str(index), "size": 5,
                                                  "mtime": datetime.fromtimestamp(2e9).isoformat(timespec="seconds")}
     cfg.retrieval.layer2_literature_index = tmp_path / "missing"

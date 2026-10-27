@@ -418,8 +418,8 @@ def store_identity(path: Path) -> dict[str, Any]:
 
 
 def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path) -> dict[str, Any]:
-    """What a run depends on: code, config after the mode, model file, stores (every store path of the retrieval
-    settings; raw_dir holds the downloads they are built from), eval files, GPU, sampling."""
+    """What a run depends on: code, config after the mode, model file, knowledge setting and stores (see
+    store_identities), eval files, GPU, sampling."""
     backend, model = cfg.model_backend, served_model(cfg)
     return {
         "run_id": run_id,
@@ -431,8 +431,8 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "backend": backend.api_base,
         "config_sha256": hashlib.sha256(cfg.model_dump_json().encode()).hexdigest(),
         "model_file": {"path": str(model), "sha256": file_sha256(model, cache)},
-        "stores": {name: store_identity(path) for name, path in cfg.retrieval
-                   if isinstance(path, Path) and name != "raw_dir"},
+        "knowledge": cfg.retrieval.knowledge,
+        "stores": store_identities(cfg),
         "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
         "gpu": gpu_info(),
@@ -440,6 +440,17 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, **backend.extra_body},
         "args": args,
     }
+
+
+def store_identities(cfg: Config) -> dict[str, dict[str, Any]]:
+    """Every store of the registry (kind, whether the knowledge setting enables it, path, size, mtime), then every
+    other store path of the retrieval settings; raw_dir holds the downloads they are built from."""
+    r = cfg.retrieval
+    enabled = r.knowledge_sets[r.knowledge]
+    found = {name: {"kind": s.kind, "enabled": name in enabled, **store_identity(s.path)}
+             for name, s in r.stores.items()}
+    found.update({name: store_identity(path) for name, path in r if isinstance(path, Path) and name != "raw_dir"})
+    return found
 
 
 def identity(man: dict[str, Any]) -> dict[str, Any]:
@@ -697,12 +708,12 @@ def main(argv: list[str] | None = None) -> int:
         run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{mode}"
         folder = runs_dir() / run_id
         files = sorted({q["file"] for q in chosen})
+        knowledge = Knowledge.open(cfg)  # before the run folder: a missing literature store leaves nothing behind
         open_run(folder, manifest(cfg, run_id, mode, files, sys.argv[1:] if argv is None else argv,
                                   runs_dir() / ".sha-cache.json"))
     except (ConfigError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    knowledge = Knowledge.open(cfg)
     if not knowledge.tools and cfg.reasoning_policy.max_search_depth:
         print("warning: no knowledge tools (store missing?): answers are neither grounded nor verified", file=sys.stderr)
 

@@ -51,7 +51,7 @@ def test_questions_need_an_answer_target(tmp_path):
 
 def test_known_answers_match_the_store():
     """Every CODATA value and PubChem molar mass/formula in the eval set exists in the real store."""
-    con = sqlite3.connect(real_path("layer1_encyclopedia_db"))
+    con = sqlite3.connect(real_path("encyclopedia"))
     _, questions = load_questions()
     for q in questions:
         a = q["answer"]

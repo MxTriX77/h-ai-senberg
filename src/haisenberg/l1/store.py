@@ -229,13 +229,13 @@ class L1Store:
     """One read-only connection to the store. Create one per thread."""
 
     def __init__(self, path: Path | str | None = None, top_k: int = 5):
-        """Open the store at path, or at retrieval.layer1_encyclopedia_db (then top_k is retrieval.top_k_proofs)."""
+        """Open the store at path, or the configured encyclopedia store (then top_k is retrieval.top_k_proofs)."""
         self.top_k = top_k
         if path is None:
             from haisenberg.config import load_config
 
             retrieval = load_config().retrieval
-            path, self.top_k = retrieval.layer1_encyclopedia_db, retrieval.top_k_proofs
+            path, self.top_k = retrieval.path("encyclopedia"), retrieval.top_k_proofs
         path = Path(path).resolve()
         if not path.is_file():
             raise L1Error(f"Layer 1 store not found at {path}; build it with: {REBUILD_COMMAND}")
@@ -448,7 +448,7 @@ _default: L1Store | None = None
 
 
 def default_store() -> L1Store:
-    """The store at retrieval.layer1_encyclopedia_db, opened on first use."""
+    """The configured encyclopedia store, opened on first use."""
     global _default
     if _default is None:
         _default = L1Store()

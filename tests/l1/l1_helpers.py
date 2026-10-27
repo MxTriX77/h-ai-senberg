@@ -66,11 +66,13 @@ def write_manifest(path: Path, sources=None) -> Path:
     return path
 
 
-def real_path(attr: str) -> Path:
-    """retrieval.<attr> from the real config (honours DATA_DIR); skips the test if it is absent."""
+def real_path(name: str) -> Path:
+    """From the real config (honours DATA_DIR): the store of kind `name`, else retrieval.<name>; skips the test
+    if it is absent."""
     from haisenberg.config import load_config
 
-    p = getattr(load_config(REPO / "config" / "config.yaml").retrieval, attr)
+    r = load_config(REPO / "config" / "config.yaml").retrieval
+    p = r.path(name) if name in {s.kind for s in r.stores.values()} else getattr(r, name)
     if not p.exists():
         pytest.skip(f"real data not present: {p}")
     return p

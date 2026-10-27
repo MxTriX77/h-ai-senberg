@@ -94,13 +94,54 @@ class ReasoningPolicyConfig(_Section):
         return v
 
 
+class StoreConfig(_Section):
+    """A knowledge store: its kind says which ingest script builds it and which code reads it."""
+
+    kind: Literal["encyclopedia", "literature"]  # Layer 1 (ingest.build_l1) or Layer 2 literature (ingest.build_l2)
+    path: Path
+
+
 class RetrievalConfig(_Section):
     raw_dir: Path
-    layer1_encyclopedia_db: Path
+    stores: dict[str, StoreConfig]  # every knowledge store by name
+    knowledge_sets: dict[str, list[str]]  # knowledge setting -> the stores it enables
+    knowledge: str  # the knowledge setting in use (the A/B switch), one of knowledge_sets
     layer2_literature_index: Path
+    layer2_chunk_chars: PositiveInt  # longest passage the Layer 2 build stores
+    literature_k: PositiveInt  # most literature passages added to one search result when a literature store is enabled
     top_k_proofs: PositiveInt
     passage_chars: PositiveInt
     min_term_share: Annotated[float, Field(ge=0, le=1)]  # search hits need this share of the query's words; 0 = off
+
+    @field_validator("knowledge_sets")
+    @classmethod
+    def _sets(cls, v: dict[str, list[str]], info) -> dict[str, list[str]]:
+        stores = info.data.get("stores", {})
+        for name, members in v.items():
+            if unknown := [m for m in members if m not in stores]:
+                raise ValueError(f"{name}: unknown stores {unknown}; declared: {sorted(stores)}")
+            if len({stores[m].kind for m in members}) < len(members):
+                raise ValueError(f"{name}: at most one store of each kind")
+        return v
+
+    @field_validator("knowledge")
+    @classmethod
+    def _knowledge(cls, v: str, info) -> str:
+        if "knowledge_sets" in info.data and v not in info.data["knowledge_sets"]:
+            raise ValueError(f"{v!r} is not one of {sorted(info.data['knowledge_sets'])}")
+        return v
+
+    def path(self, kind: str) -> Path:
+        """The path of the store of this kind: the enabled one, else the first declared (what a build writes)."""
+        found = self.enabled(kind) or next((s.path for s in self.stores.values() if s.kind == kind), None)
+        if found is None:
+            raise ConfigError(f"retrieval.stores declares no store of kind {kind!r}")
+        return found
+
+    def enabled(self, kind: str) -> Path | None:
+        """The path of the store of this kind that the knowledge setting enables; None if it enables none."""
+        names = self.knowledge_sets[self.knowledge]
+        return next((self.stores[n].path for n in names if self.stores[n].kind == kind), None)
 
 
 class ToolText(_Section):
@@ -205,7 +246,6 @@ class Config(_Section):
 # (section, field) pairs resolved against the project root when relative.
 _PATH_FIELDS = [
     ("retrieval", "raw_dir"),
-    ("retrieval", "layer1_encyclopedia_db"),
     ("retrieval", "layer2_literature_index"),
     ("llama_server", "model_path"),
     ("ui", "dist_dir"),
@@ -250,6 +290,9 @@ def load_config(path: Path | str | None = None) -> Config:
         p = getattr(sec, name)
         if not p.is_absolute():
             setattr(sec, name, root / p)
+    for store in cfg.retrieval.stores.values():
+        if not store.path.is_absolute():
+            store.path = root / store.path
     cfg._root = root
     return cfg
 

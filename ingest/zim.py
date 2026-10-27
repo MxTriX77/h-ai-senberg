@@ -39,7 +39,9 @@ class Zim:
             pos = end + 1
         self.archive = Archive(self.path)
         meta = set(self.archive.metadata_keys)
-        self.metadata = {k: self.archive.get_metadata(k).decode("utf-8", "replace") for k in ("Date", "Name") if k in meta}
+        self.metadata = {
+            k: self.archive.get_metadata(k).decode("utf-8", "replace") for k in ("Date", "Name", "Title") if k in meta
+        }
 
     def close(self) -> None:
         self._ptrs.release()
@@ -63,6 +65,11 @@ class Zim:
                 found.append((cluster, blob, i))
         found.sort()
         return [i for _, _, i in found]
+
+    def by_cluster(self, ids: list[int]) -> list[int]:
+        """The given entry indices sorted by (cluster, blob), the order that decompresses each cluster once."""
+        unpack, m = struct.unpack_from, self._m
+        return sorted(ids, key=lambda i: unpack("<II", m, self._ptrs[i] + 8))
 
     def redirects(self) -> Iterator[tuple[int, int]]:
         """(entry index, target index) for every redirect in the article namespace."""

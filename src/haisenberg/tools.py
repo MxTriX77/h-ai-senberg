@@ -17,6 +17,7 @@ from typing import Any
 from . import calc
 from .config import Config, ConfigError
 from .l1.store import STOPWORDS, L1Error, L1Store, Record
+from .l2.store import L2Error, L2Store
 
 log = logging.getLogger(__name__)
 
@@ -38,16 +39,17 @@ class Sources:
     """The records retrieved for one answer, numbered S1, S2, ... in the order first seen."""
 
     def __init__(self) -> None:
-        self._by_url: dict[str, Source] = {}
+        self._by_key: dict[tuple, Source] = {}
         self.items: list[Source] = []
 
     def add(self, kind: str, record: Record, passage: str) -> tuple[Source, bool]:
-        """(source, is_new); a record seen before keeps its id."""
-        key = record.citation.url
-        if key in self._by_url:
-            return self._by_url[key], False
+        """(source, is_new); a record seen before (same citation URL and, for a literature passage, passage
+        number) keeps its id."""
+        key = (record.citation.url, record.citation.locator.get("passage"))
+        if key in self._by_key:
+            return self._by_key[key], False
         src = Source(f"S{len(self.items) + 1}", kind, record, passage)
-        self._by_url[key] = src
+        self._by_key[key] = src
         self.items.append(src)
         return src, True
 
@@ -71,10 +73,13 @@ class Sources:
 
 
 class Knowledge:
-    """The store plus the tools generated from it; no store (or depth 0) means no tools."""
+    """The store plus the tools generated from it; no store (or depth 0) means no tools. With a literature store
+    (enabled by the knowledge setting), searches also return up to retrieval.literature_k of its passages."""
 
-    def __init__(self, store: L1Store | None, cfg: Config):
+    def __init__(self, store: L1Store | None, cfg: Config, literature: L2Store | None = None):
         self.store = store
+        self.literature = literature
+        self.literature_k = cfg.retrieval.literature_k
         self.top_k = cfg.retrieval.top_k_proofs
         self.passage_chars = cfg.retrieval.passage_chars
         self.min_share = cfg.retrieval.min_term_share
@@ -93,12 +98,19 @@ class Knowledge:
 
     @classmethod
     def open(cls, cfg: Config) -> Knowledge:
+        """The stores the knowledge setting enables. Raises ConfigError when it enables a literature store that
+        cannot be opened (an A/B run must never fall back to less knowledge)."""
+        r, store, literature = cfg.retrieval, None, None
         try:
-            store = L1Store(cfg.retrieval.layer1_encyclopedia_db, cfg.retrieval.top_k_proofs)
+            store = L1Store(r.path("encyclopedia"), r.top_k_proofs)
         except L1Error as e:
             log.warning("no knowledge tools: %s", e)
-            store = None
-        return cls(store, cfg)
+        if (path := r.enabled("literature")) is not None:
+            try:
+                literature = L2Store(path)
+            except L2Error as e:
+                raise ConfigError(f"KNOWLEDGE={r.knowledge} (retrieval.knowledge) needs the literature store: {e}") from e
+        return cls(store, cfg, literature)
 
     def run(self, name: str, arguments: str, sources: Sources, k: int | None = None) -> tuple[str, list[str], list[str]]:
         """Run one tool call returning at most k records (default retrieval.top_k_proofs):
@@ -151,8 +163,11 @@ class Knowledge:
             domain = args.get("domain") or None
             if domain is not None and domain not in self.domains:
                 raise _BadCall(f"unknown domain {domain!r}; use one of {', '.join(self.domains)}")
-            return kind, query, self.store.search_encyclopedia(query, k, domain)
-        except (L1Error, sqlite3.Error) as e:
+            records = self.store.search_encyclopedia(query, k, domain)
+            if self.literature is not None:
+                records += self.literature.search(query, self.literature_k, domain)
+            return kind, query, records
+        except (L1Error, L2Error, sqlite3.Error) as e:
             raise _BadCall(f"lookup failed: {e}") from e
 
 

@@ -18,13 +18,23 @@ USES = {
     "wikipedia-zim",
     "wikipedia-mini-zim",
     "libretexts-zim",
+    "wikipedia-text-zim",
+    "wikipedia-filtered-zim",
+    "stackexchange-zim",
+    "wikibooks-zim",
+    "chebi-obo",
 }
 CHECKSUM_FIELDS = ("sha256", "md5", "sha256_url", "md5_url")
 HEX_LEN = {"sha256": 64, "md5": 32}
 FIELDS = {"name", "use", "layer", "domains", "url", "dest", "license", "cite_url", "filter", *CHECKSUM_FIELDS}
 REQUIRED = ("name", "use", "layer", "domains", "url", "dest", "license")
-FILTER_USE = "wikipedia-mini-zim"  # the only kind whose entry carries a relevance filter
-FILTER_FIELDS = {"infoboxes", "projects", "importance"}
+MINI_FIELDS = {"infoboxes", "projects", "importance"}
+FILTER_FIELDS = {  # use -> the fields its entry's filter must have; entries of other uses have no filter
+    "wikipedia-mini-zim": MINI_FIELDS,
+    "wikipedia-filtered-zim": MINI_FIELDS,
+    "wikibooks-zim": {"books"},
+    "stackexchange-zim": {"min_answer_score"},
+}
 _DOMAIN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
@@ -42,6 +52,20 @@ class MiniFilter:
 
 
 @dataclass(frozen=True)
+class BookFilter:
+    """Which Wikibooks books are kept, and the domain each gives its pages."""
+
+    books: dict[str, str]  # book name (first segment of a page path) -> domain
+
+
+@dataclass(frozen=True)
+class ScoreFilter:
+    """Which Stack Exchange answers are kept: those voted at least min_answer_score."""
+
+    min_answer_score: int
+
+
+@dataclass(frozen=True)
 class Entry:
     name: str
     use: str
@@ -54,7 +78,7 @@ class Entry:
     pinned: str | None  # pinned hex digest, or None for a checksum-URL entry
     checksum_url: str | None
     domains: tuple[str, ...] = ()
-    filter: MiniFilter | None = None
+    filter: MiniFilter | BookFilter | ScoreFilter | None = None
 
     def path(self, raw_dir: Path) -> Path:
         return raw_dir / self.dest
@@ -151,22 +175,30 @@ def _entry(item: dict, label: str) -> Entry:
     )
 
 
-def _filter(item: dict, domains: list[str], bad) -> MiniFilter | None:
+def _filter(item: dict, domains: list[str], bad) -> MiniFilter | BookFilter | ScoreFilter | None:
     raw = item.get("filter")
-    if item["use"] != FILTER_USE:
+    fields = FILTER_FIELDS.get(item["use"])
+    if fields is None:
         if raw is not None:
-            raise bad("filter", f"is only allowed for use '{FILTER_USE}'")
+            raise bad("filter", f"is only allowed for uses {sorted(FILTER_FIELDS)}")
         return None
-    if not isinstance(raw, dict) or set(raw) != FILTER_FIELDS:
-        raise bad("filter", f"is required for use '{FILTER_USE}' with exactly {sorted(FILTER_FIELDS)}")
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise bad("filter", f"is required for use '{item['use']}' with exactly {sorted(fields)}")
+    if "min_answer_score" in fields:
+        score = raw["min_answer_score"]
+        if isinstance(score, bool) or not isinstance(score, int) or score < 0:
+            raise bad("filter", "'min_answer_score' must be a whole number, 0 or more")
+        return ScoreFilter(score)
     maps = {}
-    for key in ("infoboxes", "projects"):
+    for key in sorted(fields - {"importance"}):
         m = raw[key]
         if not isinstance(m, dict) or not all(isinstance(k, str) and k for k in m):
             raise bad("filter", f"'{key}' must map names to domains")
         if undeclared := sorted(str(d) for d in m.values() if d not in domains):
             raise bad("filter", f"'{key}' names domains not in the entry's domains: {undeclared}")
         maps[key] = dict(m)
+    if "books" in maps:
+        return BookFilter(maps["books"])
     importance = raw["importance"]
     if not isinstance(importance, list) or not all(isinstance(r, str) and r for r in importance):
         raise bad("filter", "'importance' must be a list of ratings")

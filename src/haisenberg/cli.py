@@ -40,7 +40,7 @@ def main() -> int:
             port=cfg.app.port,
             log_level="debug" if cfg.app.debug else "info",
         )
-    except LauncherError as e:
+    except (LauncherError, ConfigError) as e:  # ConfigError: KNOWLEDGE=extended without the literature store
         print(f"error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

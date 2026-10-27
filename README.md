@@ -92,6 +92,7 @@ Nothing in the code is tied to this laptop or model. On another machine (for exa
 - `CTX_SIZE`, `GPU_LAYERS`, `LLAMA_THREADS`, `REASONING_BUDGET`: context size, layers on the GPU, CPU threads, thinking-token cap
 - `LLAMA_SERVER_ENABLED=false` with `API_BASE_URL`, `API_KEY`: use a model server that is already running, here or remote
 - `APP_HOST`, `APP_PORT`, `DATA_DIR`: address and data folder
+- `KNOWLEDGE`: which knowledge stores the tools read (`base`: the Layer 1 store; `extended`: also the Layer 2 literature store)
 
 All variables and their defaults are in `.env.example`.
 
@@ -169,6 +170,23 @@ The store has a schema version; code from a newer version refuses an older store
 
 With the 2026 sources the store holds about 37,500 articles, 355 constants and 96,700 compounds: about 200 MB, rebuilt in about 6 minutes. Lookups take a few milliseconds. `uv run pytest` runs a latency and facts check on the real store when it exists (set `DATA_DIR` if it is not under `data/`).
 
+## Literature store (Layer 2)
+
+A second store, `data/literature_fts.db`, holds cited passages for mechanisms, derivations and worked material: full Wikipedia articles (chemistry and physics topic sets, mathematics, astronomy, molecular and cell biology, climate, and the chemistry/physics articles of the top-1M set), LibreTexts textbooks (chemistry, physics, mathematics, engineering, biology), Stack Exchange answers voted 3 or more (chemistry, physics, matter modeling, astronomy, engineering, earth science), 60 Wikibooks science books and ChEBI definitions. Every page is cut into passages of about 1,200 characters along its headings (math kept as TeX; references, tables and navigation left out; a worked example kept with its solution), identical passages are stored once, and the passages are searched with SQLite FTS5 (BM25):
+
+```bash
+uv run python -m ingest.download --layer 2     # about 27 GB of new files under data/raw/
+uv run python -m ingest.build_l2               # builds data/literature_fts.db next to the Layer 1 store
+uv run haisenberg-l2 search "coupled equilibria" --domain chemistry
+```
+
+Stores are declared in `config/config.yaml` under `retrieval.stores` (name, kind, path under `DATA_DIR`); `retrieval.knowledge_sets` says which stores each knowledge setting enables, and `KNOWLEDGE` picks the setting:
+
+- `KNOWLEDGE=base` (default): the Layer 1 store only, exactly as before.
+- `KNOWLEDGE=extended`: `search_knowledge` returns the same Layer 1 records, then up to `retrieval.literature_k` (2) literature passages. Tools and their texts are the same in both; with `extended` and no literature store the app and `evals.run` stop with the rebuild command.
+
+Licences: Wikipedia, Wikibooks and Stack Exchange CC BY-SA; LibreTexts mostly CC BY-NC-SA (local, non-commercial use); ChEBI CC BY 4.0.
+
 ## Evals
 
 `evals/questions.yaml` holds about 100 chemistry and physics questions with known answers (a number with a tolerance, a formula, or accepted words), written for this project. The known answers come from CODATA 2022 (public domain), PubChem (no restrictions) and facts stated in the Wikipedia articles of the store (CC BY-SA 4.0; facts only, no text copied). A test checks every CODATA and PubChem answer against the store. The file's `answer_target` is appended to every question and asks the answer to end with the line `A1: <your final answer, with its unit if it has one>`. A fact question is scored on that line only, with the rules of the reasoning parts below (a formula in any order of its atoms); without the line it is wrong. The looser score of earlier runs, a match anywhere in the answer, is kept as `loose_correct`.
@@ -233,7 +251,7 @@ Items without `parts` get no code score; the blind review grades them.
 
 Each run writes `${DATA_DIR:-data}/evals/<run-id>/` in the data folder (default id `<yyyymmdd-hhmm>-<mode>`, or `--run-id ID`):
 
-- `manifest.json`: run id, git commit and dirty flag (also for a Windows checkout or worktree read from WSL), date, mode, `MODEL_PROFILE`, model id and backend, sha256 of the config after the mode, the model file the backend serves (llama-server's `/props` when it answers, else `MODEL_PATH` or the configured path, else the WSL copy in `$MODELS_DIR`) and its sha256 (cached by path, size and mtime in `${DATA_DIR:-data}/evals/.sha-cache.json`), the sha256 of the uncommitted changes when the tree is dirty (diff against the commit plus untracked files), `stores`: path, size and mtime of every store path in the `retrieval` settings except `raw_dir` (for a folder, the total size and newest mtime of its files), eval files and their sha256, GPU (`nvidia-smi`; null when unavailable), context size, sampling settings and the command-line arguments.
+- `manifest.json`: run id, git commit and dirty flag (also for a Windows checkout or worktree read from WSL), date, mode, `MODEL_PROFILE`, model id and backend, sha256 of the config after the mode, the model file the backend serves (llama-server's `/props` when it answers, else `MODEL_PATH` or the configured path, else the WSL copy in `$MODELS_DIR`) and its sha256 (cached by path, size and mtime in `${DATA_DIR:-data}/evals/.sha-cache.json`), the sha256 of the uncommitted changes when the tree is dirty (diff against the commit plus untracked files), the knowledge setting (`KNOWLEDGE`), `stores`: every store of `retrieval.stores` with its kind, whether the setting enables it, path, size and mtime, and every other store path in the `retrieval` settings except `raw_dir` (for a folder, the total size and newest mtime of its files), eval files and their sha256, GPU (`nvidia-smi`; null when unavailable), context size, sampling settings and the command-line arguments.
 - `items/<id>.json`, written as soon as the item is done: set, mode, the messages sent, the draft, the final answer, the reasoning trace, the verification report, timings (first reasoning token, first answer token, total), model calls, character counts, error, code scores of the final answer and of the draft, and the protocol artefacts found in the final answer.
 - `summary.json`: the metrics for all items and per set.
 

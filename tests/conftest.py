@@ -129,7 +129,7 @@ def cfg(tmp_path):
     c.verifier.consistency_check = False  # one call fewer per answer; tests/test_verifier.py turns it on
     c.retrieval.min_term_share = 0  # fixture searches return few, loosely matching records; tests/test_tools.py turns it on
     c.ui.dist_dir = tmp_path / "dist"
-    c.retrieval.layer1_encyclopedia_db = tmp_path / "no-store.db"
+    c.retrieval.stores["encyclopedia"].path = tmp_path / "no-store.db"
     return c
 
 
