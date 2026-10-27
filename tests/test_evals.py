@@ -90,6 +90,11 @@ BENZENE = {"id": "q", "set": "S1", "question": "bp?", "answer": {"number": 80.1,
     ("Ethanol is CH3CH2OH, not CH3OH.\nA1: CH3OH", {"formula": "C2H6O"}, False, True),
     ("It is Boyle's law.\nA1: Charles's law", {"text": ["Boyle"]}, False, True),
     ("A1: Boyle's law", {"text": ["Boyle"]}, True, True),
+    ("The electron mass is 9.109 383 7139 × 10^-31 kg.\nA1: 9.109 383 7139 × 10^-31 kg",
+     {"number": 9.1093837139e-31, "rel_tol": 0.001}, True, True),  # CODATA grouping, last group of four
+    ("A1: 2 up quarks and 1 down quark", {"text": ["two up quarks and one down quark", "uud"]}, True, True),
+    ("Two up quarks and one down quark.\nA1: 3 up quarks and 1 down quark",
+     {"text": ["two up quarks and one down quark"]}, False, True),
 ])
 def test_fact_score_strict_and_loose(answer, gold, strict, loose):
     s = score(answer, {**BENZENE, "answer": gold})
@@ -221,6 +226,15 @@ def test_cyrillic_look_alike_labels():
     ({"ids": ["S4", "S5"]}, "S4 and S5", "en", True),
     ({"ids": ["S4", "S5"]}, "S4", "en", False),
     ({"text": ["HCl"]}, "HCl is limiting", "en", True),
+    ({"text": ["two up quarks and one down quark"]}, "2 up quarks and 1 down quark", "en", True),  # counts: digits
+    ({"text": ["2 up quarks and 1 down quark"]}, "Two up quarks and one down quark", "en", True),  # or words
+    ({"text": ["two up quarks and one down quark"]}, "3 up quarks and 1 down quark", "en", False),
+    ({"text": ["два u-кварка и один d-кварк"]}, "2 u-кварка и 1 d-кварк", "ru", True),
+    ({"text": ["из двух u-кварков"]}, "из 3 u-кварков", "ru", False),
+    ({"text": ["someone"]}, "some1", "en", False),  # only whole words are counts
+    ({"number": 1234.5, "abs_tol": 0}, "1 234,5", "en", True),  # grouping and decimal comma as before
+    ({"number": 1234.5, "abs_tol": 0}, "1,234.5", "en", True),
+    ({"number": 1234.5, "abs_tol": 0}, "1 234,5", "ru", True),
     ({"number": 1, "abs_tol": 0}, None, "en", False),
 ])
 def test_part_correct(part, line, lang, ok):
