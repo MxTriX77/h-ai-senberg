@@ -190,15 +190,21 @@ def hybrid_cfg(cfg, built_store, l2_store, tmp_path, monkeypatch):
 
 def test_hybrid_results_look_like_extended(hybrid_cfg, built_store, l2_store):
     cfg = hybrid_cfg
-    base_k, ext_k = Knowledge(L1Store(built_store), cfg), Knowledge(L1Store(built_store), cfg, L2Store(l2_store))
+    labels = cfg.retrieval.source_labels
+    ext_k = Knowledge(L1Store(built_store), cfg, L2Store(l2_store))
     hyb_k = Knowledge.open(cfg)
-    assert isinstance(hyb_k.literature, HybridSearch) and hyb_k.tools == ext_k.tools == base_k.tools
-    text_a, ids_a, _ = search(base_k, "electron")
-    text_h, ids_h, sources = search(hyb_k, "electron")
-    assert ids_a and text_h.startswith(text_a) and ids_h[: len(ids_a)] == ids_a
-    added = [sources.get(i) for i in ids_h[len(ids_a):]]
-    assert 0 < len(added) <= cfg.retrieval.literature_k
-    assert all(f"[{s.id}] {s.record.label()}" in text_h for s in added)
+    assert isinstance(hyb_k.literature, HybridSearch) and hyb_k.tools == ext_k.tools  # same tools and texts (#46 note too)
+    text_e, ids_e, src_e = search(ext_k, "electron")
+    text_h, ids_h, src_h = search(hyb_k, "electron")
+    layer1_e = [src_e.get(i) for i in ids_e if not src_e.get(i).literature]
+    layer1_h = [src_h.get(i) for i in ids_h if not src_h.get(i).literature]
+    assert layer1_e and [(s.id, s.record.label(), s.passage) for s in layer1_h] == \
+        [(s.id, s.record.label(), s.passage) for s in layer1_e]  # the same Layer 1 records, first
+    assert ids_h[: len(layer1_h)] == [s.id for s in layer1_h]
+    added = [src_h.get(i) for i in ids_h[len(layer1_h):]]
+    assert 0 < len(added) <= cfg.retrieval.literature_k and all(s.literature for s in added)
+    for s in added:  # labelled as literature, as in extended
+        assert f"[{s.id}] {s.record.label()} ({s.kind}; {', '.join(s.record.domains)}; {labels.literature})\n" in text_h
 
 
 def test_hybrid_finds_a_paraphrase_extended_misses(hybrid_cfg, built_store, l2_store):
