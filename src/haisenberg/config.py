@@ -86,12 +86,21 @@ class ReasoningPolicyConfig(_Section):
     run_written_calculations: bool  # a written calculate call that cannot run as a round is run before asking again
     answer_retry_prompt: str  # the user turn that asks again for the final answer
     answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
+    coverage_repair: bool  # requested answer lines missing from the draft are asked for once and appended
+    coverage_repair_prompt: str  # the user turn of that call; {lines} = the missing lines
 
     @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("must not be empty")
+        return v
+
+    @field_validator("coverage_repair_prompt")
+    @classmethod
+    def _names_lines(cls, v: str) -> str:
+        if "{lines}" not in v:
+            raise ValueError("must contain {lines} (the missing lines)")
         return v
 
 
