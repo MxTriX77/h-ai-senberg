@@ -58,6 +58,7 @@ NVIDIA_SMI = ["nvidia-smi", "--query-gpu=name,power.limit,power.draw,memory.tota
 _LOOKALIKE = "АВСЕНКМОРТХавсенкмортх"  # Cyrillic letters a model may write in a label instead of the Latin ones
 _LATIN = str.maketrans(_LOOKALIKE, "ABCEHKMOPTXabcehkmoptx")
 _LINE = re.compile(rf"^[\s>*_`#+-]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.M)
+_NEXT = re.compile(rf"(?<=\s)[*_`]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*")  # a further label on that line
 # Protocol artefacts: text the pipeline writes for itself that must not reach the final answer. The patterns follow
 # the code that writes it: [S#] ids (verifier._CITES), the draft marker (agent.DRAFT_MARK), the trace headings of
 # Verifier.verify and Verifier._consistency, the summary line and outcome labels of verifier.render and the
@@ -223,8 +224,17 @@ def is_correct(answer: str, gold: dict[str, Any]) -> bool:
 
 def answer_lines(answer: str) -> dict[str, str]:
     """Label (A1, A2, ...) -> the text of the last line that starts with that label and a colon (a Cyrillic
-    look-alike letter in the label, such as А, reads as the Latin one)."""
-    return {m.group(1).translate(_LATIN).upper(): m.group(2).strip() for m in _LINE.finditer(answer_text(answer))}
+    look-alike letter in the label, such as А, reads as the Latin one). A line holding further labels of its
+    letter after a space (`A1: 22.0 g A2: 16.8 L`) is split there: each label gets the text up to the next."""
+    lines: dict[str, str] = {}
+    for m in _LINE.finditer(answer_text(answer)):
+        label, text, start = m.group(1).translate(_LATIN).upper(), m.group(2), 0
+        for n in _NEXT.finditer(text):
+            if (nxt := n.group(1).translate(_LATIN).upper())[0] == label[0]:
+                lines[label] = text[start:n.start()].strip()
+                label, start = nxt, n.end()
+        lines[label] = text[start:].strip()
+    return lines
 
 
 def _figures(n: Number) -> int:
