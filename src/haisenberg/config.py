@@ -83,6 +83,7 @@ class ReasoningPolicyConfig(_Section):
     text_tool_calls: bool  # a tool call written as text is run (rounds left) or removed and the answer asked again
     tool_call_markup: ToolCallMarkup
     empty_answer_retry: bool  # an empty final answer is asked again once
+    run_written_calculations: bool  # a written calculate call that cannot run as a round is run before asking again
     answer_retry_prompt: str  # the user turn that asks again for the final answer
     answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
 

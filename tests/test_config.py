@@ -257,6 +257,7 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
     ("reasoning_policy", "max_calc_rounds", -1, r"reasoning_policy\.max_calc_rounds"),
     ("reasoning_policy", "answer_retry_prompt", " ", r"reasoning_policy\.answer_retry_prompt"),
     ("reasoning_policy", "text_tool_calls", None, r"reasoning_policy\.text_tool_calls"),
+    ("reasoning_policy", "run_written_calculations", None, r"reasoning_policy\.run_written_calculations"),
     ("retrieval", "passage_chars", 0, r"retrieval\.passage_chars"),
 ])
 def test_tool_and_search_settings_validated(tmp_path, section, key, value, named):
@@ -283,7 +284,7 @@ def test_tool_texts(tmp_path):
 
 def test_answer_robustness_settings(tmp_path):
     p = load_config(write(tmp_path)).reasoning_policy
-    assert p.max_calc_rounds == 1 and p.text_tool_calls and p.empty_answer_retry
+    assert p.max_calc_rounds == 1 and p.text_tool_calls and p.empty_answer_retry and p.run_written_calculations
     assert p.answer_retry_request == {"chat_template_kwargs": {"enable_thinking": False}}
     data = base()
     data["reasoning_policy"]["tool_call_markup"]["call"] = "<tool_call>("

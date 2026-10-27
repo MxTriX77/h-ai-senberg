@@ -51,9 +51,11 @@ Next to the knowledge tools there is a built-in `calculate(expressions)` tool. I
 
 Calculations have their own rounds, so they do not use up the lookups: a round with only `calculate` calls counts against `reasoning_policy.max_calc_rounds` (1: one extra round for calculations after the lookups), not `max_search_depth`. Once the lookup rounds are used, the model is offered the calculator alone until its rounds are used too; then the last call sends `tool_choice: "none"`. With `max_calc_rounds: 0` every round counts as a lookup round.
 
-Two safety nets keep the answer an answer:
+Safety nets keep the answer an answer:
 
 - **Tool calls written as text.** Some chat templates write a tool call as text (`<tool_call><function=calculate>…`) when tools are not allowed. Such text in the reply is read with the patterns in `reasoning_policy.tool_call_markup` (Qwen3.5 XML and Hermes JSON). When every call names a tool that still has rounds, the calls run and the loop goes on. Otherwise the markup is removed and the model is asked once more for a plain final answer (`reasoning_policy.answer_retry_prompt`, request fields `answer_retry_request`, shipped: thinking off). Switch: `reasoning_policy.text_tool_calls`.
+- **Calculations written as text.** The calculator needs no model call, so `calculate` calls written where they cannot run as a round (after the last round, or in that retry) are run anyway and their results given back before the final answer is asked for; calls to other tools are removed. A calculation written in the retry costs one more model call, at most one per answer. Every removed call shows in the reasoning block. Switch: `reasoning_policy.run_written_calculations`.
+- **Answers cut off at a removed call.** If the last reply still ends where a call was removed (or is empty), the most complete reply is kept: the one with the most labelled answer lines (`A1: …`) whose labels the question names, then a complete one over a cut one, then the longer one. The reasoning block says which reply was kept and why.
 - **Empty answers.** When the model leaves its whole answer in the thinking and returns no content, it is asked once more the same way. Switch: `reasoning_policy.empty_answer_retry`.
 
 If the retry gives nothing, the text before the markup is kept; if there is none at all, the answer says plainly that it could not be completed. The Reasoning block shows what happened ("tool call written as text: run", "empty answer: final answer asked again").
