@@ -91,6 +91,8 @@ def test_bare_labels_are_not_claims():
     ("about 10,000 K", 10000),
     (r"$2\,450$ J", 2450),
     ("h = 6.626 070 15 e-34 J Hz^-1", 6.62607015e-34),
+    ("m_e = 9.109 383 7139 × 10^-31 kg", 9.1093837139e-31),  # CODATA: the last group may have four digits
+    ("m_e = 9.109 383 7139\xa0× 10^-31 kg", 9.1093837139e-31),  # thin and no-break spaces
     ("h = 6.626e-34", 6.626e-34),
     ("h = 6.626 × 10^-34 J s", 6.626e-34),
     ("h = 6.626×10⁻³⁴ J·s", 6.626e-34),
@@ -101,6 +103,14 @@ def test_bare_labels_are_not_claims():
 def test_number_notations(text, value):
     (n,) = read_numbers(text)
     assert n.value == pytest.approx(value)
+
+
+@pytest.mark.parametrize("text, values", [
+    ("1.5 1000 K", [1.5, 1000]),  # a four-digit group only after a three-digit one
+    ("0.1234 5678", [0.1234, 5678]),
+])
+def test_four_digits_after_a_decimal_are_another_number(text, values):
+    assert [n.value for n in read_numbers(text)] == pytest.approx(values)
 
 
 def test_digits_in_words_are_not_numbers():
