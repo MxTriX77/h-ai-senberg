@@ -34,7 +34,8 @@ OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
 _NUM = re.compile(
     r"(?<![\w.^/\\-])(-?)(\d{1,3}(?:(?:[ ,]|\\,)\d{3})+(?!\d)|\d+)"  # sign, integer part (maybe grouped in threes)
-    r"(?:\.(\d+(?: \d{1,3}(?!\d))*))?"  # decimals (maybe grouped, CODATA style)
+    r"(?:\.(\d+(?: \d{1,3}(?!\d))*(?:(?<=[. ]\d{3}) \d{4}(?!\d))?))?"  # decimals (maybe grouped, CODATA style:
+    # threes, the last group maybe four: 9.109 383 7139)
     r"(?:\s*(?:[eE]|(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:\^|\*\*)?)\s*\{?\(?([-+]?\d+)\)?\}?)?"  # exponent
     r"(?!\w)"
 )
