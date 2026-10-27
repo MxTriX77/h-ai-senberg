@@ -66,7 +66,10 @@ reasoning_policy:
     function: '<function=([^>\s]+)>'       # Qwen3.5 XML: the tool name; a call without it is read as JSON {"name", "arguments"}
     parameter: '<parameter=([^>\s]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=|</function>)|$)'   # ... and each argument
   empty_answer_retry: true                 # an empty final answer (all of it left in the thinking) is asked for again (once)
-  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call)
+  run_written_calculations: true           # calculate calls written as text where they cannot run as a round (after the
+                                           # last round, or in the retry) are run anyway and their results given to
+                                           # the retry; a calculation written in the retry costs one more call (at most)
+  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call or a run calculation)
     Tools are no longer available. Write your complete final answer to the question above now, as plain
     text without any tool call: use the results you have, show the working and keep the format the
     question asks for.
