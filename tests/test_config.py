@@ -426,3 +426,20 @@ def test_enabled_stores_follow_the_knowledge_setting(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE", "extended")
     r = load_config(SHIPPED).retrieval
     assert r.enabled("literature") == r.path("literature") == r.stores["literature"].path
+
+
+def test_source_trust_settings(tmp_path):
+    cfg = load_config(write(tmp_path))
+    r, v = cfg.retrieval, cfg.verifier
+    assert r.label_sources is v.reference_over_literature is True
+    assert r.source_labels.reference.strip() and r.source_labels.literature.strip()
+    assert cfg.tools["search_knowledge"].literature.strip() and cfg.tools["lookup_compound"].literature == ""
+    data = base()
+    data["retrieval"]["source_labels"]["literature"] = " "
+    with pytest.raises(ConfigError, match="retrieval.source_labels.literature"):
+        load_config(write(tmp_path, data))
+    for section, key in (("retrieval", "label_sources"), ("verifier", "reference_over_literature")):
+        data = base()
+        del data[section][key]
+        with pytest.raises(ConfigError, match=f"{section}.{key}"):
+            load_config(write(tmp_path, data))

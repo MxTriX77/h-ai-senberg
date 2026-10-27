@@ -91,6 +91,12 @@ retrieval:                                 # used from the Layer 1 step on
   top_k_proofs: 5                          # records per search or lookup (agent tools, encyclopedia search default)
   passage_chars: 1500                      # longest article passage handed to the model per record
   min_term_share: 0.5                      # search hits must show this share of the query's words (title or named-article hits always kept); 0 = off
+  label_sources: true                      # with a literature store enabled: each result says what its source is (source_labels)
+                                           # and search_knowledge's description gets its `literature` text; false: as before.
+                                           # No effect without a literature store (base)
+  source_labels:
+    reference: "reference data"            # Layer 1 records: encyclopedia leads and infoboxes, compounds, constants
+    literature: "literature: explanatory text, its numbers may differ by source or conditions"
 
 tools:                                     # texts of the agent tools; which tools exist follows the sources in the store (D-021)
   search_knowledge:
@@ -100,6 +106,12 @@ tools:                                     # texts of the agent tools; which too
     parameters:
       query: "A few keywords naming the topic, e.g. 'ethanol boiling point' or 'photoelectric effect'."
       domain: "Optional: search only this subject area."
+    literature: >-
+      Results may also include literature passages (textbook sections, full articles, Q&A answers), marked as
+      literature; encyclopedia records and lookup results are marked as reference data. Take property values
+      and constants from the reference data, and use literature for explanations, mechanisms and context.
+      When literature gives a different value than the reference data, give the reference value (you may
+      mention the other).
   lookup_compound:
     description: >-
       Look up a chemical compound in PubChem by name, CAS number, CID or molecular formula. Returns its
@@ -154,6 +166,10 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # task writes the same a × b = c) only report a fix inside it, a claim
                                            # that is a quotation plus at most a label or verdict mark (✗ WRONG) is not
                                            # checked, and a review fix that changes quoted text is skipped; false: as before
+  reference_over_literature: true          # a claim the judge supports only from literature passages is unverified when a
+                                           # retrieved reference record gives another value for the same quantity (a number
+                                           # with the same unit, within ×2, in a line or sentence holding half the claim's
+                                           # words); nothing is rewritten; false: as before. No effect without literature
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
   checkers_clear_only: true                # a checker rewrites only what is clearly its subject; a fix it doubts is
                                            # only reported (element_balance: a formula with an explicit count of 1

@@ -102,6 +102,20 @@ class StoreConfig(_Section):
     path: Path
 
 
+class SourceLabels(_Section):
+    """What a tool result calls a source when a literature store is enabled (retrieval.label_sources)."""
+
+    reference: str  # a Layer 1 record (encyclopedia article, compound, constant)
+    literature: str  # a literature passage
+
+    @field_validator("reference", "literature")
+    @classmethod
+    def _not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+
 class RetrievalConfig(_Section):
     raw_dir: Path
     stores: dict[str, StoreConfig]  # every knowledge store by name
@@ -113,6 +127,8 @@ class RetrievalConfig(_Section):
     top_k_proofs: PositiveInt
     passage_chars: PositiveInt
     min_term_share: Annotated[float, Field(ge=0, le=1)]  # search hits need this share of the query's words; 0 = off
+    label_sources: bool  # with a literature store enabled: results say what each source is (source_labels)
+    source_labels: SourceLabels
 
     @field_validator("knowledge_sets")
     @classmethod
@@ -150,6 +166,7 @@ class ToolText(_Section):
 
     description: str
     parameters: dict[str, str] = {}
+    literature: str = ""  # added to the description when a literature store is enabled (retrieval.label_sources)
 
     @field_validator("description")
     @classmethod
@@ -186,6 +203,7 @@ class VerifierConfig(_Section):
     consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
     consistency_keep_answer_lines: bool  # the review never changes a labelled answer/verdict line
     keep_quotes: bool  # text the answer quotes from the task is never rewritten by checkers, judge or review
+    reference_over_literature: bool  # a claim supported only by literature is not supported when a reference disagrees
 
     @field_validator("checkers")
     @classmethod
