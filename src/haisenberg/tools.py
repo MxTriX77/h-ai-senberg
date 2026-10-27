@@ -17,7 +17,7 @@ from typing import Any
 from . import calc
 from .config import Config, ConfigError
 from .l1.store import STOPWORDS, L1Error, L1Store, Record
-from .l2.store import L2Error, L2Store
+from .l2.store import L2Error, L2Store, PassageRecord
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ class Source:
     kind: str
     record: Record
     passage: str  # exactly what the model was shown
+    literature: bool = False  # a literature passage (Layer 2), not a reference record
 
 
 class Sources:
@@ -48,7 +49,7 @@ class Sources:
         key = (record.citation.url, record.citation.locator.get("passage"))
         if key in self._by_key:
             return self._by_key[key], False
-        src = Source(f"S{len(self.items) + 1}", kind, record, passage)
+        src = Source(f"S{len(self.items) + 1}", kind, record, passage, isinstance(record, PassageRecord))
         self._by_key[key] = src
         self.items.append(src)
         return src, True
@@ -83,6 +84,8 @@ class Knowledge:
         self.top_k = cfg.retrieval.top_k_proofs
         self.passage_chars = cfg.retrieval.passage_chars
         self.min_share = cfg.retrieval.min_term_share
+        labelled = literature is not None and cfg.retrieval.label_sources  # base: no labels, no extra tool text
+        self.labels = cfg.retrieval.source_labels if labelled else None
         kinds = store.kinds() if store is not None and cfg.reasoning_policy.max_search_depth > 0 else {}
         self.domains = kinds.get(TEXT, [])
         self._kind_of: dict[str, str] = {}  # tool name -> kind
@@ -90,7 +93,7 @@ class Knowledge:
         for kind in sorted(kinds, key=lambda k: (k != TEXT, k)):
             name = SEARCH if kind == TEXT else f"lookup_{kind}"
             self._kind_of[name] = kind
-            self.tools.append(_tool(name, self.domains if kind == TEXT else None, cfg))
+            self.tools.append(_tool(name, self.domains if kind == TEXT else None, cfg, literature=labelled))
         self.calculator = bool(self.tools) and CALCULATE in cfg.tools  # built in, next to the knowledge tools
         if self.calculator:
             self.tools.append(_tool(CALCULATE, None, cfg, param="expressions",
@@ -136,7 +139,9 @@ class Knowledge:
         for record in records:
             src, new = sources.add(kind, record, record.passage(query, self.passage_chars))
             if new:
-                blocks.append(f"[{src.id}] {record.label()} ({kind}; {', '.join(record.domains)})\n{src.passage}")
+                tag = ("" if self.labels is None
+                       else f"; {self.labels.literature if src.literature else self.labels.reference}")
+                blocks.append(f"[{src.id}] {record.label()} ({kind}; {', '.join(record.domains)}{tag})\n{src.passage}")
                 lines.append(f"[{src.id}] {record.label()}")
             else:
                 blocks.append(f"[{src.id}] {record.label()} (shown above)")
@@ -207,9 +212,9 @@ def _calculate(arguments: str) -> tuple[str, list[str]]:
 
 
 def _tool(name: str, domains: list[str] | None, cfg: Config, param: str = "query",
-          schema: dict[str, Any] | None = None) -> dict[str, Any]:
+          schema: dict[str, Any] | None = None, literature: bool = False) -> dict[str, Any]:
     """OpenAI function tool: parameters from code (`schema`: the main parameter's type, default string), texts
-    from tools.<name> in the config."""
+    from tools.<name> in the config (with `literature`, its `literature` text follows the description)."""
     text = cfg.tools.get(name)
     if text is None:
         raise ConfigError(f"tools.{name}: the store offers this tool but the config has no text for it")
@@ -220,11 +225,12 @@ def _tool(name: str, domains: list[str] | None, cfg: Config, param: str = "query
         if key not in text.parameters:
             raise ConfigError(f"tools.{name}.parameters.{key}: missing description")
         schema["description"] = text.parameters[key]
+    description = f"{text.description} {text.literature}" if literature and text.literature else text.description
     return {
         "type": "function",
         "function": {
             "name": name,
-            "description": text.description,
+            "description": description,
             "parameters": {"type": "object", "properties": properties, "required": [param]},
         },
     }

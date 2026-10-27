@@ -20,9 +20,10 @@ import httpx
 from .config import Config
 from .calc import Arithmetic, computations, find_arithmetic, prefixed
 from .checkers import CHECKERS
+from .l1.store import STOPWORDS
 from .l1.text import parse_formula, to_hill
 from .llm import LLMClient, UpstreamError, estimate_tokens
-from .tools import SEARCH, Knowledge, Source, Sources
+from .tools import SEARCH, Knowledge, Source, Sources, term_share
 
 log = logging.getLogger(__name__)
 
@@ -424,6 +425,48 @@ def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_to
     return None
 
 
+# A unit right after a number (normalised text): % or a word, maybe after ° and joined by / or ·, each part maybe
+# with a power (kg/m3, J·K-1, °C). A stopword after a number is not a unit.
+_UNIT = re.compile(r"[ \t]*(%|°?[^\W\d_]+(?:-?\d)?(?:[/·⋅∙*][^\W\d_]+(?:-?\d)?)*)")
+
+
+def _quantities(text: str) -> list[tuple[Number, str]]:
+    """Every number of the text that a unit follows, with that unit (normalised)."""
+    norm = text.translate(_NORM)
+    return [(n, m[1]) for n in read_numbers(text)
+            if (m := _UNIT.match(norm, n.end)) and m[1].lower() not in STOPWORDS]
+
+
+def reference_conflict(claim: Claim, sources: Sources, rel_tol: float) -> str:
+    """'' or why a claim that only literature passages support (claim.ids) is not supported: a reference record
+    retrieved for the answer (any source that is not literature) gives another value for one of its quantities (a
+    number with a unit). The record gives that quantity in a line or sentence of its passage with a number in the
+    same unit within a factor of two, when that line or sentence with the record's title holds at least half the
+    claim's words (units aside, see term_share); another value: none of those values matches the claim's number."""
+    supporting = [s for i in claim.ids if (s := sources.get(i))]
+    if not supporting or not all(s.literature for s in supporting):
+        return ""
+    text = plain(claim.text)
+    quantities = _quantities(text)
+    units = {w for _, u in quantities for w in _words(u)}
+    words = [w for w in _words(text) if w not in units and w not in STOPWORDS]
+    if not words:
+        return ""
+    query = " ".join(words)
+    segments = [(s, seg) for s in sources.items if not s.literature
+                for seg in (line[a:b] for line in s.passage.splitlines() for a, b in _sentences(line))
+                if term_share(query, f"{s.record.label()} {seg}") >= 0.5]
+    found = []
+    for n, unit in quantities:
+        values = [(s, seg, m) for s, seg in segments for m, u in _quantities(seg)
+                  if u == unit and n.value and 0.5 <= m.value / n.value <= 2]
+        if values and not any(abs(n.value - m.value) <= max(n.half, m.half, rel_tol * abs(m.value))
+                              for _, _, m in values):
+            s, seg, m = values[0]
+            found.append(f"{text[n.start:n.end]} {unit}, but reference {s.id} gives {seg[m.start:m.end]} {unit}")
+    return "; ".join(found)
+
+
 def results(draft: str) -> list[float]:
     """Every number written right after `=` or `≈` in the draft and not followed by an operator: values the
     answer computed."""
@@ -618,6 +661,11 @@ class Verifier:
         for c in research:
             if not c.outcome:
                 c.outcome, c.note = UNVERIFIED, c.note or "not supported after re-search"
+        if self.cfg.reference_over_literature:
+            for c in claims:
+                if c.outcome == SUPPORTED and (why := reference_conflict(c, sources, self.cfg.rel_tol)):
+                    c.outcome, c.ids, c.note = UNVERIFIED, [], f"{c.note}; only literature supports {why}"
+                    yield _say(f"- C{c.n} {c.outcome} (only literature supports {why})\n")
         for c in claims:
             if c.outcome == CORRECTED:
                 yield _say(f"- C{c.n} corrected from {', '.join(c.ids)}: {plain(c.fixed or '')}\n")

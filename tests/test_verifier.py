@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, tool_call
 from haisenberg.agent import Agent
-from haisenberg.l1.store import L1Store
+from haisenberg.l1.store import ArticleRecord, Citation, L1Store
+from haisenberg.l2.store import PassageRecord
 from haisenberg.server import create_app
 from haisenberg.llm import estimate_tokens
 from haisenberg.tools import Knowledge, Source, Sources
@@ -24,6 +25,7 @@ from haisenberg.verifier import (
     quoted,
     read_formulas,
     read_numbers,
+    reference_conflict,
     render,
     results,
     run_checkers,
@@ -947,3 +949,84 @@ async def test_quoted_wrong_product_only_in_the_trace(cfg, fake, knowledge):
     assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []
     steps = "".join(i.get("reasoning_content", "") for i in items)
     assert "1 calculation recomputed, 0 fixed\n- 12 * 45 = 560: quoted from the task, left as written (would be 540)" in steps
+
+
+# --- reference values over literature ----------------------------------------------------------------
+
+
+def article(title, infobox, lead="It is a fixture lead."):
+    return ArticleRecord(title, title, f"{title} {lead}", infobox, "", 1.0, ["chemistry"],
+                         Citation("wiki", "w.zim", "1", "CC BY-SA", {"path": title}, f"https://wiki/{title}"))
+
+
+def literature(title, text):
+    return PassageRecord(title, "Section", title, text, 1.0, ["chemistry"], "Wikipedia Chemistry",
+                         Citation("lit", "l.zim", "1", "CC BY-SA", {"path": title, "passage": 1}, f"https://lit/{title}"))
+
+
+WATER = article("Water", "Critical point: 647.096 K, 22.064 MPa, 322 kg/m³\nDensity: 997 kg/m³")
+PHASE = literature("Phase diagram", "The critical point of water is at 647 K and 22.064 MPa, density 356 kg/m³.")
+GADOLINIUM = article("Gadolinium", "Melting point: 1585 K\nCurie point: 293.4 K")
+FERRO = literature("Ferromagnetism", "Gadolinium has a Curie temperature of 289 K.")
+
+
+def retrieved(*records):
+    s = Sources()
+    for r in records:
+        s.add("text", r, r.passage("", 1500))
+    return s
+
+
+def supported_by(text, *ids):
+    c = claim(text)
+    c.outcome, c.ids = SUPPORTED, list(ids)
+    return c
+
+
+def test_sources_know_literature():
+    s = retrieved(WATER, PHASE)
+    assert [x.literature for x in s.items] == [False, True]
+
+
+@pytest.mark.parametrize("records, text, expected", [
+    ((WATER, PHASE), "The critical density of water is 356 kg/m³ [S2].", "356 kg/m3, but reference S1 gives 322 kg/m3"),
+    ((GADOLINIUM, FERRO), "Gadolinium has a Curie temperature of 289 K [S2].", "289 K, but reference S1 gives 293.4 K"),
+    ((FERRO, GADOLINIUM), "Gadolinium has a Curie temperature of 289 K [S1].", "reference S2 gives 293.4 K"),  # uncited
+])
+def test_literature_value_against_a_reference(records, text, expected):
+    lit = next(x.id for x in retrieved(*records).items if x.literature)
+    assert expected in reference_conflict(supported_by(text, lit), retrieved(*records), 0.001)
+
+
+@pytest.mark.parametrize("records, text, ids", [
+    ((WATER, PHASE), "The critical density of water is 322 kg/m³ [S2].", ["S2"]),  # the reference agrees
+    ((WATER, PHASE), "The critical density of water is 0.356 g/cm³ [S2].", ["S2"]),  # another unit: not compared
+    ((article("Water", "Density: 997 kg/m³"), PHASE), "The critical density of water is 356 kg/m³ [S2].", ["S2"]),
+    ((WATER, PHASE), "The critical density of carbon dioxide is 468 kg/m³ [S2].", ["S2"]),  # other words
+    ((GADOLINIUM, FERRO), "Gadolinium is ferromagnetic below 289 K [S2].", ["S2"]),  # words name no reference line
+    ((WATER, PHASE), "The critical density of water is 356 kg/m³ [S1][S2].", ["S1", "S2"]),  # reference support
+    ((WATER, article("Steam", "Density: 0.6 kg/m³")), "The critical density of water is 356 kg/m³ [S2].", ["S2"]),  # base
+])
+def test_no_conflict(records, text, ids):
+    assert reference_conflict(supported_by(text, *ids), retrieved(*records), 0.001) == ""
+
+
+async def verify(cfg, fake, knowledge, draft, sources, judge):
+    fake.scripts = [[content(judge)]]
+    items = [i async for i in Verifier(cfg, fake.client(cfg.model_backend), knowledge).verify("q", draft, sources)]
+    return items[-1], "".join(i.get("reasoning_content", "") for i in items[:-1])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("on", [True, False])
+async def test_literature_only_support_unverified(cfg, fake, knowledge, on):
+    cfg.verifier.reference_over_literature = on
+    draft = "The critical density of water is 356 kg/m³ [S2]."
+    result, steps = await verify(cfg, fake, knowledge, draft, retrieved(WATER, PHASE), "C1: supports S2")
+    c = result.claims[0]
+    assert result.answer == "The critical density of water is 356 kg/m³."  # plain answer: nothing rewritten
+    if on:
+        assert (c.outcome, c.ids) == (UNVERIFIED, [])
+        assert "C1 unverified (only literature supports 356 kg/m3, but reference S1 gives 322 kg/m3)" in steps
+    else:
+        assert (c.outcome, c.ids) == (SUPPORTED, ["S2"]) and "only literature" not in steps
