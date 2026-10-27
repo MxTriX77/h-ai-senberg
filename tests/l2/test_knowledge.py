@@ -31,7 +31,8 @@ def extended(cfg, built_store, l2_store):
 def test_extended_appends_literature_after_layer1(base, extended, cfg):
     text_a, ids_a, _ = search(base, "electron")
     text_b, ids_b, sources = search(extended, "electron")
-    assert ids_a and text_b.startswith(text_a)  # the encyclopedia records first, exactly as in base
+    unlabelled = text_b.replace(f"; {cfg.retrieval.source_labels.reference})\n", ")\n")
+    assert ids_a and unlabelled.startswith(text_a)  # the encyclopedia records first, as in base but labelled
     assert ids_b[: len(ids_a)] == ids_a
     added = [sources.get(i) for i in ids_b[len(ids_a):]]
     assert 0 < len(added) <= cfg.retrieval.literature_k
@@ -39,8 +40,49 @@ def test_extended_appends_literature_after_layer1(base, extended, cfg):
     assert all(f"[{s.id}] {s.record.label()}" in text_b for s in added)
 
 
-def test_same_tools_in_both(base, extended):
-    assert base.tools == extended.tools
+def test_same_tools_in_both_without_labels(cfg, built_store, l2_store):
+    cfg.retrieval.label_sources = False
+    assert Knowledge(L1Store(built_store), cfg).tools == Knowledge(L1Store(built_store), cfg, L2Store(l2_store)).tools
+
+
+def test_extended_labels_reference_and_literature(base, extended, cfg):
+    labels = cfg.retrieval.source_labels
+    text, ids, sources = search(extended, "electron")
+    kinds = {sources.get(i).literature for i in ids}
+    assert kinds == {False, True}  # fixture: encyclopedia records and literature passages
+    for i in ids:
+        s = sources.get(i)
+        label = labels.literature if s.literature else labels.reference
+        assert f"[{s.id}] {s.record.label()} ({s.kind}; {', '.join(s.record.domains)}; {label})\n" in text
+    note = cfg.tools[SEARCH].literature
+    for a, b in zip(base.tools, extended.tools):
+        name, desc = a["function"]["name"], a["function"]["description"]
+        assert b["function"]["description"] == (f"{desc} {note}" if name == SEARCH else desc)
+        assert {**b["function"], "description": desc} == a["function"]
+
+
+@pytest.mark.parametrize("query", ["electron", "ethanol"])
+def test_base_unchanged_by_the_label_switch(cfg, built_store, query):
+    runs = []
+    for on in (True, False):
+        cfg.retrieval.label_sources = on
+        k = Knowledge(L1Store(built_store), cfg)
+        sources = Sources()
+        runs.append((k.tools, k.run(SEARCH, json.dumps({"query": query}), sources),
+                     k.run("lookup_compound", json.dumps({"query": "caffeine"}), sources)))
+    assert runs[0] == runs[1]
+    text, sources = runs[0][1][0], Sources()
+    Knowledge(L1Store(built_store), cfg).run(SEARCH, json.dumps({"query": query}), sources)
+    assert sources.items and not any(s.literature for s in sources.items)
+    assert text == "\n\n".join(f"[{s.id}] {s.record.label()} ({s.kind}; {', '.join(s.record.domains)})\n{s.passage}"
+                               for s in sources.items)  # the format before labels
+
+
+def test_extended_without_labels_when_switched_off(cfg, built_store, l2_store):
+    cfg.retrieval.label_sources = False
+    text, ids, sources = search(Knowledge(L1Store(built_store), cfg, L2Store(l2_store)), "electron")
+    assert ids and all(f"[{i}] {sources.get(i).record.label()} ({sources.get(i).kind}; "
+                       f"{', '.join(sources.get(i).record.domains)})\n" in text for i in ids)
 
 
 def test_literature_only_hit(base, extended):
