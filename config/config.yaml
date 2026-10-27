@@ -73,8 +73,15 @@ reasoning_policy:
     Tools are no longer available. Write your complete final answer to the question above now, as plain
     text without any tool call: use the results you have, show the working and keep the format the
     question asks for.
-  answer_retry_request:                    # fields merged into that call
+  answer_retry_request:                    # fields merged into that call (and into the coverage repair call)
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
+  coverage_repair: true                    # answer lines the task spells out (`A9: <verdict>`) that the draft leaves out are
+                                           # asked for once (no tools) and appended, before the claim checks; false: off
+  coverage_repair_prompt: |                # the user turn of that call after the draft; {lines} = the missing lines as the task writes them
+    Your answer above leaves out these lines that the task asks for:
+    {lines}
+    Write only these lines now, each on its own line, starting with its label and a colon as the task
+    asks. Take each from your answer above. Write nothing else.
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml

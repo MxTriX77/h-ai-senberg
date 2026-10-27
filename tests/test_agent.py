@@ -428,6 +428,90 @@ def test_written_calculations_switched_off(client, fake, cfg):
     assert "tool call written as text in the retry: removed\n" in text
 
 
+TEN_LINES = "Check the report's eight statements. Finish with exactly these lines:\n" + "\n".join(
+    f"A{i}: <verdict {i}>" for i in range(1, 11))
+EIGHT = "Statements 7 and 8 are discussed above.\n" + "\n".join(f"A{i}: true" for i in range(1, 9))
+
+
+def ask(client, question):
+    return chat(client, [{"role": "user", "content": question}])
+
+
+def test_missing_answer_lines_asked_for_once_and_appended(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    fake.scripts = [[content(EIGHT), finish("stop")], [content("A9: false\nA10: true")]]
+    r = ask(client, TEN_LINES)
+    assert answer(r) == EIGHT + "\nA9: false\nA10: true" and len(fake.requests) == 2
+    repair = fake.bodies[1]
+    assert "tools" not in repair and "tool_choice" not in repair
+    assert repair["chat_template_kwargs"] == {"enable_thinking": False}  # answer_retry_request
+    assert repair["messages"] == [
+        {"role": "system", "content": policy.system_prompt}, {"role": "user", "content": TEN_LINES},
+        {"role": "assistant", "content": EIGHT},
+        {"role": "user", "content": policy.coverage_repair_prompt.replace("{lines}", "A9: <verdict 9>\nA10: <verdict 10>")}]
+    trace = reasoning_text(r)
+    assert "answer lines missing: A9, A10; asked for them" in trace and "answer lines added: A9, A10" in trace
+
+
+@pytest.mark.anyio
+async def test_draft_item_has_the_appended_lines(cfg, fake, knowledge):  # what the checks and the evals get
+    fake.scripts = [[content(EIGHT)], [content("A9: false\nA10: true")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(
+        [{"role": "user", "content": TEN_LINES}])]
+    assert {"draft": EIGHT + "\nA9: false\nA10: true"} in items
+
+
+def test_complete_answer_needs_no_extra_call(client, fake):
+    draft = "\n".join(f"- **A{i}:** true" for i in range(1, 11))
+    fake.scripts = [[content(draft)]]
+    r = ask(client, TEN_LINES)
+    assert answer(r) == draft and len(fake.requests) == 1 and "answer lines" not in reasoning_text(r)
+
+
+def test_only_the_missing_labelled_lines_of_the_reply_are_used(client, fake):
+    question = "Claim 1: the mass is 5 g. Claim 2: it is dry. Finish with: A1: <claim 1> A2: <claim 2>"
+    fake.scripts = [[content("A1: true")],
+                    [content("Here you go.\nA1: false\nClaim 2: true\nB7: x\nA2: <claim 2>\n**A2:** false, no data\nA2: x")]]
+    r = ask(client, question)
+    assert answer(r) == "A1: true\n**A2:** false, no data" and len(fake.requests) == 2
+
+
+def test_labels_the_task_does_not_ask_for_are_never_requested(client, fake):
+    fake.scripts = [[content("A1: true, the mass matches.")]]
+    assert answer(ask(client, "Claim 1: the mass is 5 g. Answer as A1: <claim 1>")) == "A1: true, the mass matches."
+    assert len(fake.requests) == 1
+
+
+@pytest.mark.parametrize("reply, note", [
+    (CONNECT_ERROR, "answer line request failed"),
+    ([content("I cannot add more.")], "no requested answer line in the reply: answer kept"),
+])
+def test_repair_that_fails_keeps_the_answer(client, fake, reply, note):
+    fake.scripts = [[content(EIGHT)], reply]
+    r = ask(client, TEN_LINES)
+    assert answer(r) == EIGHT and len(fake.requests) == 2 and note in reasoning_text(r)
+    assert r.text.endswith("data: [DONE]\n\n")
+
+
+def test_coverage_checked_on_the_answer_kept(client, fake, cfg):  # after the most complete reply is chosen
+    cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 0
+    kept = "**A1:** 194.19 g/mol\nA2: C8H10N4O2"
+    fake.scripts = [lookup_round(), [content(kept + "\n" + LOOKUP_CALL)],
+                    [content("I should look the formula up again to be sure of every atom.\n" + LOOKUP_CALL)],
+                    [content("A3: 58-08-2")]]
+    r = ask(client, "For caffeine give A1: <molar mass> A2: <formula> A3: <CAS number>")
+    assert answer(r) == kept + "\nA3: 58-08-2" and len(fake.requests) == 4
+    assert fake.bodies[3]["messages"][-2] == {"role": "assistant", "content": kept}
+    text = reasoning_text(r)
+    assert text.index("answer kept: the draft") < text.index("answer lines missing: A3") < text.index("added: A3")
+
+
+def test_coverage_repair_switched_off(client, fake, cfg):
+    cfg.reasoning_policy.coverage_repair = False
+    fake.scripts = [[content(EIGHT)]]
+    assert answer(ask(client, TEN_LINES)) == EIGHT and len(fake.requests) == 1
+
+
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
     calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")
