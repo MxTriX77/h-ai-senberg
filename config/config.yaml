@@ -150,6 +150,13 @@ verifier:                                  # claim checks on the draft; on/off: 
   arithmetic_rel_tol: 0.005                # ... when c is off by more than its rounding and this share
   arithmetic_prefixes: true                # ... and also off when scaled by 10^±3/6/9 where a unit of the chain has an
                                            # SI prefix (2452 W = 2.45 kW, 250 mg × 6 = 1.5 g); false: c as written only
+  arithmetic_strict_parse: true            # read only a whole left side: a × 10ⁿ is one number (6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32),
+                                           # a currency sign before a number is dropped, an expression with math right before
+                                           # it (an operator, "(", ½, π, "half of", "million") or a scale suffix (1.3B, 20k)
+                                           # is skipped, and so is a wrong c that is a unit conversion (bits → GB, m → cm);
+                                           # false: as before
+  arithmetic_max_change: 100               # a fix that changes c by this factor or more, or flips its sign, is not applied,
+                                           # only listed in the reasoning ("change too large to be a slip"); 0 = no limit
   skip_derived_claims: true                # computations (an equation or operation with numbers, or a sentence restating
                                            # the answer's results) and labelled answer/verdict lines (A1: …, Claim C: …)
                                            # are never judged, corrected or removed by the claim checks

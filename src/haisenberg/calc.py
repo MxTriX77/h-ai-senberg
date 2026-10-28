@@ -120,7 +120,7 @@ def run_tool(arguments: str) -> tuple[str, list[str]]:
 
 _NUM = r"\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?"
 _UNIT_CHARS = r"A-Za-zА-Яа-яЁёµμΩÅ°⁰¹²³⁴⁵⁶⁷⁸⁹⁻"
-_UNIT = rf"(?:\s?(?:%|[{_UNIT_CHARS}]+(?:[·*/][{_UNIT_CHARS}]+|\*\*\(?-?\d+\)?|-?\d)*))"
+_UNIT = rf"(?:\s?(?:%|(?![eE][-+]?\d)[{_UNIT_CHARS}]+(?:[·*/][{_UNIT_CHARS}]+|\*\*\(?-?\d+\)?|-?\d)*))"  # not "e7"
 _OPEN = r"(?:(?:sqrt|ln|log|exp)?\s*\(\s*)"
 _OPERAND = rf"[-+]?{_OPEN}*[-+]?{_NUM}(?:{_UNIT})?(?:\s*\))*(?:{_UNIT})?"
 _OP = r"\s*(?:\*\*|[-+*/])\s*"
@@ -130,6 +130,23 @@ _RESULT_LEAD = re.compile(r"[ \t]*(?:\\[,;! ]|[$])?[ \t]*\{?[ \t]*")
 _NEXT_OP = re.compile(r"[ \t]*[×*/·÷+^−-](?!\s*$)")
 _NUMBER_IN_UNITS = re.compile(rf"({_NUM}|\))(?:{_UNIT})")
 _LIST_MARKER = re.compile(r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d+[.)])[ \t]+)?")  # "- ", "  * ", "> 1. ": not a sign
+
+# Strict reading (verifier.arithmetic_strict_parse): only a whole left side, `a × 10ⁿ` as one number.
+_CURRENCY = re.compile(r"\\?[$€£¥₹₽]\s?(?=\d)")  # "$1,200": the sign is not part of the arithmetic
+_POW10 = re.compile(r"(?<![\w.*])(?<!\*\*\s)(?:(\d+(?:\.\d+)?)\s*\*\s*)?10\s*\*\*\s*(?:\(\s*([-+]?\d+)\s*\)|([-+]?\d+)(?![\d.]))"
+                    r"(?!\s*\*\*)")  # "6.4 * 10**(7)", "10**9": one number, unless part of a power
+_SCALE_WORDS = (r"hundreds?|thousands?|millions?|billions?|trillions?|dozens?|lakhs?|crores?|bn|mn|mln|bln"
+                r"|сот[ен]\w*|тыс\w*|млн|миллион\w*|млрд|миллиард\w*|трлн|триллион\w*|дюжин\w*")
+_SCALED = re.compile(rf"\d(?:[kKMBT]|\s?(?i:{_SCALE_WORDS}))(?![{_UNIT_CHARS}])")  # "1.3B", "20k", "2 million"
+_EMPHASIS = re.compile(r"(?:(?<=\S)[*_]\s+|(?<!\S)[*_])$")  # Markdown "*" or "_" (italics) around the equation
+_MULTIPLIERS = (rf"half|third|quarter|twice|thrice|double|triple|{_SCALE_WORDS}"
+                r"|половин\w*|трет\w*|четверт\w*|дважды|трижды|вдвое|втрое")
+_PART_BEFORE = re.compile(  # the text before the expression belongs to the math: an operator, "(", "½", "π", "half of"
+    rf"(?:[-+*/(€£¥₹₽¼½¾⅐-⅞π]|\bpi|(?<![A-Za-zА-Яа-яЁё])(?i:{_MULTIPLIERS})(?:\s+(?:of|от))?)\s*$")
+
+
+def _powers_of_ten(s: str) -> str:
+    return _POW10.sub(lambda m: f"{m[1] or 1}e{m[2] or m[3]}", s)
 
 
 @dataclass
@@ -147,17 +164,31 @@ class Arithmetic:
     times_100: bool  # the left side multiplies by 100 somewhere (its value may already be a percent)
 
 
-def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmetic]:
+def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True) -> Iterator[Arithmetic]:
     """Every `<arithmetic> = <number>` in the text, with the computed value of the left side.
-    Expressions with names other than units and functions, or that cannot be computed, are skipped."""
+    Expressions with names other than units and functions, or that cannot be computed, are skipped.
+    With `strict`, a currency sign before a number is dropped, `a × 10ⁿ` and `10ⁿ` are one number (a left side
+    that is one number is not arithmetic), and an expression is skipped when the text before it belongs to the
+    math (an operator, "(", "½", "π", "half of", "million"; not Markdown emphasis) or an operand has a scale
+    suffix (1.3B, 20k, 2 million): only a whole left side is checked."""
     for eq in _EQUALS.finditer(text):
         line_start = max(text.rfind("\n", 0, eq.start()), text.rfind("=", 0, eq.start())) + 1
         if line_start == text.rfind("\n", 0, eq.start()) + 1:  # the left side starts its line
             line_start = _LIST_MARKER.match(text, line_start).end()
-        lhs = normalize(text[max(line_start, eq.start() - 200) : eq.start()], decimal_comma)
+        lhs = text[max(line_start, eq.start() - 200) : eq.start()]
+        if strict:  # "**" in the draft is Markdown bold (a power is "^" or a superscript); "$1,200" is 1200
+            lhs = _CURRENCY.sub("", lhs.replace("**", "").replace("__", ""))
+        lhs = normalize(lhs, decimal_comma)
         m = _EXPR.search(lhs)
         if not m or re.search(r"\d\s+$", lhs[: m.start()]):  # "6.626 070 15 × 2", "2 (3 + 4)": not one reading
             continue
+        expression = m.group().strip()
+        if strict:
+            if _PART_BEFORE.search(_EMPHASIS.sub("", lhs[: m.start()])) or _SCALED.search(expression):
+                continue
+            expression = _powers_of_ten(expression)
+            if not _EXPR.search(expression) and not re.search(r"\b(?:sqrt|ln|log|exp)\s*\(", expression):
+                continue  # one number (125 × 10⁶ bytes/s): a restatement or a unit conversion, not arithmetic
         lead = _RESULT_LEAD.match(text, eq.end())
         at = lead.end()
         if not re.match(r"[-−]?\d", text[at : at + 2]):
@@ -165,7 +196,6 @@ def find_arithmetic(text: str, decimal_comma: bool = False) -> Iterator[Arithmet
         number_end = re.match(r"[-−]?[\d.,\s]*\d", text[at:]).end()
         if _NEXT_OP.match(text, at + number_end) and not re.match(r"\s*[×x·]\s*10", text[at + number_end :]):
             continue  # "= 2 × 3": the right side is an expression, not a result
-        expression = m.group().strip()
         as_percent = bool(_AS_PERCENT.search(expression))
         core = _AS_PERCENT.sub("", expression) if as_percent else expression
         try:
@@ -206,6 +236,36 @@ def prefixed(text: str) -> bool:
     """Some word of the text is a unit with an SI prefix (kW, mA, мг; not W, m, mol or min)."""
     return any(w not in _BASE_UNITS and any(w.startswith(p) and w[len(p) :] in _BASE_UNITS for p in _SI_PREFIXES)
                for w in re.findall(r"[A-Za-zА-Яа-яЁёµμΩ]+", text))
+
+
+_SCALE_LETTERS = ("k", "K", "M", "G", "T", "P", "m", "µ", "μ", "u", "n", "c", "к", "М", "Г", "Т", "мк", "м", "н")
+
+
+def _scaled_base(word: str) -> str | None:
+    """The unit under a scale prefix that the prefix readings do not know (MB → B, Gbit → bit, cm → m), else None."""
+    if word in _BASE_UNITS or prefixed(word):
+        return None
+    return next((word[len(p) :] for p in _SCALE_LETTERS if word.startswith(p) and 1 <= len(word) - len(p) <= 3), None)
+
+
+def _same_unit(a: str, b: str) -> bool:
+    """Equal without case and plural s, or a one-letter symbol that starts the other (B ~ bytes, B ~ bit)."""
+    a, b = (w.lower()[:-1] if len(w) > 2 and w.lower().endswith("s") else w.lower() for w in (a, b))
+    return a == b or (min(len(a), len(b)) == 1 and a[0] == b[0])
+
+
+def converted(expression: str, units: str) -> bool:
+    """A unit of the result (`units`) that the left side does not write, where one side has a unit with a scale prefix
+    the prefix readings do not know and the other the same unit without it or with another prefix (bytes/s → MB/s,
+    bits → Gbit, Gbit → GB, m → cm): a unit conversion, not plain arithmetic."""
+    words = r"[A-Za-zА-Яа-яЁёµμΩ]+"
+    left = set(re.findall(words, expression))
+    for r in set(re.findall(words, units)) - left:
+        for w in left:
+            rb, wb = _scaled_base(r), _scaled_base(w)
+            if (rb and _same_unit(rb, wb or w)) or (wb and _same_unit(wb, r)):
+                return True
+    return False
 
 
 def _python(expression: str, percent_is_fraction: bool) -> str:
