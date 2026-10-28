@@ -202,6 +202,8 @@ class VerifierConfig(_Section):
     arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
     arithmetic_prefixes: bool  # c may also be scaled by an SI prefix of its chain (2452 W = 2.45 kW)
     arithmetic_answer_lines: bool  # an answer line stating exactly a fixed wrong c gets the fixed value too
+    arithmetic_strict_parse: bool  # a × 10ⁿ is one number, only whole left sides, unit conversions skipped
+    arithmetic_max_change: NonNegativeFloat  # a fix changing c by this factor or more, or its sign, is only reported
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
