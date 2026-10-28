@@ -157,6 +157,13 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
                                            # row, ids aside) is ignored: the claim counts as uncorrected (see above)
+  judge_minimal_edits: true                # a judge correction is applied only as a minimal edit: it replaces 1-3 terms
+                                           # (numbers by value, words, formulas, unit symbols) by 1-3 terms, adds or
+                                           # drops none, changes no word to one that contains it (balanced →
+                                           # unbalanced), and every term it puts in is in the passages the judge cited
+                                           # (numbers within rounding); only those terms change in the claim. Anything
+                                           # else leaves the claim as written, unverified, with the reason in the
+                                           # reasoning; false: the correction replaces the whole claim
   keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
                                            # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
                                            # of the material under review: checkers and the arithmetic check (when the
