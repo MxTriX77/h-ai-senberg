@@ -830,6 +830,28 @@ def test_large_changes_only_reported(draft, would_be):
     assert fix_arithmetic(draft, 0.005, max_change=0)[0].endswith(f"= {would_be}")  # no limit: fixed as before
 
 
+@pytest.mark.parametrize("draft, would_be", [
+    ("2.5 hours / 5 = 30 minutes", "0"),  # 0.5 at the stated precision: a change to zero
+    ("2.5 hours / 5 = 30", "0"),
+    ("0.6 / 4 = 15", "0"),
+])
+def test_change_to_zero_only_reported(draft, would_be):
+    fixed, (fix,), _ = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and fix["fixed"] == would_be and fix["note"] == "not fixed: change too large to be a slip"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0] != draft  # no limit: fixed as before
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("Payback: €1224 / €4200 = 3.43 years", "0.29"),  # meant 4200 / 1224
+    ("t = 12 / 48 = 4.0 h", "0.2"),
+])
+def test_reciprocal_result_only_reported(draft, would_be):
+    fixed, (fix,), _ = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and fix["fixed"] == would_be
+    assert fix["note"] == "result is the reciprocal: division written the other way round?"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0] != draft
+
+
 def test_large_change_only_in_the_trace(cfg, fake, knowledge):
     assert cfg.verifier.arithmetic_max_change == 100
     fake.chunks = [content("C1: not_said")]

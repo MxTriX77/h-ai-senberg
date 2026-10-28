@@ -278,7 +278,8 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True, task: str 
     result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`.
     With `strict`, only whole left sides are read (calc.find_arithmetic) and a wrong result that is a unit
     conversion (calc.converted) is left as written. With `max_change`, a fix that changes the stated number by
-    that factor or more, or flips its sign, is not applied either and listed with a `note`."""
+    that factor or more, flips its sign or goes to or from zero (at the stated precision), and a division whose
+    stated result is the reciprocal of its value, are not applied either and listed with a `note`."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
     in_task = _written_results(task, decimal_comma, strict) if task else set()
@@ -311,8 +312,13 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True, task: str 
         fix = {"expression": a.expression, "stated": draft[start:end], "fixed": _format(right, n), "at": (start, end)}
         if (a.expression, n.value) in in_task and all(mask[start:end]):
             fix["note"] = "quoted from the task, left as written"
+        elif max_change and "/" in a.expression and any(
+                lhs and abs(v - 1 / lhs) <= max(half, rel_tol / abs(lhs)) for lhs in (a.fraction, a.plain)
+                for v, half in stated):  # "€1224 / €4200 = 3.43 years" meant 4200 / 1224
+            fix["note"] = "result is the reciprocal: division written the other way round?"
         elif max_change and (right * n.value < 0 or max(abs(right), abs(n.value))
-                             >= max_change * min(abs(right), abs(n.value))):
+                             >= max_change * min(abs(right), abs(n.value))
+                             or re.fullmatch(r"-?0(?:\.0+)?", fix["fixed"])):  # 0.5 written as "0"
             fix["note"] = "not fixed: change too large to be a slip"
         fixes.append(fix)
     for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
