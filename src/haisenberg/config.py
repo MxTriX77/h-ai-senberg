@@ -205,6 +205,7 @@ class VerifierConfig(_Section):
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
+    judge_minimal_edits: bool  # a judge correction is applied only as a minimal edit the cited passages state
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
