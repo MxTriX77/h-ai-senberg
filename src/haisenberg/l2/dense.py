@@ -39,21 +39,23 @@ class DensePassageRecord(PassageRecord):
 
 
 class DenseIndex:
-    """The dense store folder, read-only, checked against the embedding model and the literature store."""
+    """A dense store folder, read-only, checked against the embedding model and the store whose rows it holds (the
+    literature store, or the Layer 1 store with `name` and `rebuild` of the encyclopedia's vectors)."""
 
-    def __init__(self, path: Path | str, model_id: str, store: L2Store, nprobe: int):
+    def __init__(self, path: Path | str, model_id: str, store: L2Store, nprobe: int,
+                 name: str = "literature", rebuild: str = REBUILD_COMMAND):
         path = Path(path)
         meta_path = path / META
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
         if not meta.get("complete"):
-            raise L2Error(f"dense literature index at {path} is missing or unfinished; build it with: {REBUILD_COMMAND}")
+            raise L2Error(f"dense {name} index at {path} is missing or unfinished; build it with: {rebuild}")
         if meta["model_id"] != model_id:
-            raise L2Error(f"dense literature index at {path} was built with the embedding model {meta['model_id']!r},"
-                          f" the config uses {model_id!r}; rebuild it with: {REBUILD_COMMAND} --restart")
-        built_for = {k: meta[k] for k in ("store_built_at", "passages")}
+            raise L2Error(f"dense {name} index at {path} was built with the embedding model {meta['model_id']!r},"
+                          f" the config uses {model_id!r}; rebuild it with: {rebuild} --restart")
+        built_for = {k: meta.get(k) for k in store.identity()}
         if built_for != store.identity():
-            raise L2Error(f"dense literature index at {path} was built for the literature store {built_for},"
-                          f" not for {store.path} {store.identity()}; rebuild it with: {REBUILD_COMMAND} --restart")
+            raise L2Error(f"dense {name} index at {path} was built for the {name} store {built_for},"
+                          f" not for {store.path} {store.identity()}; rebuild it with: {rebuild} --restart")
         self.path = path
         self.index = faiss.read_index(str(path / INDEX))
         if (ivf := faiss.try_extract_index_ivf(self.index)) is not None:

@@ -16,8 +16,10 @@ from typing import Any
 
 from . import calc
 from .config import Config, ConfigError
+from .l1 import dense as l1_dense
+from .l1.dense import DenseArticleRecord, DenseEncyclopedia
 from .l1.store import STOPWORDS, L1Error, L1Store, Record
-from .l2.dense import DenseIndex, DensePassageRecord, HybridSearch
+from .l2.dense import DenseIndex, DensePassageRecord, Embed, HybridSearch
 from .l2.store import L2Error, L2Store, PassageRecord
 from .launcher import LauncherError, Supervisor, embedding_view
 from .llm import EmbeddingClient, UpstreamError
@@ -79,11 +81,15 @@ class Sources:
 class Knowledge:
     """The store plus the tools generated from it; no store (or depth 0) means no tools. With a literature store
     (enabled by the knowledge setting), searches also return up to retrieval.literature_k of its passages, ranked
-    by BM25, or with a dense literature store too, by BM25 and embeddings fused (HybridSearch)."""
+    by BM25, or with a dense literature store too, by BM25 and embeddings fused (HybridSearch). With a dense
+    encyclopedia store, the encyclopedia records of a query with a non-Latin word are ranked by BM25 and embeddings
+    fused (DenseEncyclopedia)."""
 
-    def __init__(self, store: L1Store | None, cfg: Config, literature: L2Store | HybridSearch | None = None):
+    def __init__(self, store: L1Store | None, cfg: Config, literature: L2Store | HybridSearch | None = None,
+                 dense_encyclopedia: DenseEncyclopedia | None = None):
         self.store = store
         self.literature = literature
+        self.encyclopedia = dense_encyclopedia or store
         self.literature_k = cfg.retrieval.literature_k
         self.top_k = cfg.retrieval.top_k_proofs
         self.passage_chars = cfg.retrieval.passage_chars
@@ -120,7 +126,10 @@ class Knowledge:
                 raise ConfigError(f"KNOWLEDGE={r.knowledge} (retrieval.knowledge) needs the literature store: {e}") from e
         if (path := r.enabled("literature_dense")) is not None:
             literature = _hybrid(cfg, literature, path)
-        return cls(store, cfg, literature)
+        dense = None
+        if (path := r.enabled("encyclopedia_dense")) is not None and store is not None:
+            dense = _dense_encyclopedia(cfg, store, path)
+        return cls(store, cfg, literature, dense)
 
     def run(self, name: str, arguments: str, sources: Sources, k: int | None = None) -> tuple[str, list[str], list[str]]:
         """Run one tool call returning at most k records (default retrieval.top_k_proofs):
@@ -136,7 +145,8 @@ class Knowledge:
         weak: list[str] = []
         if kind == TEXT and self.min_share > 0:  # drop hits that share little more than a word with the query
             relevant = [getattr(r, "score", None) == 0  # the store matched its title or alias
-                        or isinstance(r, DensePassageRecord) and r.similarity >= self.min_similarity  # near in meaning
+                        or isinstance(r, DensePassageRecord | DenseArticleRecord)
+                        and r.similarity >= self.min_similarity  # near in meaning
                         or term_share(query, f"{r.label()} {r.passage(query, self.passage_chars)}") >= self.min_share
                         for r in records]
             weak = [f"weak match, not used: {r.label()}" for r, ok in zip(records, relevant) if not ok]
@@ -176,7 +186,7 @@ class Knowledge:
             domain = args.get("domain") or None
             if domain is not None and domain not in self.domains:
                 raise _BadCall(f"unknown domain {domain!r}; use one of {', '.join(self.domains)}")
-            records = self.store.search_encyclopedia(query, k, domain)
+            records = self.encyclopedia.search_encyclopedia(query, k, domain)
             if self.literature is not None:
                 records += self.literature.search(query, self.literature_k, domain)
             return kind, query, records
@@ -189,14 +199,32 @@ class _BadCall(Exception):
 
 
 def _hybrid(cfg: Config, store: L2Store, path) -> HybridSearch:
-    """The hybrid literature search over the dense store at path. Starts the embedding server (or reuses one that
-    answers) and embeds one probe. Raises ConfigError: an A/B run must never fall back to less knowledge."""
+    """The hybrid literature search over the dense store at path. Raises ConfigError: an A/B run must never fall
+    back to less knowledge."""
     e, r = cfg.embedding, cfg.retrieval
     need = f"KNOWLEDGE={r.knowledge} (retrieval.knowledge) needs the dense literature index"
     try:
         index = DenseIndex(path, e.model_id, store, r.dense.nprobe)
     except L2Error as err:
         raise ConfigError(f"{need}: {err}") from err
+    return HybridSearch(store, index, _embedder(cfg, need, index, path), e.query_prefix, r.dense)
+
+
+def _dense_encyclopedia(cfg: Config, store: L1Store, path) -> DenseEncyclopedia:
+    """The cross-lingual encyclopedia search over the dense store at path. Raises ConfigError, as _hybrid."""
+    e, r = cfg.embedding, cfg.retrieval
+    need = f"KNOWLEDGE={r.knowledge} (retrieval.knowledge) needs the dense encyclopedia index"
+    try:
+        index = DenseIndex(path, e.model_id, store, r.dense.nprobe, "encyclopedia", l1_dense.REBUILD_COMMAND)
+    except L2Error as err:
+        raise ConfigError(f"{need}: {err}") from err
+    return DenseEncyclopedia(store, index, _embedder(cfg, need, index, path), e.query_prefix, r.dense)
+
+
+def _embedder(cfg: Config, need: str, index: DenseIndex, path) -> Embed:
+    """The query embedder for the dense index at path. Starts the embedding server (or reuses one that answers) and
+    embeds one probe; raises ConfigError (starting with `need`) when that fails or the dimensions differ."""
+    e = cfg.embedding
     client = EmbeddingClient(e)
     try:
         if e.server.enabled:
@@ -207,7 +235,7 @@ def _hybrid(cfg: Config, store: L2Store, path) -> HybridSearch:
     if dim != index.vectors.shape[1]:
         raise ConfigError(f"{need}: the embedding backend at {e.api_base} returns {dim} dimensions, the index at"
                           f" {path} holds {index.vectors.shape[1]}; check embedding.model_id and the server's model")
-    return HybridSearch(store, index, client.embed, e.query_prefix, r.dense)
+    return client.embed
 
 
 def term_share(query: str, text: str) -> float:
