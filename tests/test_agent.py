@@ -620,6 +620,34 @@ def test_line_sync_switched_off(client, fake, cfg):
     assert answer(r) == SHIFTED and "line sync" not in reasoning_text(r)
 
 
+AUDIT = STATEMENTS.replace("Проверьте утверждения.", "Проверьте утверждения: верно / неверно / не подтверждено.")
+REASONED = SECTIONS.replace("По паспорту 5 г.\n**Вердикт:** верно", "Одно взвешивание не доказывает массу партии.\n"
+                            "**Вердикт:** неверно")  # У1: the reason says the evidence falls short
+
+
+def test_status_check_after_the_line_sync(client, fake, cfg):
+    cfg.reasoning_policy.line_check = False
+    fake.scripts = [[content(REASONED + "A4: верно\nA5: неверно\nA6: верно")]]
+    r = ask(client, AUDIT)  # the sync sets A4 to У1's section verdict, then the check reads У1's own reason
+    assert answer(r) == (REASONED.replace("**Вердикт:** неверно\n**У2", "**Вердикт:** не подтверждено\n**У2")
+                         + "A4: не подтверждено\nA5: неверно\nA6: верно") and len(fake.requests) == 1
+    trace = reasoning_text(r)
+    assert (trace.index("line sync: A4 верно → неверно (item У1)")
+            < trace.index("status check: A4 неверно → не подтверждено (item У1, R1)"))
+
+
+def test_status_check_without_change_or_switched_off(client, fake, cfg):
+    cfg.reasoning_policy.line_check = False
+    fake.scripts = [[content(SECTIONS + "A4: верно\nA5: неверно\nA6: верно")]]
+    assert "status check: no line changed\n" in reasoning_text(ask(client, AUDIT))
+    fake.scripts = [[content(REASONED + "A4: верно\nA5: неверно\nA6: верно")]]
+    assert "status check" not in reasoning_text(ask(client, AUDIT.replace("для У", "")))  # no item placeholders
+    cfg.reasoning_policy.status_check = False
+    fake.scripts = [[content(REASONED + "A4: верно\nA5: неверно\nA6: верно")]]
+    r = ask(client, AUDIT)
+    assert answer(r) == REASONED + "A4: неверно\nA5: неверно\nA6: верно" and "status check" not in reasoning_text(r)
+
+
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
     calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")

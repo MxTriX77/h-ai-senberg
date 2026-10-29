@@ -105,6 +105,40 @@ reasoning_policy:
                                            # the value of the line label found once in each of the most sections, at least
                                            # two (`**Verdict:** correct — …` -> correct); a line changes only when its value
                                            # is such a verdict; before the claim checks; false: off
+  status_check: true                       # then, in code (no call), the verdict word of those lines changes when its own
+                                           # reason (the item's section up to the next item, answer line, `---`, heading or
+                                           # bold summary block, and the line's text after the word) supports another status:
+                                           # R1 incorrect, the evidence falls short, a plain claim -> unverified; R2
+                                           # unverified, falls short, the claim asserts proof (no missing material, no
+                                           # document named) -> incorrect; R3 correct, a conceded input of a calculation ->
+                                           # incorrect. Only a word the task names is written, on the line and on its
+                                           # section's verdict line; false: off
+  status_words:                            # what the status check reads: regex fragments, case ignored, English and Russian
+    positive: ['correct', 'verified', 'верно', 'правильно', 'true', 'supported', 'consistent', 'confirmed', 'valid',
+               'подтвержд\w*']             # verdict words; tested unverified first, then negative, then positive
+    negative: ['incorrect', 'contradicted', 'неверно', 'неправильно', 'false', 'wrong', 'inconsistent', 'invalid',
+               'ошибочно', 'не\s*верно']
+    unverified: ['unverif\w*', 'unsupported', 'not (?:supported|established|verifi\w*|determin\w*|confirm\w*)',
+                 'cannot be (?:verified|determined)', 'insufficient', 'undetermin\w*', 'не\s*подтвержд\w*',
+                 'неподтвержд\w*', 'не\s*провер\w*', 'не\s*установлен\w*']
+    short: ['does(?:n''t| not) (?:prove|establish|show|demonstrate|guarantee|imply|mean)',   # the evidence falls short
+            'can(?:not|''t) (?:prove|establish|conclude|guarantee|predict|generali[sz]e|extrapolate|be (?:generali[sz]ed|extrapolated|concluded))',
+            'not (?:proven|independent|representative)', 'correlation', 'causation', 'post hoc', 'не доказыва',
+            'нельзя (?:сделать вывод|утверждать|судить|обобщ|экстраполир)',
+            'не (?:позволяет|означает|следует|является независим|репрезентатив)', 'корреляц', 'причинно',
+            'недостаточно для', 'экстраполяц']
+    certainty: ['(?<!\w)(?:prove[sn]?|proof|guarantee[sd]?|never|always|every|any|by definition|independent(?:ly)?|so|therefore|thus|hence)(?!\w)',
+                'доказ', 'гарантир', 'независим', 'следовательно', 'значит(?!ельн)', 'поэтому', 'так что', 'поскольку',
+                'так как', 'никогда', 'всегда', 'кажд', 'любо', 'по определению']   # the claim asserts proof or certainty
+    missing: ['not (?:attached|provided|supplied|available|included)', 'no (?:access|copy)',   # material not given
+              'without (?:access|the (?:document|report|certificate|standard)|a copy)', 'не приложен', 'нет доступа',
+              'без доступа', 'копи[яи]']
+    document: ['journal', '(?<!\w)doi(?!\w)', 'certificat', 'report', 'standard', 'audit', 'reference', 'study',   # named in the claim
+               'сертификат', 'отч[её]т', 'стандарт', 'журнал', 'исследован']
+    concession: ['\bdespite\b', '\b(?:al)?though\b', '\bbut (?:based on|uses|using)\b', 'wrong (?:input|premise|value)',
+                 'incorrect (?:input|premise)', 'несмотря на', 'хотя\b', 'при неверн']   # a conceded input or premise
+    calculation: ['calculat', 'comput', 'formula', 'arithmetic', 'расч', 'рассчит', 'вычисл', 'формул']
+    summary: ['summary', 'conclusion', 'final', 'итог', 'вывод']   # `**Summary**`, `**Итог:**` … end a section
 
 retrieval:                                # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml

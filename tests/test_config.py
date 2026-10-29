@@ -307,6 +307,28 @@ def test_line_check_settings(tmp_path, change, named):
         load_config(write(tmp_path, data))
 
 
+@pytest.mark.parametrize("change, named", [
+    ({"status_check": None}, r"reasoning_policy\.status_check"),
+    ({"status_words": None}, r"reasoning_policy\.status_words"),
+    ({"short": None}, r"reasoning_policy\.status_words\.short"),
+    ({"unverified": []}, r"reasoning_policy\.status_words\.unverified: .*must not be empty"),
+    ({"certainty": ["proves", "(so"]}, r"reasoning_policy\.status_words\.certainty: .*invalid regular expression '\(so'"),
+])
+def test_status_check_settings(tmp_path, change, named):
+    p = load_config(write(tmp_path)).reasoning_policy
+    assert p.status_check and all(p.status_words.model_dump().values())
+    assert {"не доказыва", "correlation"} <= set(p.status_words.short)  # English and Russian
+    data = base()
+    key, value = next(iter(change.items()))
+    section = data["reasoning_policy"] if key.startswith("status_") else data["reasoning_policy"]["status_words"]
+    if value is None:
+        del section[key]
+    else:
+        section[key] = value
+    with pytest.raises(ConfigError, match=named):
+        load_config(write(tmp_path, data))
+
+
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
     assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate"}

@@ -18,6 +18,7 @@ from haisenberg.verifier import (
     UNVERIFIED,
     anchor_lines,
     answer_labels,
+    check_status,
     code_check,
     echoes,
     fix_answer_lines,
@@ -177,6 +178,91 @@ def test_sync_lines_never_read_the_lines_block_as_a_section():
     answer = (SECTIONS.replace("**Вердикт:** **верно**.", "Всё сходится.") + "A4: верно\nA5: неверно\nA6: неверно\n"
               "**Вердикт:** верно, все данные сходятся")  # an overall verdict after the lines is no part of У3
     assert sync_lines(STATEMENTS, answer) == (answer, [])
+
+
+AUDIT_EN = ("Check each claim against the data. Verdicts: Correct / Incorrect / Unverified.\n"
+            "C1. Drinking coffee causes higher test scores.\nC2. The single test proves every unit is safe.\n"
+            "C3. The tank holds 120 L.\nEnd with:\nA4: <verdict for C1>\nA5: <verdict for C2>\nA6: <verdict for C3>")
+REASONS_EN = ("C1. Coffee and scores\nThe table shows a correlation, but this does not prove causation.\n"
+              "Verdict: Incorrect — correlation only.\n\n"
+              "C2. One test\nOne test cannot be generalised to every unit.\nVerdict: **Unverified** — one sample.\n\n"
+              "C3. Tank volume\nCalculation: 2 m × 0.5 m × 0.12 m = 120 L, correct despite the wrong height.\n"
+              "Verdict: Correct\n\n")
+AUDIT_RU = ("Проверьте утверждения: верно / неверно / не подтверждено.\nУ1. Препарат снижает давление.\n"
+            "У2. Один анализ гарантирует, что каждая партия чистая.\nУ3. Выход реакции 80 %.\nЗакончите строками:\n"
+            "A4: <вердикт для У1>\nA5: <вердикт для У2>\nA6: <вердикт для У3>")
+REASONS_RU = ("**У1.** Давление\nНаблюдение без контроля не доказывает причинность.\n**Вердикт:** неверно\n\n"
+              "**У2.** Чистота\nОдин образец нельзя обобщить на все партии.\n**Вердикт:** не подтверждено\n\n"
+              "**У3.** Выход\nРасчёт: 8 / 10 = 80 %, хотя взята масса до потерь.\n**Вердикт:** верно\n\n")
+
+
+@pytest.fixture
+def words(cfg):
+    return cfg.reasoning_policy.status_words
+
+
+def test_check_status_follows_the_lines_own_reason(words):
+    new, changes = check_status(AUDIT_EN, REASONS_EN + "A4: Incorrect\nA5: Unverified — one sample\nA6: **Correct**", words)
+    assert new == (REASONS_EN.replace("Incorrect — correlation", "Unverified — correlation")
+                   .replace("**Unverified** — one", "**Incorrect** — one").replace("Verdict: Correct", "Verdict: Incorrect")
+                   + "A4: Unverified\nA5: Incorrect — one sample\nA6: **Incorrect**")
+    assert changes == ["A4 Incorrect → Unverified (item C1, R1)", "A5 Unverified → Incorrect (item C2, R2)",
+                       "A6 Correct → Incorrect (item C3, R3)"]
+    new, changes = check_status(AUDIT_RU, REASONS_RU + "A4: неверно\nA5: не подтверждено\nA6: верно", words)
+    assert new == (REASONS_RU.replace("** неверно", "** не подтверждено").replace("** не подтверждено\n\n**У3", "** неверно\n\n**У3")
+                   .replace("** верно", "** неверно") + "A4: не подтверждено\nA5: неверно\nA6: неверно")
+    assert changes == ["A4 неверно → не подтверждено (item У1, R1)", "A5 не подтверждено → неверно (item У2, R2)",
+                       "A6 верно → неверно (item У3, R3)"]
+
+
+def test_check_status_writes_the_tasks_own_verdict_word(words):
+    task = AUDIT_EN.replace("Verdicts: Correct / Incorrect / Unverified.", "Some claims may be wrong. If a claim cannot "
+                            "be verified, mark it unverified; if the data contradict it, incorrect; else correct.")
+    new, changes = check_status(task, REASONS_EN + "A4: Incorrect\nA5: Unverified\nA6: Correct", words)
+    assert changes == ["A4 Incorrect → unverified (item C1, R1)", "A5 Unverified → incorrect (item C2, R2)",
+                       "A6 Correct → incorrect (item C3, R3)"]  # one word, next to the other classes: no prose phrase
+
+
+def test_check_status_without_a_verdict_label_changes_only_the_line(words):
+    reasons = REASONS_RU.replace("**Вердикт:** ", "Итак, ")  # the verdicts are in the text, under no label
+    new, changes = check_status(AUDIT_RU, reasons + "A4: неверно\nA5: верно\nA6: верно", words)
+    assert new == reasons + "A4: не подтверждено\nA5: верно\nA6: неверно" and len(changes) == 2
+
+
+@pytest.mark.parametrize("task, reasons, kept", [
+    (AUDIT_EN.replace("causes higher", "always raises"), REASONS_EN, "A4: Incorrect"),  # R1: the claim is certain
+    (AUDIT_EN, REASONS_EN.replace("every unit.", "every unit; the data are not attached."), "A5: Unverified"),  # R2
+    (AUDIT_EN.replace("The single test", "The audit report"), REASONS_EN, "A5: Unverified"),  # R2: a document named
+    (AUDIT_EN, REASONS_EN.replace("Calculation: 2 m × 0.5 m × 0.12 m = 120 L, correct despite the wrong height.",
+                                  "The volume is 120 L, correct though rounded."), "A6: Correct"),  # R3: no calculation
+    (AUDIT_EN.replace(" / Unverified", ""), REASONS_EN, "A4: Incorrect"),  # R1: the task names no unverified word
+])
+def test_check_status_keeps_lines_the_rules_do_not_reach(words, task, reasons, kept):
+    answer = reasons + "A4: Incorrect\nA5: Unverified\nA6: Correct"
+    new, changes = check_status(task, answer, words)
+    assert kept in new.splitlines() and len(changes) == 2 and not any(c.startswith(kept[:3]) for c in changes)
+
+
+@pytest.mark.parametrize("boundary", ["---", "## Notes", "**Summary**", "- **Final check:** all lines"])
+def test_check_status_reason_ends_with_its_section(words, boundary):
+    reasons = REASONS_EN.replace(", correct despite the wrong height.", ".")
+    answer = reasons + f"{boundary}\nThe calculation is right despite the rounding.\n\nA4: Correct\nA5: Correct\nA6: Correct"
+    assert check_status(AUDIT_EN, answer, words) == (answer, [])  # the note after the boundary is no part of C3
+    assert check_status(AUDIT_EN, answer.replace(f"{boundary}\n", ""), words)[1] == ["A6 Correct → Incorrect (item C3, R3)"]
+
+
+def test_check_status_reads_a_conclusion_label_as_the_verdict_line(words):
+    reasons = REASONS_RU.replace("**Вердикт:**", "**Вывод:**").replace("**Вывод:** неверно", "**Вывод:** неверно — нет контроля")
+    new, changes = check_status(AUDIT_RU, reasons + "A4: неверно\nA5: верно\nA6: верно", words)
+    assert "**Вывод:** не подтверждено — нет контроля" in new and changes[0] == "A4 неверно → не подтверждено (item У1, R1)"
+
+
+def test_check_status_needs_a_table_and_one_line(words):
+    answer = REASONS_EN + "A4: Incorrect\nA5: Unverified\nA6: Correct"
+    assert check_status(AUDIT_EN.replace("for C", "for claim "), answer, words) == (answer, [])  # no item placeholders
+    twice = answer + "\nA4: Incorrect"
+    assert check_status(AUDIT_EN, twice, words)[1] == ["A5 Unverified → Incorrect (item C2, R2)",
+                                                       "A6 Correct → Incorrect (item C3, R3)"]  # A4 twice: kept
 
 
 def test_bare_labels_are_not_claims():
