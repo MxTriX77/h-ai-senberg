@@ -8,13 +8,18 @@
 
 model_backend:
   model_id: "${MODEL_ID:-qwen3.5-35b-a3b-heretic}"
-  max_tokens: 8192                         # thinking up to 4096 + answer; prompt budget 32768 - 8192
+  max_tokens: 12288                        # thinking up to 8192 + answer (4096); prompt budget 32768 - 12288
   # Sampling: the precise Qwen3.5 settings from config.yaml (temperature 0.6, presence_penalty 0).
   # The base card's general thinking mode would be temperature 1.0, presence_penalty 1.5.
+
+reasoning_policy:
+  thinking_budget:                         # signals as in config.yaml
+    min_tokens: 4096                       # it thinks ~3.7k tokens: short questions keep the old cap
+    max_tokens: "${REASONING_BUDGET:-8192}"   # same variable as the server cap below
 
 llama_server:
   model_path: "${MODEL_PATH:-models/Qwen3.5-35B-A3B-uncensored-heretic.i1-IQ3_XS.gguf}"
   ctx_size: "${CTX_SIZE:-32768}"
   flags:
     n-cpu-moe: "${N_CPU_MOE:-32}"           # expert layers kept in RAM; raise if CUDA runs out of memory
-    reasoning-budget: "${REASONING_BUDGET:-4096}"   # it thinks ~3.7k tokens; quality over speed
+    reasoning-budget: "${REASONING_BUDGET:-8192}"   # hard cap; per call: reasoning_policy.thinking_budget (quality over speed)

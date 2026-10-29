@@ -11,6 +11,8 @@ from haisenberg.agent import DRAFT_MARK, Agent
 from haisenberg.server import KEEPALIVE, create_app
 from haisenberg.tools import Knowledge
 
+BUDGET = "\n\n> thinking budget: 1024 tokens\n"  # the shipped minimum: every test question is short
+
 
 @pytest.fixture
 def client(cfg, fake):
@@ -41,7 +43,7 @@ def test_thinking_then_answer(client, fake):
     deltas = [e["choices"][0]["delta"] for e in ev[:-2]]
     assert deltas == [  # the draft streams as reasoning; the answer is sent once the model is done
         {"reasoning_content": "a"}, {"reasoning_content": "b"}, {"reasoning_content": DRAFT_MARK},
-        {"reasoning_content": "c"}, {"reasoning_content": "d"}, {"content": "cd"},
+        {"reasoning_content": "c"}, {"reasoning_content": "d"}, {"reasoning_content": BUDGET}, {"content": "cd"},
     ]
     assert ev[-2]["choices"][0] == {"index": 0, "delta": {}, "finish_reason": "stop"}
     assert ev[-1] == "[DONE]"
@@ -85,7 +87,7 @@ def test_non_streaming(client, fake):
     body = r.json()
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"] == {
-        "role": "assistant", "content": "answer", "reasoning_content": "think" + DRAFT_MARK + "answer",
+        "role": "assistant", "content": "answer", "reasoning_content": "think" + DRAFT_MARK + "answer" + BUDGET,
     }
 
 
@@ -166,7 +168,7 @@ def test_keep_alive_while_the_backend_is_silent(cfg, fake):
     assert text[:first_data].count(KEEPALIVE) >= 3  # sent before the first model output
     deltas = [e["choices"][0]["delta"] for e in events(text)[:-2]]
     assert deltas == [{"reasoning_content": "a"}, {"reasoning_content": DRAFT_MARK},
-                      {"reasoning_content": "b"}, {"content": "b"}]
+                      {"reasoning_content": "b"}, {"reasoning_content": BUDGET}, {"content": "b"}]
 
 
 @pytest.mark.anyio

@@ -20,11 +20,13 @@ from pydantic import (
     PrivateAttr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
 PROFILE_ENV = "MODEL_PROFILE"  # selects config/<name>.yaml, merged over config/config.yaml
 _NOT_PROFILES = {"config", "sources"}  # the other YAML files in config/
+CAP_FLAG = "reasoning-budget"  # llama_server.flags: the server's hard cap on thinking tokens
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
@@ -74,6 +76,50 @@ class ToolCallMarkup(_Section):
         return v
 
 
+class BudgetSignal(_Section):
+    """One feature of the question for the thinking budget: level 0 up to `start`, 1 from `full`, linear between."""
+
+    start: NonNegativeFloat
+    full: PositiveFloat
+    weight: Annotated[float, Field(ge=0, le=1)]  # its part of the share
+
+    @model_validator(mode="after")
+    def _range(self) -> BudgetSignal:
+        if self.full <= self.start:
+            raise ValueError("full must be greater than start")
+        return self
+
+    def level(self, count: float) -> float:
+        return min(1.0, max(0.0, (count - self.start) / (self.full - self.start)))
+
+
+class ThinkingBudgetConfig(_Section):
+    """Thinking tokens per reasoner call: min_tokens + (max_tokens - min_tokens) x the question's share (0-1)."""
+
+    field: str  # request field the backend reads per call (llama-server: thinking_budget_tokens); "" = send none
+    min_tokens: PositiveInt
+    max_tokens: PositiveInt
+    chars: BudgetSignal  # characters of the question
+    numbers: BudgetSignal  # numbers written in it
+    items: BudgetSignal  # enumerated parts and requested answer lines (item_pattern matches)
+    item_pattern: str  # regex: one match per part or answer line
+
+    @field_validator("item_pattern")
+    @classmethod
+    def _regex(cls, v: str) -> str:
+        try:
+            re.compile(v)
+        except re.error as e:
+            raise ValueError(f"invalid regular expression: {e}") from None
+        return v
+
+    @model_validator(mode="after")
+    def _bounds(self) -> ThinkingBudgetConfig:
+        if self.min_tokens > self.max_tokens:
+            raise ValueError("min_tokens must not exceed max_tokens")
+        return self
+
+
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
     tool_prompt: str
@@ -85,6 +131,7 @@ class ReasoningPolicyConfig(_Section):
     empty_answer_retry: bool  # an empty final answer is asked again once
     answer_retry_prompt: str  # the user turn that asks again for the final answer
     answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
+    thinking_budget: ThinkingBudgetConfig
 
     @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
     @classmethod
@@ -262,6 +309,26 @@ class Config(_Section):
         """The backend's context size in tokens: model_backend.context_tokens, else llama_server.ctx_size."""
         return self.model_backend.context_tokens or self.llama_server.ctx_size
 
+    @model_validator(mode="after")
+    def _thinking_fits(self) -> Config:
+        """A thinking budget sent to the local llama-server fits under its cap and leaves room for the answer."""
+        tb, server = self.reasoning_policy.thinking_budget, self.llama_server
+        if not (tb.field and server.enabled):
+            return self
+        top = f"reasoning_policy.thinking_budget.max_tokens ({tb.max_tokens})"
+        cap = server.flags.get(CAP_FLAG)
+        if cap is not None and not isinstance(cap, bool) and cap != "":  # a value the launcher passes on
+            try:
+                cap = int(cap)
+            except (TypeError, ValueError):
+                raise ValueError(f"llama_server.flags.{CAP_FLAG}: {cap!r} is not a whole number") from None
+            if 0 <= cap < tb.max_tokens:  # -1: no cap
+                raise ValueError(f"{top} exceeds the server cap llama_server.flags.{CAP_FLAG} ({cap})")
+        if tb.max_tokens >= self.model_backend.max_tokens:
+            raise ValueError(f"{top} leaves no room for the answer in model_backend.max_tokens"
+                             f" ({self.model_backend.max_tokens})")
+        return self
+
 
 # (section, field) pairs resolved against the project root when relative.
 _PATH_FIELDS = [
@@ -300,8 +367,8 @@ def load_config(path: Path | str | None = None) -> Config:
     try:
         cfg = Config.model_validate(data)
     except ValidationError as e:
-        problems = "; ".join(
-            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
+        problems = "; ".join(  # a whole-config check has no location: its message names the keys
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" if err["loc"] else err["msg"] for err in e.errors()
         )
         raise ConfigError(f"{source}: {problems}") from e
 

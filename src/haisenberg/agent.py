@@ -15,10 +15,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .config import Config, ToolCallMarkup
+from .config import Config, ThinkingBudgetConfig, ToolCallMarkup
 from .llm import LLMClient, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
-from .verifier import Verification, Verifier, strip_cites
+from .verifier import Verification, Verifier, read_numbers, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -32,6 +32,16 @@ def _question(history: list[dict[str, Any]]) -> str:
             c = m["content"]
             return c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict))
     return ""
+
+
+def thinking_budget(question: str, tb: ThinkingBudgetConfig) -> int:
+    """Thinking tokens for the reasoner calls of one answer: min_tokens + (max_tokens - min_tokens) x share, where
+    the share (at most 1) adds up each signal's weight x level: the question's characters, the numbers written
+    in it and its enumerated parts or requested answer lines."""
+    counts = ((tb.chars, len(question)), (tb.numbers, len(read_numbers(question))),
+              (tb.items, len(re.findall(tb.item_pattern, question))))
+    share = min(1.0, sum(signal.weight * signal.level(n) for signal, n in counts))
+    return round(tb.min_tokens + (tb.max_tokens - tb.min_tokens) * share)
 
 
 @dataclass
@@ -128,6 +138,8 @@ class Agent:
             yield {"finish_reason": "stop"}
             return
         sources = Sources()
+        tb = self.policy.thinking_budget  # one budget for every reasoner round; the retry and the checks get none
+        thinking = {tb.field: thinking_budget(_question(history), tb)} if tb.field else {}
         calc_rounds = self.policy.max_calc_rounds
         calc_only = [t for t in tools if t["function"]["name"] == CALCULATE] if calc_rounds else []
         rounds, calcs, room_left, ask_again = 0, 0, True, False
@@ -142,7 +154,7 @@ class Agent:
             if (prompt := self._estimate(messages)) > self.budget:  # only by the few chars of a cut note
                 fields["max_tokens"] = self.context - prompt
             reply = _Reply()
-            call = self._call(messages, fields, reply)
+            call = self._call(messages, {**fields, **thinking}, reply)
             try:
                 async for delta in call:
                     yield delta
@@ -175,6 +187,8 @@ class Agent:
                     result, room_left = result[: max(0, room - len(CUT_NOTE))] + CUT_NOTE, False
                     yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
                 messages.append({**message, "content": result})
+        if thinking:  # after the rounds, so the first reasoning delta is still the model's own
+            yield {"reasoning_content": f"\n\n> thinking budget: {thinking[tb.field]} tokens\n"}
         text = reply.content.strip()
         if not text and self.policy.empty_answer_retry and not ask_again:
             yield {"reasoning_content": "\n\n> empty answer: final answer asked again\n"}

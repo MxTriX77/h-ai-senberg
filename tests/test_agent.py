@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, reasoning, tool_call
-from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _Markup
+from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _Markup, thinking_budget
 from haisenberg.llm import estimate_tokens
 from haisenberg.l1.store import L1Store
 from haisenberg.server import create_app
@@ -351,3 +351,52 @@ def test_markup_read_also_when_cut_off(cfg):
     assert rest == "x" and json.loads(calls[0]["function"]["arguments"]) == {"query": "a b", "domain": "physics"}
     assert [c["function"]["name"] for c in markup.split("<tool_call>not json</tool_call>")[0]] == [""]
     assert markup.split("no markup") == ([], "no markup")
+
+
+# --- thinking budget ---------------------------------------------------------------------------------
+
+FIELD = "thinking_budget_tokens"
+LONG_TASK = "A calorimetry lab report lists six runs. Check each run and give one answer line per run.\n" + "\n".join(
+    f"{i}. A {i * 2.5} g sample of metal at {95 + i} °C is dropped into {50 + 10 * i} g of water at {20 + i} °C; the "
+    f"final temperature is {24.5 + i} °C and the balance reads to ±{i / 100} g. Compute the heat taken up by the "
+    f"water, the specific heat of the metal and its relative uncertainty. Answer line A{i}: <value> J/(g·K)."
+    for i in range(1, 7))
+
+
+def test_thinking_budget_follows_the_question(cfg):
+    tb = cfg.reasoning_policy.thinking_budget
+    assert thinking_budget("What is the molar mass of water?", tb) == tb.min_tokens == 1024
+    two_parts = "Water (18.02 g/mol) and ethanol (46.07 g/mol) are mixed 1:1 by mass. Find (a) the mole fraction and (b) the molality."
+    assert tb.min_tokens < thinking_budget(two_parts, tb) < (tb.min_tokens + tb.max_tokens) / 2
+    assert 0.9 * tb.max_tokens <= thinking_budget(LONG_TASK, tb) <= tb.max_tokens == 4096
+
+
+def test_thinking_budget_on_every_reasoner_round(client, fake):
+    fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+    r = chat(client, [{"role": "user", "content": LONG_TASK}])
+    sent = [b.get(FIELD) for b in fake.bodies]
+    assert len(sent) == 2 and sent[0] == sent[1] >= 0.9 * 4096  # the same budget for every round of the answer
+    steps = reasoning_text(r)
+    assert steps.count("> thinking budget:") == 1 and f"\n\n> thinking budget: {sent[0]} tokens\n" in steps
+
+
+def test_no_thinking_budget_on_the_retry(client, fake):
+    fake.scripts = [[reasoning("the whole answer, A1: 42"), finish("stop")], [content("A1: 42")]]
+    chat(client)
+    first, retry = fake.bodies
+    assert first[FIELD] == 1024 and FIELD not in retry  # the retry does not think
+
+
+def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
+    question = [{"role": "user", "content": LONG_TASK}]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+        chat(c, question)
+        with_budget = fake.bodies
+        cfg.reasoning_policy.thinking_budget.field = ""
+        fake.requests.clear()
+        fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+        r = chat(c, question)
+    assert all(FIELD in b for b in with_budget) and not any(FIELD in b for b in fake.bodies)
+    assert fake.bodies == [{k: v for k, v in b.items() if k != FIELD} for b in with_budget]  # nothing else differs
+    assert "thinking budget" not in reasoning_text(r)

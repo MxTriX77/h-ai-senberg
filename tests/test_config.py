@@ -184,18 +184,20 @@ def test_machine_knob_defaults_unchanged(tmp_path):
 
     cmd = build_command(load_config(write(tmp_path)))
     assert (_arg(cmd, "--host"), _arg(cmd, "--port"), _arg(cmd, "--ctx-size")) == ("127.0.0.1", "8080", "16384")
-    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "1024")
+    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "4096")
 
 
 def test_machine_knobs_from_environment(tmp_path, monkeypatch):
     from haisenberg.launcher import build_command
 
-    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "4096", "LLAMA_PORT": "9090"}
+    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "2048", "LLAMA_PORT": "9090"}
     for k, v in knobs.items():
         monkeypatch.setenv(k, v)
-    cmd = build_command(load_config(write(tmp_path)))
+    cfg = load_config(write(tmp_path))
+    cmd = build_command(cfg)
     assert _arg(cmd, "--ctx-size") == "65536" and _arg(cmd, "--gpu-layers") == "40"
-    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "4096"
+    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "2048"
+    assert cfg.reasoning_policy.thinking_budget.max_tokens == 2048  # the cap is also the top of the budget
     assert _arg(cmd, "--port") == "9090"
 
 
@@ -322,7 +324,7 @@ def test_robustness_settings(tmp_path):
     cfg = load_config(write(tmp_path))
     b = cfg.model_backend
     assert (cfg.app.keepalive_s, b.timeout_s, b.wait_s, b.context_tokens, b.chars_per_token) == (1, None, 300, None, 2.0)
-    assert cfg.context_tokens == cfg.llama_server.ctx_size == 16384 and b.max_tokens == 4096
+    assert cfg.context_tokens == cfg.llama_server.ctx_size == 16384 and b.max_tokens == 7168
     data = base()
     data["app"]["keepalive_s"] = 0
     with pytest.raises(ConfigError, match=r"app\.keepalive_s"):
@@ -336,7 +338,9 @@ def test_big_profile_budget(tmp_path, monkeypatch):
     write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
     monkeypatch.setenv(PROFILE_ENV, profile.stem)
     cfg = load_config(path)
-    assert (cfg.context_tokens, cfg.model_backend.max_tokens) == (32768, 8192)
+    assert (cfg.context_tokens, cfg.model_backend.max_tokens) == (32768, 12288)
+    tb = cfg.reasoning_policy.thinking_budget
+    assert (tb.min_tokens, tb.max_tokens, cfg.llama_server.flags["reasoning-budget"]) == (4096, 8192, "8192")
 
 
 def test_consistency_settings(tmp_path):
@@ -448,3 +452,50 @@ def test_source_trust_settings(tmp_path):
         del data[section][key]
         with pytest.raises(ConfigError, match=f"{section}.{key}"):
             load_config(write(tmp_path, data))
+
+
+def test_thinking_budget_settings(tmp_path):
+    cfg = load_config(write(tmp_path))
+    tb = cfg.reasoning_policy.thinking_budget
+    assert (tb.field, tb.min_tokens, tb.max_tokens) == ("thinking_budget_tokens", 1024, 4096)
+    assert (tb.chars.weight + tb.numbers.weight + tb.items.weight) == pytest.approx(1)  # share 1 when all are full
+    assert cfg.llama_server.flags["reasoning-budget"] == "4096" and cfg.model_backend.max_tokens == 7168
+
+
+@pytest.mark.parametrize("change, error", [
+    ({"min_tokens": 4096, "max_tokens": 1024}, r"reasoning_policy\.thinking_budget: .*min_tokens must not exceed max_tokens"),
+    ({"chars": {"start": 2000, "full": 200, "weight": 0.4}}, r"reasoning_policy\.thinking_budget\.chars: .*full"),
+    ({"items": {"start": 1, "full": 6, "weight": 1.5}}, r"reasoning_policy\.thinking_budget\.items\.weight"),
+    ({"item_pattern": "("}, r"reasoning_policy\.thinking_budget\.item_pattern: .*regular expression"),
+    ({"max_tokens": 6144}, r"reasoning_policy\.thinking_budget\.max_tokens \(6144\) exceeds the server cap "
+                           r"llama_server\.flags\.reasoning-budget \(4096\)"),
+])
+def test_thinking_budget_validated(tmp_path, change, error):
+    data = base()
+    data["reasoning_policy"]["thinking_budget"].update(change)
+    with pytest.raises(ConfigError, match=error):
+        load_config(write(tmp_path, data))
+
+
+def test_thinking_budget_leaves_room_for_the_answer(tmp_path, monkeypatch):
+    monkeypatch.setenv("REASONING_BUDGET", "8192")  # cap and top of the budget move together
+    with pytest.raises(ConfigError, match=r"thinking_budget\.max_tokens \(8192\) leaves no room for the answer in "
+                                          r"model_backend\.max_tokens \(7168\)"):
+        load_config(write(tmp_path))
+    data = base()
+    data["llama_server"]["enabled"] = False  # a remote backend: not checked against llama-server's settings
+    assert load_config(write(tmp_path, data)).reasoning_policy.thinking_budget.max_tokens == 8192
+
+
+def test_thinking_budget_off_is_the_old_setup(tmp_path, monkeypatch):
+    """The A arm: no field, the old server cap and max_tokens; the bounds are then unused and not checked."""
+    from haisenberg.launcher import build_command
+
+    monkeypatch.setenv("REASONING_BUDGET", "1024")
+    data = base()
+    data["reasoning_policy"]["thinking_budget"]["field"] = ""
+    data["model_backend"]["max_tokens"] = 4096
+    cfg = load_config(write(tmp_path, data))
+    assert _arg(build_command(cfg), "--reasoning-budget") == "1024" and cfg.model_backend.max_tokens == 4096
+    data["reasoning_policy"]["thinking_budget"]["max_tokens"] = 9999  # above the cap and max_tokens
+    assert load_config(write(tmp_path, data)).reasoning_policy.thinking_budget.field == ""
