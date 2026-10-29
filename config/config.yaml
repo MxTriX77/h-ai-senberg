@@ -106,11 +106,20 @@ retrieval:                                 # used from the Layer 1 step on
   stores:                                  # knowledge stores: name -> kind (which ingest builds it, which code reads it), path
     encyclopedia: {kind: encyclopedia, path: "${DATA_DIR:-data}/encyclopedia_fts.db"}   # Layer 1, ingest.build_l1
     literature: {kind: literature, path: "${DATA_DIR:-data}/literature_fts.db"}         # Layer 2, ingest.build_l2
+    literature_dense: {kind: literature_dense, path: "${DATA_DIR:-data}/literature_dense"}   # Layer 2 vectors (folder), ingest.embed_l2
   knowledge_sets:                          # knowledge setting -> the stores it enables
     base: [encyclopedia]
     extended: [encyclopedia, literature]
+    hybrid: [encyclopedia, literature, literature_dense]   # literature ranked by BM25 + dense (RRF)
   knowledge: "${KNOWLEDGE:-base}"          # A/B switch: the knowledge set the tools read (base = Layer 1 only)
-  layer2_literature_index: "${DATA_DIR:-data}/vector_store/"
+  dense:                                   # the literature_dense store (see the embedding section)
+    index: "IVF4096,PQ128"                 # FAISS index factory used by ingest.embed_l2 (inner product on normalised vectors)
+    nprobe: 32                             # index lists searched per query
+    rerank: 200                            # index hits re-scored exactly with the stored vectors
+    candidates: 50                         # length of the BM25 ranking and of the dense ranking that are fused
+    rrf_k: 60                              # reciprocal rank fusion: a passage scores the sum of 1 / (rrf_k + rank)
+    min_similarity: 0.50                   # a dense hit this similar passes min_term_share (paraphrases, other languages);
+                                           # per model: bge-m3 0.50, bge-base-en-v1.5 0.65 (above ~95 % of random passages)
   layer2_chunk_chars: 1200                 # longest passage the Layer 2 build stores
   literature_k: 2                          # literature passages appended to each search_knowledge result (if enabled)
   top_k_proofs: 5                          # records per search or lookup (agent tools, encyclopedia search default)
@@ -283,6 +292,36 @@ llama_server:                              # local reasoner, started by `uv run 
     cache-type-v: q8_0
     threads: "${LLAMA_THREADS:-8}"
     log-file: "${LLAMA_LOG_FILE:-}"        # keep llama-server's own log in this file (empty = console only)
+
+embedding:                                 # the embedding model of the literature_dense store (KNOWLEDGE=hybrid, ingest.embed_l2)
+  api_base: "${EMBED_API_BASE_URL:-http://127.0.0.1:8092/v1}"   # OpenAI-compatible embeddings; keep in step with server.port
+  api_key: "${EMBED_API_KEY:-}"
+  model_id: "bge-m3"                       # sent as `model` and the server's --alias; the index records it
+  query_prefix: ""                         # BGE-M3: none (bge-base-en-v1.5: "Represent this sentence for searching relevant passages: ")
+  batch: 32                                # passages per request while building
+  workers: 4                               # parallel requests while building
+  timeout_s: 300
+  server:                                  # its own llama-server, started on demand (fields as in llama_server)
+    enabled: "${EMBED_SERVER_ENABLED:-true}"   # false: use an already running or remote embeddings backend
+    executable: "${LLAMA_SERVER_EXE:-llama-server}"
+    model_path: "${DATA_DIR:-data}/raw/models/bge-m3-FP16.gguf"   # pinned in config/sources.yaml; multilingual (Russian queries)
+    host: "${EMBED_HOST:-127.0.0.1}"
+    port: "${EMBED_PORT:-8092}"
+    ctx_size: "${EMBED_CTX_SIZE:-2048}"    # shared by the slots: 1024 tokens each (bge v1.5 takes at most 512)
+    startup_timeout_s: 120
+    env:
+      CUDA_VISIBLE_DEVICES: "${EMBED_CUDA_DEVICES:-}"   # empty: no CUDA context, the reasoner keeps all GPU memory
+    flags:
+      no-ui: true
+      embedding: true
+      pooling: cls                         # bge: the [CLS] vector
+      device: "${EMBED_DEVICE:-none}"      # none = CPU only; the GPU build (WSL): EMBED_DEVICE=CUDA0 EMBED_CUDA_DEVICES=0
+      gpu-layers: 99                       # used only with a device
+      parallel: "${EMBED_PARALLEL:-2}"
+      batch-size: "${EMBED_CTX_SIZE:-2048}"
+      ubatch-size: "${EMBED_CTX_SIZE:-2048}"   # every input must fit into one micro-batch
+      threads: "${EMBED_THREADS:-4}"
+      log-file: "${EMBED_LOG_FILE:-}"
 
 ui:
   dist_dir: "ui/dist"                      # built by scripts/build_ui.py

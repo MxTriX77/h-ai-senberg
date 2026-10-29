@@ -1,9 +1,12 @@
+import json
+
 import httpx
+import numpy as np
 import pytest
 
 from conftest import CONNECT_ERROR, DISCONNECT, UNAVAILABLE, content, reasoning
 from haisenberg import llm
-from haisenberg.llm import LLMClient, UpstreamError, estimate_tokens
+from haisenberg.llm import EmbeddingClient, LLMClient, UpstreamError, estimate_tokens
 
 pytestmark = pytest.mark.anyio
 
@@ -120,6 +123,40 @@ async def test_upstream_400_not_retried(cfg, fake):
     with pytest.raises(UpstreamError):
         await drain(fake.client(cfg.model_backend))
     assert len(fake.requests) == 1
+
+
+def embedding_client(cfg, handler):
+    return EmbeddingClient(cfg.embedding, http=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_embeddings_in_input_order_and_normalised(cfg):
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url), json.loads(request.content)))
+        return httpx.Response(200, json={"data": [{"index": 1, "embedding": [0, 2]}, {"index": 0, "embedding": [3, 4]}]})
+
+    v = embedding_client(cfg, handler).embed(["a", "b"])
+    assert seen == [(cfg.embedding.api_base + "/embeddings", {"model": cfg.embedding.model_id, "input": ["a", "b"]})]
+    assert v.dtype == np.float32 and np.allclose(v, [[0.6, 0.8], [0, 1]])
+
+
+def test_embeddings_error_keeps_status(cfg):
+    def handler(request):
+        return httpx.Response(400, json={"error": {"message": "input (600 tokens) is larger than the max context size"}})
+
+    with pytest.raises(UpstreamError, match="larger than") as err:
+        embedding_client(cfg, handler).embed(["long"])
+    assert err.value.status == 400
+
+
+def test_embeddings_backend_unreachable(cfg):
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(UpstreamError, match="unreachable") as err:
+        embedding_client(cfg, handler).embed(["a"])
+    assert err.value.status is None
 
 
 def test_estimate_tokens():
