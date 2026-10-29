@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, reasoning, tool_call
-from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _Markup
+from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _Markup, thinking_budget
 from haisenberg.llm import estimate_tokens
 from haisenberg.l1.store import L1Store
 from haisenberg.server import create_app
@@ -173,13 +173,21 @@ def within_context(cfg, body) -> bool:
     return prompt + body.get("max_tokens", cfg.model_backend.max_tokens) <= cfg.context_tokens
 
 
+def limit_output(cfg, tokens=1000):
+    """Let every model call write at most `tokens`: thinking budget + answer room, and max_tokens for the rest."""
+    tb = cfg.reasoning_policy.thinking_budget
+    cfg.model_backend.max_tokens = tokens
+    tb.min_tokens = tb.max_tokens = tokens // 2
+    tb.answer_tokens = tokens - tokens // 2
+
+
 def base_tokens(cfg, knowledge) -> int:
     system = f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"
     return estimate_tokens([{"role": "system", "content": system}], cfg.model_backend.chars_per_token, knowledge.tools)
 
 
 def test_long_history_trimmed(cfg, fake, knowledge):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 3000
     turns = [{"role": r, "content": f"{r} turn {i} " + "x" * 600} for i in range(10) for r in ("user", "assistant")]
     fake.scripts = [[content("ok")]]
@@ -192,7 +200,7 @@ def test_long_history_trimmed(cfg, fake, knowledge):
 
 
 def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkeypatch):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 100
     big = "x" * 4 * base_tokens(cfg, knowledge)  # one result is larger than all the room left
     monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
@@ -209,7 +217,7 @@ def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkey
 
 
 def test_question_too_long(cfg, fake, knowledge):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + base_tokens(cfg, knowledge) + 100
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         r = chat(c, [{"role": "user", "content": "x" * 5000}])
@@ -523,3 +531,105 @@ def test_markup_read_also_when_cut_off(cfg):
     assert markup.split("no markup") == ([], "no markup")
     assert markup.cut("Plan.\n" + XML_CALL + "\n ") and markup.cut("Plan.\n<function=calculate><parameter=expressions>2")
     assert not markup.cut(XML_CALL + "\nIt is 480.") and not markup.cut("no markup")
+
+
+# --- thinking budget ---------------------------------------------------------------------------------
+
+FIELD = "thinking_budget_tokens"
+LONG_TASK = "A calorimetry lab report lists six runs. Check each run and give one answer line per run.\n" + "\n".join(
+    f"{i}. A {i * 2.5} g sample of metal at {95 + i} °C is dropped into {50 + 10 * i} g of water at {20 + i} °C; the "
+    f"final temperature is {24.5 + i} °C and the balance reads to ±{i / 100} g. Compute the heat taken up by the "
+    f"water, the specific heat of the metal and its relative uncertainty. Answer line A{i}: <value> J/(g·K)."
+    for i in range(1, 7))
+
+
+def test_thinking_budget_follows_the_question(cfg):
+    tb = cfg.reasoning_policy.thinking_budget
+    assert thinking_budget("What is the molar mass of water?", tb) == tb.min_tokens == 1024
+    two_parts = "Water (18.02 g/mol) and ethanol (46.07 g/mol) are mixed 1:1 by mass. Find (a) the mole fraction and (b) the molality."
+    assert tb.min_tokens < thinking_budget(two_parts, tb) < (tb.min_tokens + tb.max_tokens) / 2
+    assert 0.9 * tb.max_tokens <= thinking_budget(LONG_TASK, tb) <= tb.max_tokens == 4096
+
+
+def test_thinking_budget_on_every_reasoner_round(client, fake):
+    fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+    r = chat(client, [{"role": "user", "content": LONG_TASK}])
+    *sent, repair = [(b.get(FIELD), b["max_tokens"]) for b in fake.bodies]  # then the coverage repair of A1-A6
+    budget = sent[0][0]
+    assert sent == [(budget, budget + 3072)] * 2 and budget >= 0.9 * 4096  # every round: the budget + the answer room
+    assert repair == (None, 4096)  # the coverage repair does not think
+    steps = reasoning_text(r)
+    assert steps.count("> thinking budget:") == 1 and f"\n\n> thinking budget: {budget} tokens\n" in steps
+
+
+def test_short_question_keeps_the_old_request_size(client, fake, cfg):
+    chat(client, [{"role": "user", "content": "What is the molar mass of water?"}])
+    assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096) == (1024, cfg.model_backend.max_tokens)
+
+
+def test_no_thinking_budget_on_the_retry(client, fake):
+    fake.scripts = [[reasoning("the whole answer, A1: 42"), finish("stop")], [content("A1: 42")]]
+    chat(client, [{"role": "user", "content": LONG_TASK}])
+    first, retry, repair = fake.bodies  # repair: the coverage repair of A2-A6
+    assert first[FIELD] > 1024 and FIELD not in retry and FIELD not in repair  # the retry does not think
+    assert retry["max_tokens"] == 4096  # model_backend.max_tokens, not the answer's
+
+
+def test_cut_logic_uses_the_answers_max_tokens(cfg, fake, knowledge, monkeypatch):
+    cfg.model_backend.max_tokens = 1000  # calls without a budget
+    tb = cfg.reasoning_policy.thinking_budget
+    tb.min_tokens = tb.max_tokens = 1500
+    tb.answer_tokens = 500  # this answer's calls: 2000
+    cfg.llama_server.ctx_size = 2000 + 2 * base_tokens(cfg, knowledge) + 100
+    big = "x" * 4 * base_tokens(cfg, knowledge)
+    monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
+    fake.scripts = [lookup_round(), [content("answer")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    first, second = (b["max_tokens"] for b in fake.bodies)
+    assert answer(r) == "answer" and first == 2000 and second > 1900  # cut for 2000, not for 1000 (then second ~1000)
+    assert all(within_context(cfg, b) for b in fake.bodies) and "shortened to fit" in reasoning_text(r)
+
+
+def test_fixed_budget_a_arm(cfg, client, fake):
+    """min = max = 1024 on the B arm's server: every question gets today's 1024 thinking and 4096 max_tokens."""
+    cfg.reasoning_policy.thinking_budget.max_tokens = 1024
+    chat(client, [{"role": "user", "content": LONG_TASK}])
+    assert (fake.bodies[0][FIELD], fake.bodies[0]["max_tokens"]) == (1024, 4096)  # the last: the coverage repair
+
+
+def test_long_question_thinks_less_rather_than_refused(cfg, fake, knowledge):
+    question = {"role": "user", "content": LONG_TASK}  # its own budget: over 3900 + 3072
+    system = {"role": "system", "content": f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"}
+    need = estimate_tokens([system, question], cfg.model_backend.chars_per_token, knowledge.tools)
+
+    def ask(ctx_size):
+        cfg.llama_server.ctx_size = ctx_size
+        fake.requests.clear()
+        with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+            return chat(c, [question])
+
+    for spare, sent in ((500, 1524), (0, 1024)):  # today's max_tokens (4096) fits with `spare` tokens to spare
+        r = ask(need + 4096 + spare)
+        assert (fake.bodies[0][FIELD], fake.bodies[0]["max_tokens"]) == (sent, sent + 3072)  # floored at min_tokens
+        assert f"> thinking budget: {sent} tokens (shrunk to fit the prompt)\n" in reasoning_text(r)
+        assert all(within_context(cfg, b) for b in fake.bodies)
+    r = ask(need + 4095)  # even min_tokens does not fit: refused, as today
+    assert "too long for the model's context" in answer(r) and not fake.requests
+
+
+def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
+    question = [{"role": "user", "content": LONG_TASK}]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+        chat(c, question)
+        with_budget = fake.bodies
+        cfg.reasoning_policy.thinking_budget.field = ""
+        fake.requests.clear()
+        fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+        r = chat(c, question)
+    assert [FIELD in b for b in with_budget] == [True, True, False]  # the last: the coverage repair of A1-A6
+    assert not any(FIELD in b for b in fake.bodies)
+    old = [{**{k: v for k, v in b.items() if k != FIELD}, "max_tokens": cfg.model_backend.max_tokens} for b in with_budget]
+    assert fake.bodies == old  # nothing else differs
+    assert "thinking budget" not in reasoning_text(r)
