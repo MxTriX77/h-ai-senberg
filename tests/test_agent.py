@@ -520,6 +520,80 @@ def test_coverage_repair_switched_off(client, fake, cfg):
     assert answer(ask(client, TEN_LINES)) == EIGHT and len(fake.requests) == 1
 
 
+CLAIMS = ("Check the report.\nC1. The sample mass is 5.0 g.\nC2. The solution is neutral.\nC3. The yield is 120 %.\n"
+          "Finish with exactly these lines:\nA1: <sample mass in g>\nA4: <verdict for C1>\nA5: <verdict for C2>\n"
+          "A6: <verdict for C3>")
+BODY = "C1: correct, 5.0 g as stated.\nC2: correct, pH 7.\nC3: incorrect, a yield above 100 % is impossible.\n"
+DRIFTED = BODY + "A1: 5.0 g\n- **A4:** incorrect\nA5: incorrect\nA6: not confirmed"  # the verdicts of items 4, 5, 6
+FIXED = BODY + "A1: 5.0 g\n- **A4:** correct\nA5: correct\nA6: incorrect"
+
+
+def test_item_lines_drifted_by_number_are_rewritten_from_the_analysis(client, fake, cfg):
+    fake.scripts = [[content(DRIFTED)], [content("A1: 7 g\nA4: correct\nA5: correct\nA6: incorrect")]]
+    r = ask(client, CLAIMS)
+    assert answer(r) == FIXED and len(fake.requests) == 2
+    check = fake.bodies[1]
+    assert "tools" not in check and check["chat_template_kwargs"] == {"enable_thinking": False}
+    assert check["messages"] == [{"role": "user", "content": cfg.reasoning_policy.line_check_prompt.replace(
+        "{table}", "A4 → C1\nA5 → C2\nA6 → C3").replace("{answer}", DRIFTED)}]
+    trace = reasoning_text(r)
+    assert "line check: A4 → C1, A5 → C2, A6 → C3\n" in trace
+    assert "line check: A4 incorrect → correct (item C1)\n" in trace and "A6 not confirmed → incorrect (item C3)" in trace
+    assert "A1 5.0 g" not in trace  # the numeric line names no item: never changed
+
+
+@pytest.mark.parametrize("reply", [
+    "A4: correct\nA4: incorrect\nA6: incorrect\nC2: correct",  # A4 twice, A5 missing, an item's own label
+    "A4: <verdict for C1>\nA5:\nA6: incorrect",  # a placeholder, an empty value
+])
+def test_only_lines_the_reply_gives_once_change(client, fake, reply):
+    fake.scripts = [[content(DRIFTED)], [content(reply)]]
+    r = ask(client, CLAIMS)
+    assert answer(r) == DRIFTED.replace("A6: not confirmed", "A6: incorrect")
+    assert "A4 incorrect →" not in reasoning_text(r) and "A5 incorrect →" not in reasoning_text(r)
+
+
+def test_item_the_answer_never_names_keeps_its_line(client, fake):
+    draft = DRIFTED.replace("C2: correct, pH 7.", "The pH is 7.")
+    fake.scripts = [[content(draft)], [content("A4: correct\nA5: correct\nA6: incorrect")]]
+    assert answer(ask(client, CLAIMS)) == draft.replace("A4:** incorrect", "A4:** correct").replace(
+        "A6: not confirmed", "A6: incorrect")
+
+
+@pytest.mark.parametrize("reply, note", [
+    (CONNECT_ERROR, "line check failed"),
+    ([content("A4: incorrect\nA5: **incorrect**\nA6: not confirmed.")], "line check: no line changed"),
+])
+def test_line_check_that_changes_nothing_keeps_the_answer(client, fake, reply, note):
+    fake.scripts = [[content(DRIFTED)], reply]
+    r = ask(client, CLAIMS)
+    assert answer(r) == DRIFTED and len(fake.requests) == 2 and note in reasoning_text(r)
+    assert r.text.endswith("data: [DONE]\n\n")
+
+
+def test_tasks_without_item_placeholders_need_no_line_check(client, fake):
+    question = CLAIMS.replace("verdict for C", "verdict ")  # the placeholders name no item
+    fake.scripts = [[content(DRIFTED)]]
+    r = ask(client, question)
+    assert answer(r) == DRIFTED and len(fake.requests) == 1 and "line check" not in reasoning_text(r)
+
+
+def test_line_check_runs_on_the_repaired_answer(client, fake):
+    draft = DRIFTED.removesuffix("\nA6: not confirmed")
+    fake.scripts = [[content(draft)], [content("A6: not confirmed")], [content("A4: correct\nA5: correct\nA6: incorrect")]]
+    r = ask(client, CLAIMS)
+    assert answer(r) == FIXED and len(fake.requests) == 3
+    assert DRIFTED in fake.bodies[2]["messages"][0]["content"]
+    text = reasoning_text(r)
+    assert text.index("answer lines added: A6") < text.index("line check: A4 → C1")
+
+
+def test_line_check_switched_off(client, fake, cfg):
+    cfg.reasoning_policy.line_check = False
+    fake.scripts = [[content(DRIFTED)]]
+    assert answer(ask(client, CLAIMS)) == DRIFTED and len(fake.requests) == 1
+
+
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
     calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")
@@ -573,6 +647,13 @@ def test_no_thinking_budget_on_the_retry(client, fake):
     first, retry, repair = fake.bodies  # repair: the coverage repair of A2-A6
     assert first[FIELD] > 1024 and FIELD not in retry and FIELD not in repair  # the retry does not think
     assert retry["max_tokens"] == 4096  # model_backend.max_tokens, not the answer's
+
+
+def test_no_thinking_budget_on_the_line_check(client, fake):
+    fake.scripts = [[content(DRIFTED)], [content("A4: correct\nA5: correct\nA6: incorrect")]]
+    assert answer(ask(client, CLAIMS)) == FIXED
+    first, check = fake.bodies
+    assert FIELD in first and FIELD not in check and check["max_tokens"] == 4096  # like the retry
 
 
 def test_cut_logic_uses_the_answers_max_tokens(cfg, fake, knowledge, monkeypatch):

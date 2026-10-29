@@ -74,7 +74,7 @@ reasoning_policy:
     Tools are no longer available. Write your complete final answer to the question above now, as plain
     text without any tool call: use the results you have, show the working and keep the format the
     question asks for.
-  answer_retry_request:                    # fields merged into that call (and into the coverage repair call)
+  answer_retry_request:                    # fields merged into that call (and into the coverage repair and line check calls)
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
   coverage_repair: true                    # answer lines the task spells out (`A9: <verdict>`) that the draft leaves out are
                                            # asked for once (no tools) and appended, before the claim checks; false: off
@@ -83,10 +83,28 @@ reasoning_policy:
     {lines}
     Write only these lines now, each on its own line, starting with its label and a colon as the task
     asks. Take each from your answer above. Write nothing else.
+  line_check: true                         # answer lines whose placeholder names an item of the task's list (`A4: <verdict
+                                           # for C1>` with a line `C1. ...`; at least two such lines) are rewritten once
+                                           # (no tools, answer_retry_request) from the answer's own analysis of that item,
+                                           # after the coverage repair, before the claim checks; false: off
+  line_check_prompt: |                     # the only message of that call; {answer} = the answer, {table} = one row per line: label → item
+    Below is an answer to a task. Each final answer line reports on one item of the task, as the table says.
+    Such lines are sometimes matched to the wrong item, for example by their numbers.
+
+    Answer:
+    {answer}
+
+    Table (answer line → the task item it reports on):
+    {table}
+
+    For each line in the table, find what the analysis in the answer concluded about that item, and write
+    the line with exactly that conclusion. Copy it from the analysis; do not judge the item again. Write
+    only these lines, each on its own line, as the label, a colon and the conclusion in the answer's own
+    words. Write nothing else.
   thinking_budget:                         # thinking tokens per reasoner call: min_tokens + (max_tokens - min_tokens) × share
                                            # of the question, the same for every round of one answer, which also sets those
                                            # calls' max_tokens (budget + answer_tokens) and so their prompt room; the retry,
-                                           # the coverage repair, the judge and review calls (no thinking) get none
+                                           # the line check, the coverage repair, the judge and review calls (no thinking) get none
     field: "thinking_budget_tokens"        # request field the backend reads (llama-server b11782+); "" = send none: only
                                            # llama_server reasoning-budget caps thinking, max_tokens as model_backend, as before
     min_tokens: 1024                       # share 0: a short question (the old server cap; 1024 + 3072 = the old max_tokens)
