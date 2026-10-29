@@ -1,0 +1,13 @@
+# Test arm only (branch tb-test, not for main): the qwen3.5-9b profile with today's fixed thinking budget (1024 for
+# every question, max_tokens 4096), for the PR #54 A/B on one commit and one server (cap 4096).
+# Use: MODEL_PROFILE=qwen3.5-9b-tb1024
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"
+
+reasoning_policy:
+  thinking_budget:
+    max_tokens: 1024
