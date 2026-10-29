@@ -16,10 +16,14 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
+    answer_labels,
     code_check,
     echoes,
+    fix_answer_lines,
     fix_arithmetic,
     is_computation,
+    missing_lines,
+    minimal_edit,
     parse_fixes,
     parse_verdicts,
     quoted,
@@ -31,6 +35,7 @@ from haisenberg.verifier import (
     run_checkers,
     Verifier,
     split_claims,
+    supplied_lines,
     unconfirmed,
 )
 from test_server import chat, events
@@ -76,6 +81,37 @@ def test_labelled_answer_and_verdict_lines_are_not_claims():
              "Statement 2: false, see 12 mL\n(c): it is 7 g heavier\nNote: water boils at 100 °C [S1].\nА1: 4,2 г\n")
     assert len(split_claims(draft)) == 7  # the Russian line has no Latin letter: never a claim
     assert [c.text for c in split_claims(draft, skip_labelled=True)] == ["Note: water boils at 100 °C [S1]."]
+
+
+def test_answer_labels():
+    draft = "A1: 5 g\n- **A2:** true\nClaim D: Incorrect\nNote: x\n(c): 7 g\nThe A3 value is 4"
+    assert answer_labels(draft) == {"A1", "A2", "Claim D", "(c)"}
+
+
+def test_missing_lines_the_task_spells_out():
+    folded = ("Claim 1: the received mass matches the certificate. Claim 2: the product is dry. Finish with exactly "
+              "these lines: A1: <claim 1> A2: <claim 2> **A3:** <claim 3>")  # a YAML-folded task: one line
+    assert missing_lines(folded, "A1: true\n- **A3:** false") == {"A2": "A2: <claim 2>"}
+    lines = "Finish with exactly these lines:\nA1: <mass in g>\nA2: <verdict>\n"
+    assert missing_lines(lines, "**A1:** 5 g\nа2: true") == {}  # bold, case and a Cyrillic look-alike letter
+    assert list(missing_lines(lines, "A1 is 5 g")) == ["A1", "A2"]  # in the task's order
+
+
+def test_missing_lines_ignore_what_the_task_does_not_ask_for():
+    assert missing_lines("Claim 1: the mass is 5 g. Answer with A1: <claim 1>", "A1: true") == {}  # material
+    task = "Atom X: [Ne] 3s1. Sample A: <0.1 % water. Sample B: < 5 %. Step C: <-> D. Give A1: <X or Y>"
+    assert missing_lines(task, "") == {"A1": "A1: <X or Y>"}  # brackets, values, arrows: no placeholders
+    task = "`Claim C: <verdict>` and Statement 7: <true or false>"
+    assert missing_lines(task, "") == {"C": "C: <verdict>", "Statement 7": "Statement 7: <true or false>"}
+    assert missing_lines(task, "C: true\nstatement 7: false") == {}  # labels compare by their id ("Give A1" = "A1")
+    assert missing_lines("No labelled lines asked for: <none>", "") == {}
+
+
+def test_supplied_lines_only_the_missing_labels():
+    reply = ("Here are the lines:\nA1: false\nA2: <verdict>\nA2:\nClaim 2: true\n- **a2:** false, the mass is 4 g\n"
+             "A2: second\nA9: true")
+    assert supplied_lines(reply, ["A2"]) == {"A2": "- **a2:** false, the mass is 4 g"}
+    assert supplied_lines("Sorry, I cannot.", {"A2": "A2: <verdict>"}) == {}
 
 
 def test_bare_labels_are_not_claims():
@@ -193,6 +229,97 @@ def test_melting_point_citing_a_compound_goes_to_the_judge(store):
 def test_every_number_must_match(store):
     s = sources_with(store, store.lookup_compound("caffeine")[0])
     assert code_check(claim("Caffeine (194.19 g/mol) is found in 95 mg per cup [S1]."), s, 0.001) is None
+
+
+# c3: a record's number counts only as the same quantity: its unit (or an equal one) and its property.
+
+
+@pytest.mark.parametrize("text", [
+    "The Planck constant is 6.626e-34 J s [S1].",
+    "The Planck constant is 6.626 × 10⁻³⁴ J·s [S1].",
+    "The Planck constant is 6.626e-34 J Hz^-1 [S1].",
+    "The Planck constant is 6.626e-34 J/Hz [S1].",
+    r"The Planck constant is $6.626 \times 10^{-34}\,\mathrm{J\,s}$ [S1].",
+    "The Planck constant is 6.626e-34 kg m² s⁻¹ [S1].",
+    "The Planck constant is 6.626e-34 [S1].",
+])
+def test_equal_unit_spellings_supported(store, text):
+    s = sources_with(store, store.lookup_constant("Planck constant")[0])
+    assert code_check(claim(text), s, 0.001)[:2] == (SUPPORTED, ["S1"])
+
+
+@pytest.mark.parametrize("text", [
+    "The speed of light in vacuum is 299 792 458 m/s [S1].",
+    "The speed of light in vacuum is 299 792 458 m s⁻¹ [S1].",
+    "The speed of light in vacuum is 299 792 458 metres per second [S1].",
+])
+def test_speed_spellings_supported(store, text):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0])
+    assert code_check(claim(text), s, 0.001)[0] == SUPPORTED
+
+
+@pytest.mark.parametrize("text", [
+    "The Planck constant is 6.626e-34 eV s [S1].",  # right number, another unit
+    "The quantum of action is h = 6.626 × 10⁻³⁴ eV·s.",
+])
+def test_right_number_wrong_unit_not_supported(store, text):
+    s = sources_with(store, store.lookup_constant("Planck constant")[0])
+    assert code_check(claim(text), s, 0.001) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Ethanol boils at 46.07 °C [S1].",
+    "Ethanol boils at 46.07 [S1].",
+    "The density of ethanol is 46.07 g/mol [S1].",
+    "A flask holds 46.07 g of ethanol [S1].",
+])
+def test_record_value_of_another_property_not_supported(store, text):
+    s = sources_with(store, store.lookup_compound("ethanol")[0])
+    assert code_check(claim(text), s, 0.001) is None
+
+
+def test_two_masses_of_one_compound(store):
+    s = sources_with(store, store.lookup_compound("sodium chloride")[0])  # 58.44 g/mol, monoisotopic 57.96 Da
+    both = "Sodium chloride has a molar mass of 58.44 g/mol and a monoisotopic mass of 57.96 Da [S1]."
+    assert code_check(claim(both), s, 0.001)[0] == SUPPORTED
+    outcome, _, fixed, _ = code_check(claim("The monoisotopic mass of sodium chloride is 58.44 Da [S1]."), s, 0.001)
+    assert outcome == CORRECTED and fixed == "The monoisotopic mass of sodium chloride is 57.96 Da [S1]."
+    outcome, _, fixed, _ = code_check(claim("The molar mass of sodium chloride is 57.96 g/mol [S1]."), s, 0.001)
+    assert outcome == CORRECTED and fixed == "The molar mass of sodium chloride is 58.44 g/mol [S1]."
+
+
+@pytest.mark.parametrize("text", [
+    "Light covers 299 792 458 m per second, about 1.08e9 km per hour [S1].",  # a derived number in another unit
+    "Sound travels at 343 m/s, far slower than light [S1].",  # another speed: same unit, not the constant's size
+    "The ratio is 7.1e-3 [S2].",  # a pure number: corrected only when the constant is named
+    "The fine-structure constant is about 1/137 [S2].",  # named, but not a number of its size
+    "The speed of light in vacuum (one of 7 defining constants) is 299 792 458 m/s [S1].",
+])
+def test_other_quantities_not_corrected(store, text):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0],
+                     store.lookup_constant("fine-structure constant")[0])
+    assert code_check(claim(text), s, 0.001) is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("The speed of light in vacuum is 3.10 × 10^8 m/s [S1].", "2.998 × 10^8 m/s"),
+    ("c = 3.10 × 10^8 m/s [S1].", "2.998 × 10^8 m/s"),  # the record's unit and the same size
+    ("The fine-structure constant is 7.1e-3 [S2].", "7.297 × 10^-3"),  # named
+])
+def test_wrong_value_of_the_same_quantity_corrected(store, text, expected):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0],
+                     store.lookup_constant("fine-structure constant")[0])
+    outcome, _, fixed, _ = code_check(claim(text), s, 0.001)
+    assert outcome == CORRECTED and expected in fixed
+
+
+def test_unit_checks_switched_off(store):
+    s = sources_with(store, store.lookup_constant("speed of light in vacuum")[0],
+                     store.lookup_constant("fine-structure constant")[0])
+    derived = claim("Light covers 299 792 458 m per second, about 1.08e9 km per hour [S1].")
+    assert code_check(derived, s, 0.001, units=False)[0] == CORRECTED  # by magnitude alone, as before
+    assert code_check(claim("Some ratio is 7.297e-3."), s, 0.001, units=False)[0] == SUPPORTED
+    assert code_check(claim("Some ratio is 7.297e-3."), s, 0.001) is None
 
 
 PUMP_TASK = "A pump lifts 0.04 m³/s of water by 6 m; its motor gives 2.2 kW. Is the motor big enough?"
@@ -652,11 +779,65 @@ ECHO = "C1: supports S1\nC2: contradicts S1 | the claim rewritten so that it agr
 ])
 def test_judge_echo_not_applied(cfg, fake, knowledge, ignore, keep, expected):
     cfg.verifier.ignore_prompt_echo, cfg.verifier.keep_uncorrected = ignore, keep
+    cfg.verifier.judge_minimal_edits = False  # this switch alone (minimal edits would also refuse the echo)
     fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. It is blue [S1].")], [content(ECHO)]]
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         r = chat(c)
     assert answer(r) == expected
     assert ("correction repeats the judge instructions: ignored" in reasoning_text(r)) is ignore
+
+
+BOILS = "Ethanol\nIts boiling point is 78.37 °C."
+
+
+@pytest.mark.parametrize("claim, passage, correction, fixed", [
+    ("Ethanol boils at 79 °C [S1].", BOILS, "Ethanol boils at 78.37 °C", "Ethanol boils at 78.37 °C [S1]."),
+    ("Ethanol boils at 79 °C [S1].", BOILS, "Ethanol boils at 78.4 °C.", "Ethanol boils at 78.4 °C [S1]."),  # rounded
+    ("Ethanol boils at **79 °C** [S1].", BOILS, "Ethanol boils at 78.37 °C", "Ethanol boils at **78.37 °C** [S1]."),
+    ("It is blue [S1].", "Ethanol\nIt is a colorless liquid.", "Ethanol is colorless.", "Ethanol is colorless [S1]."),
+    ("Этанол кипит при 79 °C [S1].", "Этанол\nТемпература кипения 78,37 °C.", "Этанол кипит при 78,37 °C.",
+     "Этанол кипит при 78,37 °C [S1]."),
+])
+def test_minimal_edit_applied(claim, passage, correction, fixed):
+    assert minimal_edit(claim, correction, passage) == (fixed, "")  # only the edited terms change
+
+
+@pytest.mark.parametrize("claim, correction, why", [
+    ("Ethanol boils at 79 °C [S1].", "Ethanol has a boiling point of 78.37 °C.",
+     "not a minimal edit: rewrites 'boils at 79' as 'has a boiling point of 78.37'"),
+    ("Ethanol boils at 79 °C [S1].", "Ethanol boils at 78.37 °C, not 79 °C as the answer says.",
+     "not a minimal edit: adds"),
+    ("Ethanol boils at 79 °C [S1].", "Ethanol boils at 80.1 °C.", "not stated in the source: 80.1"),
+    ("Ethanol boils at 79 °C [S1].", "Ethanol boils at 78.0 °C.", "not stated in the source: 78.0"),  # finer than 78.37
+    ("Ethanol boils at 79 °C [S1].", "**Ethanol boils at 79 °C.**", "not a minimal edit: it changes no value or term"),
+    ("The equation is balanced [S1].", "The equation is not balanced.", "not a minimal edit: adds 'not'"),
+    ("The equation is not balanced [S1].", "The equation is balanced.", "not a minimal edit: drops 'not'"),
+    ("The equation is balanced [S1].", "The equation is unbalanced.",
+     "not a minimal edit: changes 'balanced' to 'unbalanced'"),
+    ("Statement B is true [S1].", "Statement B is false.", "not stated in the source: false"),
+])
+def test_minimal_edit_refused(claim, correction, why):
+    fixed, said = minimal_edit(claim, correction, f"{BOILS} An unbalanced equation is not balanced.")
+    assert fixed is None and said.startswith(why)
+
+
+REWRITE = "C1: supports S1\nC2: contradicts S1 | It is not blue, ethanol is a colorless liquid."
+
+
+@pytest.mark.parametrize("on, expected", [
+    (True, "Ethanol is a liquid. It is blue."),
+    (False, "Ethanol is a liquid. It is not blue, ethanol is a colorless liquid."),
+])
+def test_judge_correction_not_a_minimal_edit(cfg, fake, knowledge, on, expected):
+    cfg.verifier.judge_minimal_edits = on
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. It is blue [S1].")], [content(REWRITE)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == expected
+    steps = reasoning_text(r)
+    assert ("C2 judge: contradicts S1, correction not applied (not a minimal edit: adds 'not'): It is not blue, "
+            "ethanol is a colorless liquid." in steps) is on
+    assert ("C2 corrected from S1" in steps) is not on
 
 
 # --- arithmetic ---------------------------------------------------------------------------------------
@@ -784,6 +965,38 @@ def test_grouped_numbers_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+@pytest.mark.parametrize("draft, expected", [
+    ("m = 0.0500 × 56.08 = 3.80 g.\n\nA1: 3.80 g", "m = 0.0500 × 56.08 = 2.80 g.\n\nA1: 2.80 g"),
+    ("m = 0.0500 × 56.08 = 3.80 g.\n- **A1:** 3.80 g of CaO", "m = 0.0500 × 56.08 = 2.80 g.\n- **A1:** 2.80 g of CaO"),
+    ("m = 0,0500 × 56,08 = 3,80 г\nА1: 3,80 г", "m = 0,0500 × 56,08 = 2.80 г\nА1: 2.80 г"),
+])
+def test_answer_line_with_the_old_wrong_result_fixed(draft, expected):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    out, lines = fix_answer_lines(fixed, fixes)
+    assert out == expected and lines[0]["on"] == "answer line" and lines[0]["fixed"] == "2.80"
+
+
+@pytest.mark.parametrize("draft", [
+    "m = 0.0500 × 56.08 = 3.80 g.\nA1: 3.8 g",  # not exactly the old value
+    "m = 0.0500 × 56.08 = 3.80 g.\nSo the mass is 3.80 g.",  # not a labelled answer line
+    "m = 0.0500 × 56.08 = 3.80 g.\nA1: 13.80 g",  # part of another number
+    "m = 0.0500 × 56.08 = 3.80 g.\nA1: 3.80 g, not 3.80 kg",  # stated twice on the line
+    "a = 2 × 3 = 7, b = 2 × 4 = 7.\nA1: 7",  # the old value fixed two ways
+])
+def test_answer_lines_otherwise_kept(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixes and fix_answer_lines(fixed, fixes) == (fixed, [])
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_answer_line_follows_the_arithmetic_fix(cfg, fake, knowledge, on):
+    cfg.verifier.arithmetic_answer_lines = on
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("The mass of CaO is 0.0500 × 56.08 = 3.80 g.\n\nA1: 3.80 g")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r).endswith("A1: 2.80 g" if on else "A1: 3.80 g")
+    assert ("answer line: 3.80 → 2.80" in reasoning_text(r)) is on
 # c4: false corrections from a misread left side.
 @pytest.mark.parametrize("draft", [
     "growth = ($52.10 − $48.00) / $48.00 × 100 = 8.5 %",
@@ -996,6 +1209,7 @@ def test_quoted_equation_kept_in_the_answer(cfg, fake, knowledge, keep):
 @pytest.mark.parametrize("keep", [True, False])
 def test_restated_claim_not_judged(cfg, fake, knowledge, keep):
     cfg.verifier.keep_quotes = keep
+    cfg.verifier.judge_minimal_edits = False  # this switch alone (S1 does not state 1987: minimal edits would refuse)
     draft = "**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG [S1]\nEthanol is blue [S1].\n"
     verdicts = "C1: contradicts S1 | Harbour Instruments Ltd was founded in 1987.\nC2: contradicts S1 | Ethanol is colorless."
     fake.scripts = [SEARCH_ETHANOL, [content(draft)], [content(verdicts)]]
@@ -1135,3 +1349,22 @@ async def test_literature_only_support_unverified(cfg, fake, knowledge, on):
         assert "C1 unverified (only literature supports 356 kg/m3, but reference S1 gives 322 kg/m3)" in steps
     else:
         assert (c.outcome, c.ids) == (SUPPORTED, ["S2"]) and "only literature" not in steps
+
+
+@pytest.mark.parametrize("task, line", [
+    (COST_TASK, "A1: 560 euros"),  # the wrong product is quoted, not fixed: the answer line keeps it
+    ("Check the batch cost of 12 crates at 45 euros.", "A1: 540 euros"),  # the answer's own product: follows
+])
+def test_quoted_wrong_product_keeps_the_answer_line(task, line):
+    out, fixes, _ = fix_arithmetic(f"{COST_DRAFT}\nA1: 560 euros", 0.005, task=task)
+    assert fix_answer_lines(out, fixes)[0].endswith(line)
+
+
+@pytest.mark.anyio
+async def test_quoted_wrong_product_answer_line_in_the_loop(cfg, fake, knowledge):
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content(f"{COST_DRAFT}\n\nA1: 560 euros")]]
+    question = [{"role": "user", "content": COST_TASK}]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(question)]
+    assert next(i["content"] for i in items if "content" in i) == f"{COST_DRAFT}\n\nA1: 560 euros"
+    assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []

@@ -259,6 +259,7 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
     ("reasoning_policy", "max_calc_rounds", -1, r"reasoning_policy\.max_calc_rounds"),
     ("reasoning_policy", "answer_retry_prompt", " ", r"reasoning_policy\.answer_retry_prompt"),
     ("reasoning_policy", "text_tool_calls", None, r"reasoning_policy\.text_tool_calls"),
+    ("reasoning_policy", "run_written_calculations", None, r"reasoning_policy\.run_written_calculations"),
     ("retrieval", "passage_chars", 0, r"retrieval\.passage_chars"),
 ])
 def test_tool_and_search_settings_validated(tmp_path, section, key, value, named):
@@ -267,6 +268,24 @@ def test_tool_and_search_settings_validated(tmp_path, section, key, value, named
         del data[section][key]
     else:
         data[section][key] = value
+    with pytest.raises(ConfigError, match=named):
+        load_config(write(tmp_path, data))
+
+
+@pytest.mark.parametrize("change, named", [
+    ({"coverage_repair_prompt": " "}, r"reasoning_policy\.coverage_repair_prompt"),
+    ({"coverage_repair_prompt": "Write the missing lines."}, r"reasoning_policy\.coverage_repair_prompt: .*\{lines\}"),
+    ({"coverage_repair": None}, r"reasoning_policy\.coverage_repair"),
+])
+def test_coverage_repair_settings(tmp_path, change, named):
+    p = load_config(write(tmp_path)).reasoning_policy
+    assert p.coverage_repair and "{lines}" in p.coverage_repair_prompt
+    data = base()
+    for key, value in change.items():
+        if value is None:
+            del data["reasoning_policy"][key]
+        else:
+            data["reasoning_policy"][key] = value
     with pytest.raises(ConfigError, match=named):
         load_config(write(tmp_path, data))
 
@@ -285,7 +304,7 @@ def test_tool_texts(tmp_path):
 
 def test_answer_robustness_settings(tmp_path):
     p = load_config(write(tmp_path)).reasoning_policy
-    assert p.max_calc_rounds == 1 and p.text_tool_calls and p.empty_answer_retry
+    assert p.max_calc_rounds == 1 and p.text_tool_calls and p.empty_answer_retry and p.run_written_calculations
     assert p.answer_retry_request == {"chat_template_kwargs": {"enable_thinking": False}}
     data = base()
     data["reasoning_policy"]["tool_call_markup"]["call"] = "<tool_call>("
@@ -357,7 +376,8 @@ def test_conservative_check_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.arithmetic_prefixes is v.skip_derived_claims is v.keep_uncorrected is v.arithmetic_strict_parse is True
     assert v.arithmetic_max_change == 100
-    for key in ("keep_uncorrected", "arithmetic_strict_parse", "arithmetic_max_change"):
+    assert v.unit_checks is v.arithmetic_answer_lines is True
+    for key in ("keep_uncorrected", "unit_checks", "arithmetic_answer_lines", "arithmetic_strict_parse", "arithmetic_max_change"):
         data = base()
         del data["verifier"][key]
         with pytest.raises(ConfigError, match=f"verifier.{key}"):
@@ -371,7 +391,9 @@ def test_conservative_check_settings(tmp_path):
 def test_conservative_review_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_answer_lines is v.keep_quotes is True
-    for key in ("consistency_quotes", "ignore_prompt_echo", "consistency_keep_answer_lines", "keep_quotes"):
+    assert v.judge_minimal_edits is True
+    for key in ("consistency_quotes", "ignore_prompt_echo", "consistency_keep_answer_lines", "keep_quotes",
+                "judge_minimal_edits"):
         data = base()
         del data["verifier"][key]
         with pytest.raises(ConfigError, match=f"verifier.{key}"):

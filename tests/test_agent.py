@@ -258,6 +258,7 @@ async def test_draft_for_in_process_callers_only(cfg, fake, knowledge):
 # --- answer robustness: calculator rounds, tool calls written as text, empty answers -----------------
 
 XML_CALL = "<tool_call>\n<function=calculate>\n<parameter=expressions>\n0.48 * 1000\n</parameter>\n</function>\n</tool_call>"
+LOOKUP_CALL = "<tool_call>\n<function=lookup_compound>\n<parameter=query>\ncaffeine\n</parameter>\n</function>\n</tool_call>"
 
 
 def calc_round(expression="2 * 3", call_id="k1"):
@@ -288,13 +289,85 @@ def test_lookups_used_up_leave_the_calculator(client, fake, cfg):
 def test_tool_call_written_as_text_after_the_last_round(client, fake, cfg):
     policy = cfg.reasoning_policy
     policy.max_search_depth, policy.max_calc_rounds = 1, 0
-    fake.scripts = [lookup_round(), [content(XML_CALL)], [content("The mass is 480 g.")]]
+    fake.scripts = [lookup_round(), [content(LOOKUP_CALL)], [content("The mass is 480 g.")]]
     r = chat(client)
     assert answer(r) == "The mass is 480 g." and len(fake.requests) == 3
     retry = fake.bodies[2]
     assert retry["messages"] == [*fake.bodies[1]["messages"], {"role": "user", "content": policy.answer_retry_prompt}]
     assert retry["tool_choice"] == "none" and retry["chat_template_kwargs"] == {"enable_thinking": False}
     assert "tool call written as text: removed, final answer asked again" in reasoning_text(r)
+    assert "answer kept" not in reasoning_text(r)  # the retry is complete: used as it is
+
+
+CALC_MSG = {"role": "assistant", "content": None, "tool_calls": [{
+    "id": "call_0", "type": "function", "function": {"name": "calculate", "arguments": '{"expressions": "0.48 * 1000"}'}}]}
+CALC_RESULT = {"role": "tool", "tool_call_id": "call_0", "content": "0.48 * 1000 = 480"}
+
+
+def test_calculation_written_after_the_last_round_is_run(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [content(XML_CALL)], [content("The mass is 480 g.")]]
+    r = chat(client)
+    assert answer(r) == "The mass is 480 g." and len(fake.requests) == 3  # no extra call: the retry has the result
+    retry = fake.bodies[2]
+    ask = {"role": "user", "content": policy.answer_retry_prompt}
+    assert retry["messages"] == [*fake.bodies[1]["messages"], CALC_MSG, CALC_RESULT, ask]
+    assert retry["tool_choice"] == "none" and retry["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "tool call written as text: calculation run, final answer asked again" in reasoning_text(r)
+
+
+QUESTION = [{"role": "user", "content": "Give A1: the mass in g and A2: the energy in J."}]
+
+
+def test_calculation_written_in_the_retry_is_run_and_asked_once_more(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [reasoning("all in the thinking")],
+                    [content("A1: 480 g\nLet me verify the energy:\n" + XML_CALL)], [content("A1: 480 g\nA2: 12 J")]]
+    r = chat(client, QUESTION)
+    assert answer(r) == "A1: 480 g\nA2: 12 J" and len(fake.requests) == 4
+    last = fake.bodies[3]
+    ask = {"role": "user", "content": policy.answer_retry_prompt}
+    assert last["messages"] == [*fake.bodies[2]["messages"], {**CALC_MSG, "content": "A1: 480 g\nLet me verify the energy:"},
+                                CALC_RESULT, ask]
+    assert last["tool_choice"] == "none" and last["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "tool call written as text in the retry: calculation run, final answer asked once more" in reasoning_text(r)
+    assert "answer kept" not in reasoning_text(r)
+
+
+def test_one_more_call_at_most_and_the_most_complete_answer_kept(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [content("A1: 480 g\nLet me check:\n" + XML_CALL)],
+                    [content("A1: 480 g\nA2: 12 J\nLet me verify the energy:\n" + XML_CALL)],
+                    [content("Let me recompute everything once more, step by step, to be sure.\n" + XML_CALL)]]
+    fake.chunks = [content("never asked")]
+    r = chat(client, QUESTION)
+    assert len(fake.requests) == 4  # the lookup, the draft, the retry and one more call
+    assert answer(r) == "A1: 480 g\nA2: 12 J\nLet me verify the energy:"  # the retry: both requested lines
+    text = reasoning_text(r)
+    assert text.count("calculation run") == 2 and "tool call written as text in the retry: removed\n" in text
+    assert "answer kept: the retry (2 requested answer lines, ends at a removed tool call, " in text
+
+
+def test_lookup_written_in_the_retry_removed_and_the_best_answer_kept(client, fake, cfg):
+    cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [content("**A1:** 194.19 g/mol\nA2: C8H10N4O2\n" + LOOKUP_CALL)],
+                    [content("I should look the formula up again to be sure of every atom.\n" + LOOKUP_CALL)]]
+    r = chat(client, [{"role": "user", "content": "Give A1: the molar mass and A2: the formula of caffeine."}])
+    assert answer(r) == "**A1:** 194.19 g/mol\nA2: C8H10N4O2" and len(fake.requests) == 3
+    assert "tool call written as text in the retry: removed\n" in reasoning_text(r)
+    assert "answer kept: the draft (2 requested answer lines, ends at a removed tool call, " in reasoning_text(r)
+
+
+def test_complete_answer_kept_over_a_longer_fragment(client, fake):
+    unknown = "<function=browse>\n<parameter=url>\nx\n</parameter>\n</function>"
+    fake.scripts = [[content(unknown + "\nCaffeine is 194.19 g/mol.")],
+                    [content("I should look this up once more before I answer, to be precise.\n" + LOOKUP_CALL)]]
+    r = chat(client)
+    assert answer(r) == "Caffeine is 194.19 g/mol." and len(fake.requests) == 2
+    assert "answer kept: the draft (0 requested answer lines, complete, 25 characters)" in reasoning_text(r)
 
 
 def test_tool_call_written_as_text_is_run_when_rounds_are_left(client, fake):
@@ -317,7 +390,7 @@ def test_json_tool_call_written_as_text(client, fake):
 
 def test_unknown_tool_written_as_text_removed_and_no_answer_dropped(client, fake):
     unknown = "<function=browse>\n<parameter=url>\nx\n</parameter>\n</function>"
-    fake.scripts = [[content("Caffeine is 194.19 g/mol.\n" + unknown)], [content(XML_CALL)]]
+    fake.scripts = [[content("Caffeine is 194.19 g/mol.\n" + unknown)], [content(LOOKUP_CALL)]]
     r = chat(client)
     assert answer(r) == "Caffeine is 194.19 g/mol." and len(fake.requests) == 2  # the retry wrote only a call
     assert "removed, final answer asked again" in reasoning_text(r) and "no answer on the retry" in reasoning_text(r)
@@ -350,6 +423,103 @@ def test_safety_nets_switched_off(cfg, fake, knowledge):
         assert answer(chat(c)) == NO_ANSWER and len(fake.requests) == 2
 
 
+def test_written_calculations_switched_off(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds, policy.run_written_calculations = 1, 0, False
+    fake.scripts = [lookup_round(), [content(XML_CALL)], [content("It is 480 g.\n" + XML_CALL)]]
+    fake.chunks = [content("never asked")]
+    r = chat(client)
+    assert answer(r) == "It is 480 g." and len(fake.requests) == 3
+    assert fake.bodies[2]["messages"] == [*fake.bodies[1]["messages"], {"role": "user", "content": policy.answer_retry_prompt}]
+    text = reasoning_text(r)
+    assert "tool call written as text: removed, final answer asked again" in text and "calculation run" not in text
+    assert "tool call written as text in the retry: removed\n" in text
+
+
+TEN_LINES = "Check the report's eight statements. Finish with exactly these lines:\n" + "\n".join(
+    f"A{i}: <verdict {i}>" for i in range(1, 11))
+EIGHT = "Statements 7 and 8 are discussed above.\n" + "\n".join(f"A{i}: true" for i in range(1, 9))
+
+
+def ask(client, question):
+    return chat(client, [{"role": "user", "content": question}])
+
+
+def test_missing_answer_lines_asked_for_once_and_appended(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    fake.scripts = [[content(EIGHT), finish("stop")], [content("A9: false\nA10: true")]]
+    r = ask(client, TEN_LINES)
+    assert answer(r) == EIGHT + "\nA9: false\nA10: true" and len(fake.requests) == 2
+    repair = fake.bodies[1]
+    assert "tools" not in repair and "tool_choice" not in repair
+    assert repair["chat_template_kwargs"] == {"enable_thinking": False}  # answer_retry_request
+    assert repair["messages"] == [
+        {"role": "system", "content": policy.system_prompt}, {"role": "user", "content": TEN_LINES},
+        {"role": "assistant", "content": EIGHT},
+        {"role": "user", "content": policy.coverage_repair_prompt.replace("{lines}", "A9: <verdict 9>\nA10: <verdict 10>")}]
+    trace = reasoning_text(r)
+    assert "answer lines missing: A9, A10; asked for them" in trace and "answer lines added: A9, A10" in trace
+
+
+@pytest.mark.anyio
+async def test_draft_item_has_the_appended_lines(cfg, fake, knowledge):  # what the checks and the evals get
+    fake.scripts = [[content(EIGHT)], [content("A9: false\nA10: true")]]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(
+        [{"role": "user", "content": TEN_LINES}])]
+    assert {"draft": EIGHT + "\nA9: false\nA10: true"} in items
+
+
+def test_complete_answer_needs_no_extra_call(client, fake):
+    draft = "\n".join(f"- **A{i}:** true" for i in range(1, 11))
+    fake.scripts = [[content(draft)]]
+    r = ask(client, TEN_LINES)
+    assert answer(r) == draft and len(fake.requests) == 1 and "answer lines" not in reasoning_text(r)
+
+
+def test_only_the_missing_labelled_lines_of_the_reply_are_used(client, fake):
+    question = "Claim 1: the mass is 5 g. Claim 2: it is dry. Finish with: A1: <claim 1> A2: <claim 2>"
+    fake.scripts = [[content("A1: true")],
+                    [content("Here you go.\nA1: false\nClaim 2: true\nB7: x\nA2: <claim 2>\n**A2:** false, no data\nA2: x")]]
+    r = ask(client, question)
+    assert answer(r) == "A1: true\n**A2:** false, no data" and len(fake.requests) == 2
+
+
+def test_labels_the_task_does_not_ask_for_are_never_requested(client, fake):
+    fake.scripts = [[content("A1: true, the mass matches.")]]
+    assert answer(ask(client, "Claim 1: the mass is 5 g. Answer as A1: <claim 1>")) == "A1: true, the mass matches."
+    assert len(fake.requests) == 1
+
+
+@pytest.mark.parametrize("reply, note", [
+    (CONNECT_ERROR, "answer line request failed"),
+    ([content("I cannot add more.")], "no requested answer line in the reply: answer kept"),
+])
+def test_repair_that_fails_keeps_the_answer(client, fake, reply, note):
+    fake.scripts = [[content(EIGHT)], reply]
+    r = ask(client, TEN_LINES)
+    assert answer(r) == EIGHT and len(fake.requests) == 2 and note in reasoning_text(r)
+    assert r.text.endswith("data: [DONE]\n\n")
+
+
+def test_coverage_checked_on_the_answer_kept(client, fake, cfg):  # after the most complete reply is chosen
+    cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 0
+    kept = "**A1:** 194.19 g/mol\nA2: C8H10N4O2"
+    fake.scripts = [lookup_round(), [content(kept + "\n" + LOOKUP_CALL)],
+                    [content("I should look the formula up again to be sure of every atom.\n" + LOOKUP_CALL)],
+                    [content("A3: 58-08-2")]]
+    r = ask(client, "For caffeine give A1: <molar mass> A2: <formula> A3: <CAS number>")
+    assert answer(r) == kept + "\nA3: 58-08-2" and len(fake.requests) == 4
+    assert fake.bodies[3]["messages"][-2] == {"role": "assistant", "content": kept}
+    text = reasoning_text(r)
+    assert text.index("answer kept: the draft") < text.index("answer lines missing: A3") < text.index("added: A3")
+
+
+def test_coverage_repair_switched_off(client, fake, cfg):
+    cfg.reasoning_policy.coverage_repair = False
+    fake.scripts = [[content(EIGHT)]]
+    assert answer(ask(client, TEN_LINES)) == EIGHT and len(fake.requests) == 1
+
+
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
     calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")
@@ -359,6 +529,8 @@ def test_markup_read_also_when_cut_off(cfg):
     assert rest == "x" and json.loads(calls[0]["function"]["arguments"]) == {"query": "a b", "domain": "physics"}
     assert [c["function"]["name"] for c in markup.split("<tool_call>not json</tool_call>")[0]] == [""]
     assert markup.split("no markup") == ([], "no markup")
+    assert markup.cut("Plan.\n" + XML_CALL + "\n ") and markup.cut("Plan.\n<function=calculate><parameter=expressions>2")
+    assert not markup.cut(XML_CALL + "\nIt is 480.") and not markup.cut("no markup")
 
 
 # --- thinking budget ---------------------------------------------------------------------------------
@@ -382,9 +554,10 @@ def test_thinking_budget_follows_the_question(cfg):
 def test_thinking_budget_on_every_reasoner_round(client, fake):
     fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
     r = chat(client, [{"role": "user", "content": LONG_TASK}])
-    sent = [(b.get(FIELD), b["max_tokens"]) for b in fake.bodies]
+    *sent, repair = [(b.get(FIELD), b["max_tokens"]) for b in fake.bodies]  # then the coverage repair of A1-A6
     budget = sent[0][0]
     assert sent == [(budget, budget + 3072)] * 2 and budget >= 0.9 * 4096  # every round: the budget + the answer room
+    assert repair == (None, 4096)  # the coverage repair does not think
     steps = reasoning_text(r)
     assert steps.count("> thinking budget:") == 1 and f"\n\n> thinking budget: {budget} tokens\n" in steps
 
@@ -397,8 +570,8 @@ def test_short_question_keeps_the_old_request_size(client, fake, cfg):
 def test_no_thinking_budget_on_the_retry(client, fake):
     fake.scripts = [[reasoning("the whole answer, A1: 42"), finish("stop")], [content("A1: 42")]]
     chat(client, [{"role": "user", "content": LONG_TASK}])
-    first, retry = fake.bodies
-    assert first[FIELD] > 1024 and FIELD not in retry  # the retry does not think
+    first, retry, repair = fake.bodies  # repair: the coverage repair of A2-A6
+    assert first[FIELD] > 1024 and FIELD not in retry and FIELD not in repair  # the retry does not think
     assert retry["max_tokens"] == 4096  # model_backend.max_tokens, not the answer's
 
 
@@ -422,7 +595,7 @@ def test_fixed_budget_a_arm(cfg, client, fake):
     """min = max = 1024 on the B arm's server: every question gets today's 1024 thinking and 4096 max_tokens."""
     cfg.reasoning_policy.thinking_budget.max_tokens = 1024
     chat(client, [{"role": "user", "content": LONG_TASK}])
-    assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096)
+    assert (fake.bodies[0][FIELD], fake.bodies[0]["max_tokens"]) == (1024, 4096)  # the last: the coverage repair
 
 
 def test_long_question_thinks_less_rather_than_refused(cfg, fake, knowledge):
@@ -438,9 +611,9 @@ def test_long_question_thinks_less_rather_than_refused(cfg, fake, knowledge):
 
     for spare, sent in ((500, 1524), (0, 1024)):  # today's max_tokens (4096) fits with `spare` tokens to spare
         r = ask(need + 4096 + spare)
-        assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (sent, sent + 3072)  # floored at min_tokens
+        assert (fake.bodies[0][FIELD], fake.bodies[0]["max_tokens"]) == (sent, sent + 3072)  # floored at min_tokens
         assert f"> thinking budget: {sent} tokens (shrunk to fit the prompt)\n" in reasoning_text(r)
-        assert within_context(cfg, fake.last_body)
+        assert all(within_context(cfg, b) for b in fake.bodies)
     r = ask(need + 4095)  # even min_tokens does not fit: refused, as today
     assert "too long for the model's context" in answer(r) and not fake.requests
 
@@ -455,7 +628,8 @@ def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
         fake.requests.clear()
         fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
         r = chat(c, question)
-    assert all(FIELD in b for b in with_budget) and not any(FIELD in b for b in fake.bodies)
+    assert [FIELD in b for b in with_budget] == [True, True, False]  # the last: the coverage repair of A1-A6
+    assert not any(FIELD in b for b in fake.bodies)
     old = [{**{k: v for k, v in b.items() if k != FIELD}, "max_tokens": cfg.model_backend.max_tokens} for b in with_budget]
     assert fake.bodies == old  # nothing else differs
     assert "thinking budget" not in reasoning_text(r)
