@@ -107,18 +107,18 @@ class Agent:
         self.verifier = Verifier(cfg, llm, knowledge) if verify else None
         self.annotated = cfg.verifier.answer_style == "annotated"
         self.context = cfg.context_tokens
-        self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
+        self.max_tokens = cfg.model_backend.max_tokens  # per call without a thinking budget (and with field "")
         self.chars_per_token = cfg.model_backend.chars_per_token
         self.markup = _Markup(self.policy.tool_call_markup) if self.policy.text_tool_calls else None
 
     def _estimate(self, messages: list[dict[str, Any]]) -> int:
         return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
 
-    def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
         """Drop the oldest turns until system + history use at most half of the prompt budget (the rest is
         for tool results); what remains starts with a user message, and the last message is always kept."""
         history = list(history)
-        while len(history) > 1 and self._estimate([system, *history]) > self.budget // 2:
+        while len(history) > 1 and self._estimate([system, *history]) > budget // 2:
             history.pop(0)
             while len(history) > 1 and history[0]["role"] != "user":
                 history.pop(0)
@@ -129,17 +129,21 @@ class Agent:
         system = self.policy.system_prompt
         if tools:
             system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
+        tb = self.policy.thinking_budget  # one budget for every reasoner round; the retry and the checks get none
+        thinking: dict[str, Any] = {}
+        if tb.field:  # this answer's reasoner calls may write the budget plus the answer room
+            think = thinking_budget(_question(history), tb)
+            thinking = {tb.field: think, "max_tokens": think + tb.answer_tokens}
+        budget = self.context - thinking.get("max_tokens", self.max_tokens)  # prompt tokens a reasoner call may use
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        messages += self._fit_history(messages[0], history)
-        if (need := self._estimate(messages)) > self.budget:
+        messages += self._fit_history(messages[0], history, budget)
+        if (need := self._estimate(messages)) > budget:
             yield {"content": f"The question is too long for the model's context (about {need} tokens; at most"
-                              f" {self.budget} fit). Please shorten it."}
+                              f" {budget} fit). Please shorten it."}
             yield {"verification": {}}
             yield {"finish_reason": "stop"}
             return
         sources = Sources()
-        tb = self.policy.thinking_budget  # one budget for every reasoner round; the retry and the checks get none
-        thinking = {tb.field: thinking_budget(_question(history), tb)} if tb.field else {}
         calc_rounds = self.policy.max_calc_rounds
         calc_only = [t for t in tools if t["function"]["name"] == CALCULATE] if calc_rounds else []
         rounds, calcs, room_left, ask_again = 0, 0, True, False
@@ -151,10 +155,10 @@ class Agent:
             fields: dict[str, Any] = {"tools": offered} if tools else {}
             if tools and not may_call:
                 fields["tool_choice"] = "none"
-            if (prompt := self._estimate(messages)) > self.budget:  # only by the few chars of a cut note
+            if (prompt := self._estimate(messages)) > budget:  # only by the few chars of a cut note
                 fields["max_tokens"] = self.context - prompt
             reply = _Reply()
-            call = self._call(messages, {**fields, **thinking}, reply)
+            call = self._call(messages, {**thinking, **fields}, reply)  # a lowered max_tokens wins
             try:
                 async for delta in call:
                     yield delta
@@ -182,7 +186,7 @@ class Agent:
                 result, lines, _ = self.knowledge.run(fn["name"], fn["arguments"], sources)
                 yield {"reasoning_content": "".join(f"- {line}\n" for line in lines) + "\n"}
                 message = {"role": "tool", "tool_call_id": c["id"], "content": ""}
-                room = int((self.budget - self._estimate([*messages, message])) * self.chars_per_token)
+                room = int((budget - self._estimate([*messages, message])) * self.chars_per_token)
                 if len(result) > room:  # keep within the context; no further tool rounds after this one
                     result, room_left = result[: max(0, room - len(CUT_NOTE))] + CUT_NOTE, False
                     yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
@@ -196,9 +200,9 @@ class Agent:
         if ask_again:  # once, without tools, from the conversation so far
             ask = [*messages, {"role": "user", "content": self.policy.answer_retry_prompt}]
             fields = {**fields, **({"tool_choice": "none"} if tools else {}), **self.policy.answer_retry_request}
-            if (prompt := self._estimate(ask)) > self.budget:
-                room = self.context - prompt
-                fields["max_tokens"] = min(fields.get("max_tokens", room), room)
+            room = self.context - self._estimate(ask)  # the retry has no budget: max_tokens as configured, if it fits
+            if fields.get("max_tokens", self.max_tokens) > room:
+                fields["max_tokens"] = room
             retry = _Reply()
             call = self._call(ask, fields, retry)
             try:

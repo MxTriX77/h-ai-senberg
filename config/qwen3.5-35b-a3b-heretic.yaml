@@ -8,7 +8,8 @@
 
 model_backend:
   model_id: "${MODEL_ID:-qwen3.5-35b-a3b-heretic}"
-  max_tokens: 12288                        # thinking up to 8192 + answer (4096); prompt budget 32768 - 12288
+  max_tokens: 8192                         # calls without a thinking budget (as before: thinking up to 4096 + answer);
+                                           # a reasoner call with one: budget + answer_tokens, prompt room 32768 - that
   # Sampling: the precise Qwen3.5 settings from config.yaml (temperature 0.6, presence_penalty 0).
   # The base card's general thinking mode would be temperature 1.0, presence_penalty 1.5.
 
@@ -16,6 +17,7 @@ reasoning_policy:
   thinking_budget:                         # signals as in config.yaml
     min_tokens: 4096                       # it thinks ~3.7k tokens: short questions keep the old cap
     max_tokens: "${REASONING_BUDGET:-8192}"   # same variable as the server cap below
+    answer_tokens: 4096                    # 4096 + 4096 = the old max_tokens for short questions
 
 llama_server:
   model_path: "${MODEL_PATH:-models/Qwen3.5-35B-A3B-uncensored-heretic.i1-IQ3_XS.gguf}"

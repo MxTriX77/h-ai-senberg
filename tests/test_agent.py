@@ -173,13 +173,21 @@ def within_context(cfg, body) -> bool:
     return prompt + body.get("max_tokens", cfg.model_backend.max_tokens) <= cfg.context_tokens
 
 
+def limit_output(cfg, tokens=1000):
+    """Let every model call write at most `tokens`: thinking budget + answer room, and max_tokens for the rest."""
+    tb = cfg.reasoning_policy.thinking_budget
+    cfg.model_backend.max_tokens = tokens
+    tb.min_tokens = tb.max_tokens = tokens // 2
+    tb.answer_tokens = tokens - tokens // 2
+
+
 def base_tokens(cfg, knowledge) -> int:
     system = f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"
     return estimate_tokens([{"role": "system", "content": system}], cfg.model_backend.chars_per_token, knowledge.tools)
 
 
 def test_long_history_trimmed(cfg, fake, knowledge):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 3000
     turns = [{"role": r, "content": f"{r} turn {i} " + "x" * 600} for i in range(10) for r in ("user", "assistant")]
     fake.scripts = [[content("ok")]]
@@ -192,7 +200,7 @@ def test_long_history_trimmed(cfg, fake, knowledge):
 
 
 def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkeypatch):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 100
     big = "x" * 4 * base_tokens(cfg, knowledge)  # one result is larger than all the room left
     monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
@@ -209,7 +217,7 @@ def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkey
 
 
 def test_question_too_long(cfg, fake, knowledge):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + base_tokens(cfg, knowledge) + 100
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         r = chat(c, [{"role": "user", "content": "x" * 5000}])
@@ -374,17 +382,47 @@ def test_thinking_budget_follows_the_question(cfg):
 def test_thinking_budget_on_every_reasoner_round(client, fake):
     fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
     r = chat(client, [{"role": "user", "content": LONG_TASK}])
-    sent = [b.get(FIELD) for b in fake.bodies]
-    assert len(sent) == 2 and sent[0] == sent[1] >= 0.9 * 4096  # the same budget for every round of the answer
+    sent = [(b.get(FIELD), b["max_tokens"]) for b in fake.bodies]
+    budget = sent[0][0]
+    assert sent == [(budget, budget + 3072)] * 2 and budget >= 0.9 * 4096  # every round: the budget + the answer room
     steps = reasoning_text(r)
-    assert steps.count("> thinking budget:") == 1 and f"\n\n> thinking budget: {sent[0]} tokens\n" in steps
+    assert steps.count("> thinking budget:") == 1 and f"\n\n> thinking budget: {budget} tokens\n" in steps
+
+
+def test_short_question_keeps_the_old_request_size(client, fake, cfg):
+    chat(client, [{"role": "user", "content": "What is the molar mass of water?"}])
+    assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096) == (1024, cfg.model_backend.max_tokens)
 
 
 def test_no_thinking_budget_on_the_retry(client, fake):
     fake.scripts = [[reasoning("the whole answer, A1: 42"), finish("stop")], [content("A1: 42")]]
-    chat(client)
+    chat(client, [{"role": "user", "content": LONG_TASK}])
     first, retry = fake.bodies
-    assert first[FIELD] == 1024 and FIELD not in retry  # the retry does not think
+    assert first[FIELD] > 1024 and FIELD not in retry  # the retry does not think
+    assert retry["max_tokens"] == 4096  # model_backend.max_tokens, not the answer's
+
+
+def test_cut_logic_uses_the_answers_max_tokens(cfg, fake, knowledge, monkeypatch):
+    cfg.model_backend.max_tokens = 1000  # calls without a budget
+    tb = cfg.reasoning_policy.thinking_budget
+    tb.min_tokens = tb.max_tokens = 1500
+    tb.answer_tokens = 500  # this answer's calls: 2000
+    cfg.llama_server.ctx_size = 2000 + 2 * base_tokens(cfg, knowledge) + 100
+    big = "x" * 4 * base_tokens(cfg, knowledge)
+    monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
+    fake.scripts = [lookup_round(), [content("answer")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    first, second = (b["max_tokens"] for b in fake.bodies)
+    assert answer(r) == "answer" and first == 2000 and second > 1900  # cut for 2000, not for 1000 (then second ~1000)
+    assert all(within_context(cfg, b) for b in fake.bodies) and "shortened to fit" in reasoning_text(r)
+
+
+def test_fixed_budget_a_arm(cfg, client, fake):
+    """min = max = 1024 on the B arm's server: every question gets today's 1024 thinking and 4096 max_tokens."""
+    cfg.reasoning_policy.thinking_budget.max_tokens = 1024
+    chat(client, [{"role": "user", "content": LONG_TASK}])
+    assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096)
 
 
 def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
@@ -398,5 +436,6 @@ def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
         fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
         r = chat(c, question)
     assert all(FIELD in b for b in with_budget) and not any(FIELD in b for b in fake.bodies)
-    assert fake.bodies == [{k: v for k, v in b.items() if k != FIELD} for b in with_budget]  # nothing else differs
+    old = [{**{k: v for k, v in b.items() if k != FIELD}, "max_tokens": cfg.model_backend.max_tokens} for b in with_budget]
+    assert fake.bodies == old  # nothing else differs
     assert "thinking budget" not in reasoning_text(r)

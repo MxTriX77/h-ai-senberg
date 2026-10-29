@@ -15,7 +15,8 @@ model_backend:
   api_key: "${API_KEY:-}"                  # empty for local llama-server; set in .env for cloud backends
   model_id: "${MODEL_ID:-qwen3.5-9b}"      # sent as `model`; also llama-server's --alias
   temperature: 0.6
-  max_tokens: 7168                         # per call: thinking (up to reasoning_policy.thinking_budget.max_tokens) + answer (3072)
+  max_tokens: 4096                         # per call without a thinking budget (thinking up to the server cap + answer); a
+                                           # reasoner call with one: its budget + reasoning_policy.thinking_budget.answer_tokens
   timeout_s: null                          # read limit in s; null = wait as long as the backend needs (queue, slow prompt)
   wait_s: 300                              # retry a backend that refuses connections or answers 503 (loading, restarting)
   context_tokens: null                     # backend context in tokens; null = llama_server.ctx_size
@@ -73,12 +74,14 @@ reasoning_policy:
   answer_retry_request:                    # fields merged into that call
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
   thinking_budget:                         # thinking tokens per reasoner call: min_tokens + (max_tokens - min_tokens) × share
-                                           # of the question, the same for every round of one answer; the retry above and
-                                           # the judge and review calls (no thinking) get none
-    field: "thinking_budget_tokens"        # request field the backend reads (llama-server b11782+); "" = send none, so only
-                                           # llama_server reasoning-budget caps thinking, as before this setting
-    min_tokens: 1024                       # share 0: a short question (the old server cap)
-    max_tokens: "${REASONING_BUDGET:-4096}"   # share 1; same variable as the server cap; must be < model_backend.max_tokens
+                                           # of the question, the same for every round of one answer, which also sets those
+                                           # calls' max_tokens (budget + answer_tokens) and so their prompt room; the retry
+                                           # above and the judge and review calls (no thinking) get none
+    field: "thinking_budget_tokens"        # request field the backend reads (llama-server b11782+); "" = send none: only
+                                           # llama_server reasoning-budget caps thinking, max_tokens as model_backend, as before
+    min_tokens: 1024                       # share 0: a short question (the old server cap; 1024 + 3072 = the old max_tokens)
+    max_tokens: "${REASONING_BUDGET:-4096}"   # share 1; same variable as the server cap
+    answer_tokens: 3072                    # room for the answer after the thinking; max_tokens + this must be < the context
     # share = sum of weight × level, at most 1; a signal's level is 0 up to `start`, 1 from `full`, linear in between
     chars: {start: 200, full: 2000, weight: 0.4}   # characters of the question (the last user message)
     numbers: {start: 2, full: 20, weight: 0.3}     # numbers written in it, read as the checks read them

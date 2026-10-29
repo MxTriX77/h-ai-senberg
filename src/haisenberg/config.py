@@ -99,6 +99,7 @@ class ThinkingBudgetConfig(_Section):
     field: str  # request field the backend reads per call (llama-server: thinking_budget_tokens); "" = send none
     min_tokens: PositiveInt
     max_tokens: PositiveInt
+    answer_tokens: PositiveInt  # room for the answer: such a call's max_tokens is its budget plus this
     chars: BudgetSignal  # characters of the question
     numbers: BudgetSignal  # numbers written in it
     items: BudgetSignal  # enumerated parts and requested answer lines (item_pattern matches)
@@ -311,22 +312,22 @@ class Config(_Section):
 
     @model_validator(mode="after")
     def _thinking_fits(self) -> Config:
-        """A thinking budget sent to the local llama-server fits under its cap and leaves room for the answer."""
+        """The largest thinking budget plus the answer room fits the context, and under a local llama-server's cap."""
         tb, server = self.reasoning_policy.thinking_budget, self.llama_server
-        if not (tb.field and server.enabled):
+        if not tb.field:
             return self
         top = f"reasoning_policy.thinking_budget.max_tokens ({tb.max_tokens})"
+        if tb.max_tokens + tb.answer_tokens >= self.context_tokens:
+            raise ValueError(f"{top} + answer_tokens ({tb.answer_tokens}) leaves no room for the prompt in the"
+                             f" context ({self.context_tokens} tokens)")
         cap = server.flags.get(CAP_FLAG)
-        if cap is not None and not isinstance(cap, bool) and cap != "":  # a value the launcher passes on
+        if server.enabled and cap is not None and not isinstance(cap, bool) and cap != "":  # passed on by the launcher
             try:
                 cap = int(cap)
             except (TypeError, ValueError):
                 raise ValueError(f"llama_server.flags.{CAP_FLAG}: {cap!r} is not a whole number") from None
             if 0 <= cap < tb.max_tokens:  # -1: no cap
                 raise ValueError(f"{top} exceeds the server cap llama_server.flags.{CAP_FLAG} ({cap})")
-        if tb.max_tokens >= self.model_backend.max_tokens:
-            raise ValueError(f"{top} leaves no room for the answer in model_backend.max_tokens"
-                             f" ({self.model_backend.max_tokens})")
         return self
 
 
