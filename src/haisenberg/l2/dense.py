@@ -55,6 +55,9 @@ class DenseIndex:
             raise L2Error(f"dense literature index at {path} was built for the literature store {built_for},"
                           f" not for {store.path} {store.identity()}; rebuild it with: {REBUILD_COMMAND} --restart")
         self.path = path
+        # One query at a time: a single thread searches as fast, and idle OpenMP threads spin on every core,
+        # slowing the CPU embedding server ~20x (0.6-1.4 s instead of ~50 ms per query on Windows).
+        faiss.omp_set_num_threads(1)
         self.index = faiss.read_index(str(path / INDEX))
         if (ivf := faiss.try_extract_index_ivf(self.index)) is not None:
             ivf.nprobe = nprobe
