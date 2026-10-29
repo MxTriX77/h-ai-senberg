@@ -16,11 +16,13 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
+    answer_labels,
     code_check,
     echoes,
     fix_answer_lines,
     fix_arithmetic,
     is_computation,
+    missing_lines,
     parse_fixes,
     parse_verdicts,
     quoted,
@@ -32,6 +34,7 @@ from haisenberg.verifier import (
     run_checkers,
     Verifier,
     split_claims,
+    supplied_lines,
     unconfirmed,
 )
 from test_server import chat, events
@@ -79,6 +82,37 @@ def test_labelled_answer_and_verdict_lines_are_not_claims():
     assert [c.text for c in split_claims(draft, skip_labelled=True)] == ["Note: water boils at 100 °C [S1]."]
 
 
+def test_answer_labels():
+    draft = "A1: 5 g\n- **A2:** true\nClaim D: Incorrect\nNote: x\n(c): 7 g\nThe A3 value is 4"
+    assert answer_labels(draft) == {"A1", "A2", "Claim D", "(c)"}
+
+
+def test_missing_lines_the_task_spells_out():
+    folded = ("Claim 1: the received mass matches the certificate. Claim 2: the product is dry. Finish with exactly "
+              "these lines: A1: <claim 1> A2: <claim 2> **A3:** <claim 3>")  # a YAML-folded task: one line
+    assert missing_lines(folded, "A1: true\n- **A3:** false") == {"A2": "A2: <claim 2>"}
+    lines = "Finish with exactly these lines:\nA1: <mass in g>\nA2: <verdict>\n"
+    assert missing_lines(lines, "**A1:** 5 g\nа2: true") == {}  # bold, case and a Cyrillic look-alike letter
+    assert list(missing_lines(lines, "A1 is 5 g")) == ["A1", "A2"]  # in the task's order
+
+
+def test_missing_lines_ignore_what_the_task_does_not_ask_for():
+    assert missing_lines("Claim 1: the mass is 5 g. Answer with A1: <claim 1>", "A1: true") == {}  # material
+    task = "Atom X: [Ne] 3s1. Sample A: <0.1 % water. Sample B: < 5 %. Step C: <-> D. Give A1: <X or Y>"
+    assert missing_lines(task, "") == {"A1": "A1: <X or Y>"}  # brackets, values, arrows: no placeholders
+    task = "`Claim C: <verdict>` and Statement 7: <true or false>"
+    assert missing_lines(task, "") == {"C": "C: <verdict>", "Statement 7": "Statement 7: <true or false>"}
+    assert missing_lines(task, "C: true\nstatement 7: false") == {}  # labels compare by their id ("Give A1" = "A1")
+    assert missing_lines("No labelled lines asked for: <none>", "") == {}
+
+
+def test_supplied_lines_only_the_missing_labels():
+    reply = ("Here are the lines:\nA1: false\nA2: <verdict>\nA2:\nClaim 2: true\n- **a2:** false, the mass is 4 g\n"
+             "A2: second\nA9: true")
+    assert supplied_lines(reply, ["A2"]) == {"A2": "- **a2:** false, the mass is 4 g"}
+    assert supplied_lines("Sorry, I cannot.", {"A2": "A2: <verdict>"}) == {}
+
+
 def test_bare_labels_are_not_claims():
     draft = "**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG\n**C2.\n- A1)\nVitamin B12. H2O.\n"
     assert texts(draft) == ["Harbour Instruments Ltd was founded in 1994.** ✗ WRONG", "Vitamin B12.", "H2O."]
@@ -92,6 +126,8 @@ def test_bare_labels_are_not_claims():
     ("about 10,000 K", 10000),
     (r"$2\,450$ J", 2450),
     ("h = 6.626 070 15 e-34 J Hz^-1", 6.62607015e-34),
+    ("m_e = 9.109 383 7139 × 10^-31 kg", 9.1093837139e-31),  # CODATA: the last group may have four digits
+    ("m_e = 9.109 383 7139\xa0× 10^-31 kg", 9.1093837139e-31),  # thin and no-break spaces
     ("h = 6.626e-34", 6.626e-34),
     ("h = 6.626 × 10^-34 J s", 6.626e-34),
     ("h = 6.626×10⁻³⁴ J·s", 6.626e-34),
@@ -102,6 +138,14 @@ def test_bare_labels_are_not_claims():
 def test_number_notations(text, value):
     (n,) = read_numbers(text)
     assert n.value == pytest.approx(value)
+
+
+@pytest.mark.parametrize("text, values", [
+    ("1.5 1000 K", [1.5, 1000]),  # a four-digit group only after a three-digit one
+    ("0.1234 5678", [0.1234, 5678]),
+])
+def test_four_digits_after_a_decimal_are_another_number(text, values):
+    assert [n.value for n in read_numbers(text)] == pytest.approx(values)
 
 
 def test_digits_in_words_are_not_numbers():
@@ -890,6 +934,91 @@ def test_answer_line_follows_the_arithmetic_fix(cfg, fake, knowledge, on):
         r = chat(c)
     assert answer(r).endswith("A1: 2.80 g" if on else "A1: 3.80 g")
     assert ("answer line: 3.80 → 2.80" in reasoning_text(r)) is on
+# c4: false corrections from a misread left side.
+@pytest.mark.parametrize("draft", [
+    "growth = ($52.10 − $48.00) / $48.00 × 100 = 8.5 %",
+    "margin = ($2,500,000 − $1,750,000) / $2,500,000 × 100 = 30.0 %",
+    "growth = (v₂ − v₁) / 48.00 × 100 = 8.5 %",
+    "rate = 2.6B / (30×24×60×60) = 1003",
+    "KE = ½ · 800 kg · (20.0 m/s)² = 160,000 J",
+    "μ0 = 2π × 10⁻³ = 6.283 × 10⁻³",
+    "ratio = 8.4 × 10⁷ ÷ 2.1 × 10⁶ = 40",
+    "t = 7.5 × 10⁹ / 250 × 10⁶ = 30",
+    "250 × 10⁶ bytes/s = 250 MB/s",
+    "10⁹ bits/s = 1 Gbit/s",
+    r"$(5.00 \times 10^{-3}) = 5.00 \times 10^{-5}$",
+    "10 Gbit/s × 60 s = 75 GB",  # unit conversions
+    "4 MB × 3 = 12000000 bytes",
+    "2 m × 3 = 600 cm",
+    "$1,200 × 3 = $3,600",
+])
+def test_misread_left_sides_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("growth = (49.21 − 46.00) / 46.00 × 100 = 9.0 %", "growth = (49.21 − 46.00) / 46.00 × 100 = 7.0 %"),
+    ("ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 30", "ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32"),
+    ("$1,200 × 3 = $3,400", "$1,200 × 3 = $3600"),
+    ("**2.5 × 4 = 12 kg**", "**2.5 × 4 = 10 kg**"),
+    ("2 h × 60 = 100 min", "2 h × 60 = 120 min"),  # not a prefixed unit: plain arithmetic
+    ("4.98 × 950 = 5,731", "4.98 × 950 = 4731"),  # a true slip
+])
+def test_whole_left_sides_still_fixed(draft, expected):
+    fixed, fixes, checked = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == expected and len(fixes) == checked == 1
+
+
+def test_strict_parse_switched_off():
+    fixed, (fix,), _ = fix_arithmetic("ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32", 0.005, strict=False)
+    assert fix["fixed"] == "3.200 × 10^13" and fixed.endswith("= 3.200 × 10^13")
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("2.5 × 4 = 1000", "10"),
+    ("2.5 × 4 = 0.05", "10.00"),
+    ("-5 × 2 = 10", "-10"),  # sign flip
+    ("2 × 0.5 = 0", "1"),
+])
+def test_large_changes_only_reported(draft, would_be):
+    fixed, (fix,), checked = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and checked == 1
+    assert fix["fixed"] == would_be and fix["note"] == "not fixed: change too large to be a slip"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0].endswith(f"= {would_be}")  # no limit: fixed as before
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("2.5 hours / 5 = 30 minutes", "0"),  # 0.5 at the stated precision: a change to zero
+    ("2.5 hours / 5 = 30", "0"),
+    ("0.6 / 4 = 15", "0"),
+])
+def test_change_to_zero_only_reported(draft, would_be):
+    fixed, (fix,), _ = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and fix["fixed"] == would_be and fix["note"] == "not fixed: change too large to be a slip"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0] != draft  # no limit: fixed as before
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("Payback: €1224 / €4200 = 3.43 years", "0.29"),  # meant 4200 / 1224
+    ("t = 12 / 48 = 4.0 h", "0.2"),
+])
+def test_reciprocal_result_only_reported(draft, would_be):
+    fixed, (fix,), _ = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and fix["fixed"] == would_be
+    assert fix["note"] == "result is the reciprocal: division written the other way round?"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0] != draft
+
+
+def test_large_change_only_in_the_trace(cfg, fake, knowledge):
+    assert cfg.verifier.arithmetic_max_change == 100
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("It is 2.5 × 4 = 1000.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "It is 2.5 × 4 = 1000."
+    assert "1 calculation recomputed, 0 fixed" in reasoning_text(r)
+    assert "2.5 * 4 = 1000: not fixed: change too large to be a slip (would be 10)" in reasoning_text(r)
 
 
 def test_plain_answer_shows_the_fixed_result(cfg, fake, knowledge):

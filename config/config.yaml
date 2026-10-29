@@ -66,12 +66,22 @@ reasoning_policy:
     function: '<function=([^>\s]+)>'       # Qwen3.5 XML: the tool name; a call without it is read as JSON {"name", "arguments"}
     parameter: '<parameter=([^>\s]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=|</function>)|$)'   # ... and each argument
   empty_answer_retry: true                 # an empty final answer (all of it left in the thinking) is asked for again (once)
-  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call)
+  run_written_calculations: true           # calculate calls written as text where they cannot run as a round (after the
+                                           # last round, or in the retry) are run anyway and their results given to
+                                           # the retry; a calculation written in the retry costs one more call (at most)
+  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call or a run calculation)
     Tools are no longer available. Write your complete final answer to the question above now, as plain
     text without any tool call: use the results you have, show the working and keep the format the
     question asks for.
-  answer_retry_request:                    # fields merged into that call
+  answer_retry_request:                    # fields merged into that call (and into the coverage repair call)
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
+  coverage_repair: true                    # answer lines the task spells out (`A9: <verdict>`) that the draft leaves out are
+                                           # asked for once (no tools) and appended, before the claim checks; false: off
+  coverage_repair_prompt: |                # the user turn of that call after the draft; {lines} = the missing lines as the task writes them
+    Your answer above leaves out these lines that the task asks for:
+    {lines}
+    Write only these lines now, each on its own line, starting with its label and a colon as the task
+    asks. Take each from your answer above. Write nothing else.
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
@@ -158,6 +168,14 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # SI prefix (2452 W = 2.45 kW, 250 mg × 6 = 1.5 g); false: c as written only
   arithmetic_answer_lines: true            # ... and a labelled answer line (A1: …) that states exactly the old wrong c,
                                            # once, gets the fixed value too; false: answer lines keep their values
+  arithmetic_strict_parse: true            # read only a whole left side: a × 10ⁿ is one number (6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32),
+                                           # a currency sign before a number is dropped, an expression with math right before
+                                           # it (an operator, "(", ½, π, "half of", "million") or a scale suffix (1.3B, 20k)
+                                           # is skipped, and so is a wrong c that is a unit conversion (bits → GB, m → cm);
+                                           # false: as before
+  arithmetic_max_change: 100               # a fix that changes c by this factor or more, flips its sign or goes to or from 0
+                                           # (at c's precision), and a division whose c is the reciprocal of its value, is not
+                                           # applied, only listed in the reasoning; 0 = no limit (every fix applied)
   skip_derived_claims: true                # computations (an equation or operation with numbers, or a sentence restating
                                            # the answer's results) and labelled answer/verdict lines (A1: …, Claim C: …)
                                            # are never judged, corrected or removed by the claim checks

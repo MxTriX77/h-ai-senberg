@@ -11,14 +11,14 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 from .config import Config
-from .calc import Arithmetic, computations, find_arithmetic, prefixed
+from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
 from .l1.store import STOPWORDS, Value
 from .l1.text import parse_formula, to_hill
@@ -35,7 +35,8 @@ OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
 _NUM = re.compile(
     r"(?<![\w.^/\\-])(-?)(\d{1,3}(?:(?:[ ,]|\\,)\d{3})+(?!\d)|\d+)"  # sign, integer part (maybe grouped in threes)
-    r"(?:\.(\d+(?: \d{1,3}(?!\d))*))?"  # decimals (maybe grouped, CODATA style)
+    r"(?:\.(\d+(?: \d{1,3}(?!\d))*(?:(?<=[. ]\d{3}) \d{4}(?!\d))?))?"  # decimals (maybe grouped, CODATA style:
+    # threes, the last group maybe four: 9.109 383 7139)
     r"(?:\s*(?:[eE]|(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:\^|\*\*)?)\s*\{?\(?([-+]?\d+)\)?\}?)?"  # exponent
     r"(?!\w)"
 )
@@ -47,7 +48,13 @@ _ABBREV = {"e.g", "i.e", "approx", "ca", "vs", "etc", "cf", "fig", "eq", "no", "
 _MARKERS = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+|>\s*)*")
 _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]claim)\b(.*)$", re.I)
 # A label (an id such as A1, C or (b), maybe after one word: "Claim C", "Claim 3") and a colon starts the line.
-_LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
+_LABEL = r"(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})"
+_LABELLED = re.compile(rf"[*_`]*{_LABEL}[*_`\s]*[:：][*_`]*(?:\s|$)")
+# An answer line the task asks for: a label, a colon and a placeholder in angle brackets (`A9: <verdict>`), anywhere
+# in the text; a placeholder starts with no space, digit, -, = or bracket (`A: <0.1 %`, `A: <-> B` are no placeholders).
+_REQUESTED = re.compile(rf"(?<!\w)[*_`]*({_LABEL})[*_`\s]*[:：][*_`\s]*(<(?![\s\d<>=-])[^<>\n]+>)")
+_ID = re.compile(r"\(?[^\W\d_]\d{0,2}\)?")  # the id of a label (A1, C, (b)), without a word before it
+_LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic letters seen in labels
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -266,8 +273,8 @@ def _result_units(tail: str) -> str:
     return " ".join(units)
 
 
-def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
-                   task: str = "") -> tuple[str, list[dict[str, str]], int]:
+def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True, task: str = "", strict: bool = True,
+                   max_change: float = 0.0) -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
     A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
     result in % as itself or as a fraction) and, with `prefixes`, of the SI prefixes in its chain (a unit
@@ -275,12 +282,16 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
     10^±3, ±6, ±9): off by more than half a unit of its last digit and rel_tol. It is rewritten only when the
     right value is clear; otherwise it is left as written, and so is a number that cannot be read as one.
     With the `task`, a wrong result that is quoted from it (the task writes the same expression with the same
-    result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`."""
+    result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`.
+    With `strict`, only whole left sides are read (calc.find_arithmetic) and a wrong result that is a unit
+    conversion (calc.converted) is left as written. With `max_change`, a fix that changes the stated number by
+    that factor or more, flips its sign or goes to or from zero (at the stated precision), and a division whose
+    stated result is the reciprocal of its value, are not applied either and listed with a `note`."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
-    in_task = _written_results(task, decimal_comma) if task else set()
+    in_task = _written_results(task, decimal_comma, strict) if task else set()
     mask = quoted(draft, task) if task else []
-    for a in find_arithmetic(draft, decimal_comma):
+    for a in find_arithmetic(draft, decimal_comma, strict):
         window = _decimal_points(draft[a.result_at : a.result_at + 80], decimal_comma)
         numbers = read_numbers(window)
         if not numbers or numbers[0].start != 0:
@@ -290,11 +301,14 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
         n, checked = numbers[0], checked + 1
         in_percent = a.as_percent or bool(re.match(r"\s*\\?%", window[n.end :]))
         stated = [(n.value, n.half)] + ([(n.value / 100, n.half / 100)] if in_percent else [])
-        scaled = prefixes and not in_percent and prefixed(f"{a.expression} {_result_units(window[n.end :])}")
+        units = _result_units(window[n.end :])
+        scaled = prefixes and not in_percent and prefixed(f"{a.expression} {units}")
         scales = _SCALES if scaled else (1.0,)
         if any(abs(v * s - lhs) <= max(half * s, rel_tol * abs(lhs))
                for lhs in (a.fraction, a.plain) for v, half in stated for s in scales):
             continue
+        if strict and converted(a.expression, units):
+            continue  # "10 Gbit/s × 60 s = 75 GB": a unit conversion, not plain arithmetic
         right = _right_result(a, in_percent)
         if right is not None and scaled:  # the scale meant: the one within a factor of ten of the stated value
             near = [right / s for s in scales if right * n.value > 0 and abs(math.log10(right / s / n.value)) < 1]
@@ -305,6 +319,14 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
         fix = {"expression": a.expression, "stated": draft[start:end], "fixed": _format(right, n), "at": (start, end)}
         if (a.expression, n.value) in in_task and all(mask[start:end]):
             fix["note"] = "quoted from the task, left as written"
+        elif max_change and "/" in a.expression and any(
+                lhs and abs(v - 1 / lhs) <= max(half, rel_tol / abs(lhs)) for lhs in (a.fraction, a.plain)
+                for v, half in stated):  # "€1224 / €4200 = 3.43 years" meant 4200 / 1224
+            fix["note"] = "result is the reciprocal: division written the other way round?"
+        elif max_change and (right * n.value < 0 or max(abs(right), abs(n.value))
+                             >= max_change * min(abs(right), abs(n.value))
+                             or re.fullmatch(r"-?0(?:\.0+)?", fix["fixed"])):  # 0.5 written as "0"
+            fix["note"] = "not fixed: change too large to be a slip"
         fixes.append(fix)
     for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
         start, end = f.pop("at")
@@ -313,10 +335,10 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
     return draft, fixes, checked
 
 
-def _written_results(text: str, decimal_comma: bool) -> set[tuple[str, float]]:
+def _written_results(text: str, decimal_comma: bool, strict: bool) -> set[tuple[str, float]]:
     """(expression, stated result) of every `expression = result` written in the text."""
     out = set()
-    for a in find_arithmetic(text, decimal_comma):
+    for a in find_arithmetic(text, decimal_comma, strict):
         numbers = read_numbers(_decimal_points(text[a.result_at : a.result_at + 80], decimal_comma))
         if numbers and numbers[0].start == 0:
             out.add((a.expression, numbers[0].value))
@@ -573,11 +595,55 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[^\W\d_]+", text.casefold())
 
 
+def _label_id(label: str) -> str:
+    """A label's id: its last word when that is an id (`Claim C` -> `C`, `with A1` -> `A1`), else the label."""
+    words = label.split()
+    return words[-1] if _ID.fullmatch(words[-1]) else " ".join(words)
+
+
+def _label_key(label: str) -> str:
+    """A label as compared: its id, case and Cyrillic look-alike letters ignored (`А1` = `a1`, `(b)` = `b`)."""
+    return _label_id(label).translate(_LOOKALIKE).casefold().strip("()")
+
+
+def missing_lines(task: str, answer: str) -> dict[str, str]:
+    """The answer lines the task asks for (_REQUESTED) that have no labelled line in the answer (answer_labels):
+    label id -> the line as the task writes it, with that id (`A9: <verdict>`), in the task's order."""
+    seen = {_label_key(label) for label in answer_labels(answer)}
+    missing: dict[str, str] = {}
+    for m in _REQUESTED.finditer(task):
+        if (key := _label_key(m.group(1))) not in seen:
+            seen.add(key)
+            label = _label_id(m.group(1))
+            missing[label] = f"{label}: {m.group(2)}"
+    return missing
+
+
+def supplied_lines(reply: str, labels: Iterable[str]) -> dict[str, str]:
+    """The reply's labelled lines (as in answer_labels) for these labels, the first per label, each with text
+    after the colon that is not only a placeholder (`<…>`): label -> the line."""
+    wanted = {_label_key(label): label for label in labels}
+    found: dict[str, str] = {}
+    for line in reply.splitlines():
+        m = _LABELLED.match(line, _MARKERS.match(line).end())
+        label = wanted.get(_label_key(m.group(0).strip("*_`:： \t"))) if m else None
+        text = line[m.end() :].strip() if m else ""
+        if label and label not in found and text and not (text.startswith("<") and text.endswith(">")):
+            found[label] = line.strip()
+    return found
+
+
 def _answer_line(text: str, start: int, end: int) -> bool:
     """A line that text[start:end] touches is a labelled answer or verdict line (`A1: …`, as in split_claims)."""
     stop = text.find("\n", end)
     lines = text[text.rfind("\n", 0, start) + 1 : stop if stop >= 0 else len(text)].splitlines()
     return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
+
+
+def answer_labels(text: str) -> set[str]:
+    """The labels of the labelled answer or verdict lines in text (`**A1:** …` -> `A1`, as in split_claims)."""
+    found = (_LABELLED.match(line, _MARKERS.match(line).end()) for line in text.splitlines())
+    return {m.group(0).strip("*_`:： \t") for m in found if m}
 
 
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
@@ -657,7 +723,9 @@ class Verifier:
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
                                                         self.cfg.arithmetic_prefixes,
-                                                        question if self.cfg.keep_quotes else "")
+                                                        question if self.cfg.keep_quotes else "",
+                                                        self.cfg.arithmetic_strict_parse,
+                                                        self.cfg.arithmetic_max_change)
         kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
         arithmetic = [a for a in arithmetic if "note" not in a]
         if self.cfg.arithmetic_answer_lines and arithmetic:
