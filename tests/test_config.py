@@ -447,6 +447,19 @@ def test_knowledge_switch_by_environment(monkeypatch):
         load_config(SHIPPED)
 
 
+def test_sampling_seed_from_environment(tmp_path, monkeypatch):
+    path = write(tmp_path)
+    assert load_config(path).model_backend.seed is None  # unset
+    monkeypatch.setenv("EVAL_SEED", "")
+    assert load_config(path).model_backend.seed is None
+    monkeypatch.setenv("EVAL_SEED", "7")
+    assert load_config(path).model_backend.seed == 7
+    for bad in ("-1", "1.5", "abc"):
+        monkeypatch.setenv("EVAL_SEED", bad)
+        with pytest.raises(ConfigError, match="model_backend.seed"):
+            load_config(path)
+
+
 @pytest.mark.parametrize("change, error", [
     ({"knowledge_sets": {"base": ["encyclopedia", "nope"]}}, "unknown stores"),
     ({"stores": {"encyclopedia": {"kind": "encyclopedia", "path": "a.db"}, "other": {"kind": "encyclopedia", "path": "b.db"}},
