@@ -810,6 +810,93 @@ def test_grouped_numbers_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+# c4: false corrections from a misread left side.
+@pytest.mark.parametrize("draft", [
+    "growth = ($52.10 − $48.00) / $48.00 × 100 = 8.5 %",
+    "margin = ($2,500,000 − $1,750,000) / $2,500,000 × 100 = 30.0 %",
+    "growth = (v₂ − v₁) / 48.00 × 100 = 8.5 %",
+    "rate = 2.6B / (30×24×60×60) = 1003",
+    "KE = ½ · 800 kg · (20.0 m/s)² = 160,000 J",
+    "μ0 = 2π × 10⁻³ = 6.283 × 10⁻³",
+    "ratio = 8.4 × 10⁷ ÷ 2.1 × 10⁶ = 40",
+    "t = 7.5 × 10⁹ / 250 × 10⁶ = 30",
+    "250 × 10⁶ bytes/s = 250 MB/s",
+    "10⁹ bits/s = 1 Gbit/s",
+    r"$(5.00 \times 10^{-3}) = 5.00 \times 10^{-5}$",
+    "10 Gbit/s × 60 s = 75 GB",  # unit conversions
+    "4 MB × 3 = 12000000 bytes",
+    "2 m × 3 = 600 cm",
+    "$1,200 × 3 = $3,600",
+])
+def test_misread_left_sides_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("growth = (49.21 − 46.00) / 46.00 × 100 = 9.0 %", "growth = (49.21 − 46.00) / 46.00 × 100 = 7.0 %"),
+    ("ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 30", "ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32"),
+    ("$1,200 × 3 = $3,400", "$1,200 × 3 = $3600"),
+    ("**2.5 × 4 = 12 kg**", "**2.5 × 4 = 10 kg**"),
+    ("2 h × 60 = 100 min", "2 h × 60 = 120 min"),  # not a prefixed unit: plain arithmetic
+    ("4.98 × 950 = 5,731", "4.98 × 950 = 4731"),  # a true slip
+])
+def test_whole_left_sides_still_fixed(draft, expected):
+    fixed, fixes, checked = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == expected and len(fixes) == checked == 1
+
+
+def test_strict_parse_switched_off():
+    fixed, (fix,), _ = fix_arithmetic("ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32", 0.005, strict=False)
+    assert fix["fixed"] == "3.200 × 10^13" and fixed.endswith("= 3.200 × 10^13")
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("2.5 × 4 = 1000", "10"),
+    ("2.5 × 4 = 0.05", "10.00"),
+    ("-5 × 2 = 10", "-10"),  # sign flip
+    ("2 × 0.5 = 0", "1"),
+])
+def test_large_changes_only_reported(draft, would_be):
+    fixed, (fix,), checked = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and checked == 1
+    assert fix["fixed"] == would_be and fix["note"] == "not fixed: change too large to be a slip"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0].endswith(f"= {would_be}")  # no limit: fixed as before
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("2.5 hours / 5 = 30 minutes", "0"),  # 0.5 at the stated precision: a change to zero
+    ("2.5 hours / 5 = 30", "0"),
+    ("0.6 / 4 = 15", "0"),
+])
+def test_change_to_zero_only_reported(draft, would_be):
+    fixed, (fix,), _ = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and fix["fixed"] == would_be and fix["note"] == "not fixed: change too large to be a slip"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0] != draft  # no limit: fixed as before
+
+
+@pytest.mark.parametrize("draft, would_be", [
+    ("Payback: €1224 / €4200 = 3.43 years", "0.29"),  # meant 4200 / 1224
+    ("t = 12 / 48 = 4.0 h", "0.2"),
+])
+def test_reciprocal_result_only_reported(draft, would_be):
+    fixed, (fix,), _ = fix_arithmetic(draft, 0.005, max_change=100)
+    assert fixed == draft and fix["fixed"] == would_be
+    assert fix["note"] == "result is the reciprocal: division written the other way round?"
+    assert fix_arithmetic(draft, 0.005, max_change=0)[0] != draft
+
+
+def test_large_change_only_in_the_trace(cfg, fake, knowledge):
+    assert cfg.verifier.arithmetic_max_change == 100
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[content("It is 2.5 × 4 = 1000.")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == "It is 2.5 × 4 = 1000."
+    assert "1 calculation recomputed, 0 fixed" in reasoning_text(r)
+    assert "2.5 * 4 = 1000: not fixed: change too large to be a slip (would be 10)" in reasoning_text(r)
+
+
 def test_plain_answer_shows_the_fixed_result(cfg, fake, knowledge):
     fake.chunks = [content("C1: not_said")]
     fake.scripts = [[content("The mass of CaO is 0.0500 × 56.08 = 3.80 g.")]]

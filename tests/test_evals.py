@@ -194,6 +194,35 @@ def test_answer_lines_last_wins_and_markdown():
     assert answer_lines(text) == {"A1": "2.61 g", "A2": "80.5 %", "A3": "salicylic acid"}
 
 
+@pytest.mark.parametrize("text, lines", [
+    ("A1: верно A2: неверно A3: не подтверждено", {"A1": "верно", "A2": "неверно", "A3": "не подтверждено"}),
+    ("Итог:\nA1: inconsistent A2: 0.167 mol A3: 0.200 mol",
+     {"A1": "inconsistent", "A2": "0.167 mol", "A3": "0.200 mol"}),
+    ("**A1:** 22.0 g **A2:** 16.8 L", {"A1": "22.0 g", "A2": "16.8 L"}),
+    ("А1: верно, А2：неверно", {"A1": "верно,", "A2": "неверно"}),  # Cyrillic А, full-width colon
+    ("A1: 2.5\nA1: 2.61 g A2: 80.5 %\nA2: 81 %", {"A1": "2.61 g", "A2": "81 %"}),  # last occurrence wins
+])
+def test_several_answer_lines_on_one_line(text, lines):
+    assert answer_lines(text) == lines
+
+
+@pytest.mark.parametrize("text, lines", [
+    ("A1: 0.5 mol\nSee note: A2 is the mass\nA2: 16 g", {"A1": "0.5 mol", "A2": "16 g"}),
+    ("A1: See note: A2 is 16 g", {"A1": "See note: A2 is 16 g"}),  # no colon after A2
+    ("A1: 0.5 mol (A2: 16 g)", {"A1": "0.5 mol (A2: 16 g)"}),  # not after a space
+    ("A2: mass of O2: 16 g", {"A2": "mass of O2: 16 g"}),  # a formula, not a label of the line's letter
+    ("A1: S4: wrong unit, S5: wrong sum", {"A1": "S4: wrong unit, S5: wrong sum"}),
+])
+def test_colons_in_text_do_not_split(text, lines):
+    assert answer_lines(text) == lines
+
+
+def test_one_line_answer_scored_per_part():
+    problem = {"lang": "en", "parts": [{"label": "A1", "number": 22.0, "rel_tol": 0.01},
+                                      {"label": "A2", "number": 16.8, "rel_tol": 0.01}]}
+    assert score_parts("A1: 22.0 g A2: 16.8 L", problem) == [True, True]
+
+
 def test_cyrillic_look_alike_labels():
     text = "\u04101: 2,61 г\n**\u0410\u0032**\uff1a верно\n\u04303: Масса\n\u04121: x"  # А1, А2 full-width colon, а3, В1
     assert answer_lines(text) == {"A1": "2,61 г", "A2": "верно", "A3": "Масса", "B1": "x"}  # values untouched
