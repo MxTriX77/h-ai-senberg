@@ -51,12 +51,18 @@ class ModelBackendConfig(_Section):
     api_key: str
     model_id: str
     temperature: float
+    seed: NonNegativeInt | None = None  # sent as `seed` when set; None (empty EVAL_SEED) = no seed
     max_tokens: int
     timeout_s: PositiveFloat | None  # read limit; None = wait as long as the backend needs
     wait_s: NonNegativeFloat  # retry a backend that refuses connections or answers 503 this long
     context_tokens: PositiveInt | None = None  # None = llama_server.ctx_size
     chars_per_token: PositiveFloat  # token estimate for the context budget
     extra_body: dict[str, Any] = {}
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _empty_seed(cls, v: Any) -> Any:
+        return None if v == "" else v
 
 
 class ToolCallMarkup(_Section):
