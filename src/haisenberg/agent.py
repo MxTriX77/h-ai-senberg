@@ -17,7 +17,7 @@ from typing import Any
 
 from .config import Config, ToolCallMarkup
 from .llm import LLMClient, estimate_tokens
-from .tools import CALCULATE, Knowledge, Sources
+from .tools import CALC_TOOLS, Knowledge, Sources
 from .verifier import Verification, Verifier, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
@@ -119,6 +119,8 @@ class Agent:
         system = self.policy.system_prompt
         if tools:
             system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
+        if self.knowledge.computer:
+            system = f"{system.rstrip()}\n{self.policy.compute_prompt}"
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         messages += self._fit_history(messages[0], history)
         if (need := self._estimate(messages)) > self.budget:
@@ -129,7 +131,7 @@ class Agent:
             return
         sources = Sources()
         calc_rounds = self.policy.max_calc_rounds
-        calc_only = [t for t in tools if t["function"]["name"] == CALCULATE] if calc_rounds else []
+        calc_only = [t for t in tools if t["function"]["name"] in CALC_TOOLS] if calc_rounds else []
         rounds, calcs, room_left, ask_again = 0, 0, True, False
         while True:
             lookups_left = rounds < self.policy.max_search_depth
@@ -159,7 +161,7 @@ class Agent:
                     calls, reply.content, ask_again = (written if run else []), rest, not run
             if not calls:
                 break
-            if calcs_left and (not lookups_left or all(c["function"]["name"] == CALCULATE for c in calls)):
+            if calcs_left and (not lookups_left or all(c["function"]["name"] in CALC_TOOLS for c in calls)):
                 calcs += 1
             else:
                 rounds += 1

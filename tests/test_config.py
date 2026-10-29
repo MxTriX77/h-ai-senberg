@@ -271,7 +271,8 @@ def test_tool_and_search_settings_validated(tmp_path, section, key, value, named
 
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
-    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate"}
+    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate", "compute"}
+    assert set(cfg.tools["compute"].parameters) == {"operations"}
     assert set(cfg.tools["calculate"].parameters) == {"expressions"}
     assert cfg.verifier.arithmetic_rel_tol == 0.005
     assert set(cfg.tools["search_knowledge"].parameters) == {"query", "domain"}
@@ -289,6 +290,19 @@ def test_answer_robustness_settings(tmp_path):
     data["reasoning_policy"]["tool_call_markup"]["call"] = "<tool_call>("
     with pytest.raises(ConfigError, match=r"reasoning_policy\.tool_call_markup\.call: .*invalid regular expression"):
         load_config(write(tmp_path, data))
+
+
+def test_compute_settings(tmp_path):
+    p = load_config(write(tmp_path)).reasoning_policy
+    assert p.compute_tool is True and p.compute_prompt.strip()
+    for key, value in [("compute_tool", None), ("compute_prompt", " ")]:
+        data = base()
+        if value is None:
+            del data["reasoning_policy"][key]
+        else:
+            data["reasoning_policy"][key] = value
+        with pytest.raises(ConfigError, match=rf"reasoning_policy\.{key}"):
+            load_config(write(tmp_path, data))
 
 
 def test_config_and_sources_are_not_profiles(tmp_path, monkeypatch):

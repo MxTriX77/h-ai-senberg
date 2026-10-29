@@ -11,10 +11,11 @@ import json
 import logging
 import re
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import calc
+from . import calc, compute
 from .config import Config, ConfigError
 from .l1.store import STOPWORDS, L1Error, L1Store, Record
 from .l2.store import L2Error, L2Store, PassageRecord
@@ -23,6 +24,8 @@ log = logging.getLogger(__name__)
 
 SEARCH = "search_knowledge"
 CALCULATE = "calculate"  # built-in arithmetic tool, offered next to the knowledge tools
+COMPUTE = "compute"  # built-in procedures tool (dates, lists, schedules), offered right after the calculator
+CALC_TOOLS = (CALCULATE, COMPUTE)  # their rounds are calculator rounds (reasoning_policy.max_calc_rounds)
 TEXT = "text"  # the kind searched by SEARCH
 _CITE = re.compile(r"\[S(\d+)\]")
 
@@ -98,6 +101,10 @@ class Knowledge:
         if self.calculator:
             self.tools.append(_tool(CALCULATE, None, cfg, param="expressions",
                                     schema={"type": "array", "items": {"type": "string"}}))
+        self.computer = self.calculator and cfg.reasoning_policy.compute_tool  # switch; its texts are then required
+        if self.computer:
+            self.tools.append(_tool(COMPUTE, None, cfg, param="operations",
+                                    schema={"type": "array", "items": {"type": "string"}}))
 
     @classmethod
     def open(cls, cfg: Config) -> Knowledge:
@@ -119,7 +126,9 @@ class Knowledge:
         """Run one tool call returning at most k records (default retrieval.top_k_proofs):
         (result text for the model, one line per result for the reasoning, the records' source ids)."""
         if name == CALCULATE and self.calculator:
-            return (*_calculate(arguments), [])
+            return (*_each(arguments, "expressions", lambda e: calc.run_tool(json.dumps({"expression": e}))[0]), [])
+        if name == COMPUTE and self.computer:
+            return (*_each(arguments, "operations", compute.run), [])
         try:
             kind, query, records = self._call(name, arguments, k or self.top_k)
         except _BadCall as e:
@@ -191,23 +200,23 @@ def term_share(query: str, text: str) -> float:
     return sum((w[:4] in stems) if len(w) >= 4 else (w in have) for w in words) / len(words)
 
 
-def _calculate(arguments: str) -> tuple[str, list[str]]:
-    """The `calculate` tool: every one of `expressions` through calc.run_tool, one result line each."""
+def _each(arguments: str, param: str, run: Callable[[Any], str]) -> tuple[str, list[str]]:
+    """A built-in list tool (`calculate`, `compute`): every entry of `param` through `run`, one result line each."""
     try:
         args = json.loads(arguments or "{}")
     except json.JSONDecodeError:
         return "Error: arguments are not valid JSON", ["Error: arguments are not valid JSON"]
-    exprs = args.get("expressions") if isinstance(args, dict) else None
-    if isinstance(exprs, str):  # a list written as text ('["2 * 3", "4 / 5"]') or one expression
+    entries = args.get(param) if isinstance(args, dict) else None
+    if isinstance(entries, str):  # a list written as text ('["2 * 3", "4 / 5"]') or one entry
         try:
-            listed = json.loads(exprs)
+            listed = json.loads(entries)
         except json.JSONDecodeError:
             listed = None
-        exprs = listed if isinstance(listed, list) else [exprs]
-    if not isinstance(exprs, list) or not exprs:
-        lines = ["Error: 'expressions' must be a non-empty list of expressions"]
+        entries = listed if isinstance(listed, list) else [entries]
+    if not isinstance(entries, list) or not entries:
+        lines = [f"Error: '{param}' must be a non-empty list of {param}"]
     else:
-        lines = [calc.run_tool(json.dumps({"expression": e}))[0] for e in exprs]
+        lines = [run(e) for e in entries]
     return "\n".join(lines), lines
 
 
