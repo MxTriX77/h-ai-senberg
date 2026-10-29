@@ -425,6 +425,26 @@ def test_fixed_budget_a_arm(cfg, client, fake):
     assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096)
 
 
+def test_long_question_thinks_less_rather_than_refused(cfg, fake, knowledge):
+    question = {"role": "user", "content": LONG_TASK}  # its own budget: over 3900 + 3072
+    system = {"role": "system", "content": f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"}
+    need = estimate_tokens([system, question], cfg.model_backend.chars_per_token, knowledge.tools)
+
+    def ask(ctx_size):
+        cfg.llama_server.ctx_size = ctx_size
+        fake.requests.clear()
+        with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+            return chat(c, [question])
+
+    for spare, sent in ((500, 1524), (0, 1024)):  # today's max_tokens (4096) fits with `spare` tokens to spare
+        r = ask(need + 4096 + spare)
+        assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (sent, sent + 3072)  # floored at min_tokens
+        assert f"> thinking budget: {sent} tokens (shrunk to fit the prompt)\n" in reasoning_text(r)
+        assert within_context(cfg, fake.last_body)
+    r = ask(need + 4095)  # even min_tokens does not fit: refused, as today
+    assert "too long for the model's context" in answer(r) and not fake.requests
+
+
 def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
     question = [{"role": "user", "content": LONG_TASK}]
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:

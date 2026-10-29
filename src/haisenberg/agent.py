@@ -131,13 +131,20 @@ class Agent:
             system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
         tb = self.policy.thinking_budget  # one budget for every reasoner round; the retry and the checks get none
         thinking: dict[str, Any] = {}
+        shrunk = ""
         if tb.field:  # this answer's reasoner calls may write the budget plus the answer room
             think = thinking_budget(_question(history), tb)
             thinking = {tb.field: think, "max_tokens": think + tb.answer_tokens}
         budget = self.context - thinking.get("max_tokens", self.max_tokens)  # prompt tokens a reasoner call may use
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         messages += self._fit_history(messages[0], history, budget)
-        if (need := self._estimate(messages)) > budget:
+        need = self._estimate(messages)
+        if thinking and need > budget:  # a long question: think less, down to min_tokens, rather than refuse it
+            fit = max(tb.min_tokens, self.context - need - tb.answer_tokens)
+            if fit < thinking[tb.field]:
+                thinking, shrunk = {tb.field: fit, "max_tokens": fit + tb.answer_tokens}, " (shrunk to fit the prompt)"
+                budget = self.context - thinking["max_tokens"]
+        if need > budget:
             yield {"content": f"The question is too long for the model's context (about {need} tokens; at most"
                               f" {budget} fit). Please shorten it."}
             yield {"verification": {}}
@@ -192,7 +199,7 @@ class Agent:
                     yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
                 messages.append({**message, "content": result})
         if thinking:  # after the rounds, so the first reasoning delta is still the model's own
-            yield {"reasoning_content": f"\n\n> thinking budget: {thinking[tb.field]} tokens\n"}
+            yield {"reasoning_content": f"\n\n> thinking budget: {thinking[tb.field]} tokens{shrunk}\n"}
         text = reply.content.strip()
         if not text and self.policy.empty_answer_retry and not ask_again:
             yield {"reasoning_content": "\n\n> empty answer: final answer asked again\n"}
