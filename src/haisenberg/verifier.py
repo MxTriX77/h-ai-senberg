@@ -59,6 +59,10 @@ _ID = re.compile(r"\(?[^\W\d_]\d{0,2}\)?")  # the id of a label (A1, C, (b)), wi
 _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic letters seen in labels
 _ITEM = re.compile(r"(?<!\w)[^\W\d_]+\d+(?!\w)")  # an item id: letters, then digits (C3, У2, Q1)
 _ITEM_START = re.compile(r"[*_`]*([^\W\d_]+\d+)[*_`]*[.):：][*_`]*(?:\s|$)")  # a list item with one: C3. / У2) / S4:
+_LEAD = re.compile(r"[#*>\s-]*")  # Markdown markers before a section's item id (`### C3.`, `- **У2)**`)
+# A line label and its value (`**Verdict:** Incorrect — …`): up to three words, the first starting with a letter.
+_FIELD = re.compile(r"[#*>\s_`-]*([^\W\d_][^\W_]*(?: [^\W_]+){0,2})[*_`\s]*[:：](.*)")
+_REASON = re.compile(r" [—–-] |[.;,] | \(")  # where a verdict's reason starts: ` — `, `. `, `, `, ` (` …
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -693,6 +697,58 @@ def anchor_lines(task: str, answer: str, reply: str, table: dict[str, str]) -> t
 
 def _value_words(text: str) -> list[str]:
     return re.findall(r"[^\W_]+", text.casefold())
+
+
+def _verdict(value: str) -> str:
+    """A value up to its first separator (_REASON), trimmed of emphasis: `**Incorrect** — 4 g` -> `Incorrect`."""
+    return _REASON.split(value, maxsplit=1)[0].strip(" \t*_`.")
+
+
+def sync_lines(task: str, answer: str) -> tuple[str, list[str]]:
+    """The answer with its lines for the labels of item_lines(task) set to the verdict of their item's own section,
+    and the changes (`A4 неверно → верно (item У1)`). A section starts at a line that begins, after _LEAD, with an
+    item the task lists (_ITEM_START) and ends at the next such line or at a requested line. The verdict label is the
+    line label (_FIELD, no requested label, a value) found exactly once in each of the most sections, at least two
+    (a tie: nothing changes); a section's verdict is that line's value cut by _verdict. A line changes only when its
+    value, cut the same way, is the verdict of some section and has other words than its item's verdict."""
+    table = item_lines(task)
+    if not table:
+        return answer, []
+    requested = {_label_key(m.group(1)) for m in _REQUESTED.finditer(task)}
+    listed = {_label_key(m.group(1)) for line in task.splitlines()
+              if (m := _ITEM_START.match(line, _MARKERS.match(line).end())) and _label_key(m.group(1)) not in requested}
+    lines = _lines(answer)
+    sections: dict[str, list[tuple[str, str]]] = {}  # item key -> the (label key, verdict) of its labelled lines
+    item = ""
+    for key, line, _ in lines:
+        start = _ITEM_START.match(line, _LEAD.match(line).end())
+        if key in requested:
+            item = ""
+        elif start and _label_key(start.group(1)) in listed:
+            item = _label_key(start.group(1))
+            sections.setdefault(item, [])
+        field = _FIELD.match(line) if item else None
+        if field and _label_key(field.group(1)) not in requested and _value_words(value := _verdict(field.group(2))):
+            sections[item].append((_label_key(field.group(1)), value))
+    counts = {item: Counter(label for label, _ in found) for item, found in sections.items()}
+    ranked = Counter(label for c in counts.values() for label, n in c.items() if n == 1).most_common(2)
+    if not ranked or ranked[0][1] < 2 or (len(ranked) == 2 and ranked[1][1] == ranked[0][1]):
+        return answer, []
+    verdict = ranked[0][0]
+    verdicts = {item: next(v for k, v in found if k == verdict) for item, found in sections.items()
+                if counts[item][verdict] == 1}
+    known = [_value_words(v) for v in verdicts.values()]
+    wanted = {_label_key(label): (label, item) for label, item in table.items()}
+    out, changes = [], []
+    for key, line, at in lines:
+        if key in wanted:
+            label, item = wanted[key]
+            old, new = line[at:].strip(), verdicts.get(_label_key(item), "")
+            if new and _value_words(_verdict(old)) in known and _value_words(_verdict(old)) != _value_words(new):
+                line = f"{line[:at].rstrip()} {new}"
+                changes.append(f"{label} {old} → {new} (item {item})")
+        out.append(line)
+    return ("\n".join(out), changes) if changes else (answer, [])
 
 
 def _answer_line(text: str, start: int, end: int) -> bool:

@@ -100,8 +100,13 @@ reasoning_policy:
     the line with exactly that conclusion. Copy it from the analysis; do not judge the item again. Write
     only these lines, each on its own line, as the label, a colon and the conclusion in the answer's own
     words. Write nothing else.
+  line_sync: true                          # then, in code (no call), the same item lines take the verdict of their item's
+                                           # own section in the answer (a `C1.` line up to the next item or answer line):
+                                           # the value of the line label found once in each of the most sections, at least
+                                           # two (`**Verdict:** correct — …` -> correct); a line changes only when its value
+                                           # is such a verdict; before the claim checks; false: off
 
-retrieval:                                 # used from the Layer 1 step on
+retrieval:                                # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
   stores:                                  # knowledge stores: name -> kind (which ingest builds it, which code reads it), path
     encyclopedia: {kind: encyclopedia, path: "${DATA_DIR:-data}/encyclopedia_fts.db"}   # Layer 1, ingest.build_l1

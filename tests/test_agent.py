@@ -586,6 +586,40 @@ def test_line_check_switched_off(client, fake, cfg):
     assert answer(ask(client, CLAIMS)) == DRIFTED and len(fake.requests) == 1
 
 
+STATEMENTS = ("Проверьте утверждения.\nУ1. Масса 5 г.\nУ2. pH 7.\nУ3. Выход 80 %.\nЗакончите строками:\n"
+              "A4: <вердикт для У1>\nA5: <вердикт для У2>\nA6: <вердикт для У3>")
+SECTIONS = ("**У1.** По паспорту 5 г.\n**Вердикт:** верно\n**У2.** Измерено pH 9.\n**Вердикт:** неверно — pH 9\n"
+            "**У3.** Выход 80 %.\n**Вердикт:** верно\n")
+SHIFTED = SECTIONS + "A4: неверно\nA5: верно\nA6: неверно"  # A4 has У2's verdict, A5 У3's
+
+
+def test_item_lines_follow_their_sections_after_the_line_check(client, fake):
+    fake.scripts = [[content(SHIFTED)], [content("A4: неверно\nA5: верно\nA6: верно")]]  # the check fixes A6 only
+    r = ask(client, STATEMENTS)
+    assert answer(r) == SECTIONS + "A4: верно\nA5: неверно\nA6: верно" and len(fake.requests) == 2  # no sync call
+    trace = reasoning_text(r)
+    assert trace.index("line check: A6 неверно → верно (item У3)") < trace.index("line sync: A4 неверно → верно (item У1)")
+    assert "line sync: A5 верно → неверно (item У2)\n" in trace and "line sync: A6" not in trace
+
+
+def test_item_lines_that_agree_or_name_no_item_stay(client, fake, cfg):
+    cfg.reasoning_policy.line_check = False
+    agreed = SECTIONS + "A4: верно\nA5: неверно — pH 9\nA6: верно"
+    fake.scripts = [[content(agreed)]]
+    r = ask(client, STATEMENTS)
+    assert answer(r) == agreed and "line sync: no line changed\n" in reasoning_text(r)
+    fake.scripts = [[content(SHIFTED)]]
+    r = ask(client, STATEMENTS.replace("для У", ""))  # the placeholders name no item
+    assert answer(r) == SHIFTED and "line sync" not in reasoning_text(r)
+
+
+def test_line_sync_switched_off(client, fake, cfg):
+    cfg.reasoning_policy.line_check = cfg.reasoning_policy.line_sync = False
+    fake.scripts = [[content(SHIFTED)]]
+    r = ask(client, STATEMENTS)
+    assert answer(r) == SHIFTED and "line sync" not in reasoning_text(r)
+
+
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
     calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")

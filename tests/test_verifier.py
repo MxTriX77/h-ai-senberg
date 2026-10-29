@@ -38,6 +38,7 @@ from haisenberg.verifier import (
     Verifier,
     split_claims,
     supplied_lines,
+    sync_lines,
     unconfirmed,
 )
 from test_server import chat, events
@@ -140,6 +141,42 @@ def test_anchor_lines_change_only_item_lines_given_once():
     assert anchor_lines(task, answer, "Sorry.", table) == (answer, [])
     twice = answer + "\nA2: false"
     assert anchor_lines(task, twice, reply, table) == (twice, [])  # the answer has A2 twice: unsure, kept
+
+
+STATEMENTS = ("Проверьте утверждения.\nУ1. Масса 5 г.\nУ2. pH 7.\nУ3. Выход 80 %.\nЗакончите строками:\n"
+              "A1: <масса в г>\nA4: <вердикт для У1>\nA5: <вердикт для У2>\nA6: <вердикт для У3>")
+SECTIONS = ("### У1. Масса 5 г\nПо паспорту 5 г.\n**Вердикт:** верно\n\n- **У2)** pH 7\nИзмерено pH 9.\n"
+            "**Вердикт:** неверно — pH 9, а не 7\n\n**У3.** Выход 80 %\n**Вердикт:** **верно**.\n\n")
+
+
+def test_sync_lines_follow_the_items_section():
+    answer = SECTIONS + "A1: 5 г\n- **A4:** неверно\nA5: верно\nA6: верно"  # by number: A4 has У2's verdict, A5 У3's
+    new, changes = sync_lines(STATEMENTS, answer)
+    assert new == SECTIONS + "A1: 5 г\n- **A4:** верно\nA5: неверно\nA6: верно"
+    assert changes == ["A4 неверно → верно (item У1)", "A5 верно → неверно (item У2)"]
+    task = "C1. dry\nC2. pure\nC3. hot\nA4: <verdict for C1>\nA5: <verdict for C2>\nA6: <verdict for C3>"
+    body = ("C1. dry\nVerdict: Incorrect — it holds 2 % water.\nC2. pure\nVerdict: Correct (99.9 %)\n"
+            "C3. hot\nVerdict: Incorrect, it is 20 °C.\n")
+    new, changes = sync_lines(task, body + "A4: Correct\nA5: Correct\nA6: incorrect — 20 °C")
+    assert new == body + "A4: Incorrect\nA5: Correct\nA6: incorrect — 20 °C"  # A6 already agrees: kept
+    assert changes == ["A4 Correct → Incorrect (item C1)"]
+
+
+def test_sync_lines_change_only_verdict_lines_with_a_verdict():
+    task = STATEMENTS.replace("A1: <масса в г>", "A1: <масса У1 в г>")  # a numeric line naming an item
+    answer = SECTIONS.replace("**Вердикт:** **верно**.", "Всё сходится.") + "A1: 4 г\nA4: верно\nA5: верно\nA6: неверно"
+    new, changes = sync_lines(task, answer)  # У3 has no verdict line: A6 kept; A1's value is no verdict
+    assert new == answer.replace("A5: верно", "A5: неверно") and changes == ["A5 верно → неверно (item У2)"]
+    tied = SECTIONS.replace("**Вердикт:**", "Итог: да\n**Вердикт:**") + "A4: неверно\nA5: верно\nA6: верно"
+    assert sync_lines(STATEMENTS, tied) == (tied, [])  # two labels once in every section: unsure, nothing changes
+    plain = STATEMENTS.replace("для У", "")  # the placeholders name no item: no table
+    assert sync_lines(plain, SECTIONS + "A4: неверно\nA5: верно") == (SECTIONS + "A4: неверно\nA5: верно", [])
+
+
+def test_sync_lines_never_read_the_lines_block_as_a_section():
+    answer = (SECTIONS.replace("**Вердикт:** **верно**.", "Всё сходится.") + "A4: верно\nA5: неверно\nA6: неверно\n"
+              "**Вердикт:** верно, все данные сходятся")  # an overall verdict after the lines is no part of У3
+    assert sync_lines(STATEMENTS, answer) == (answer, [])
 
 
 def test_bare_labels_are_not_claims():
