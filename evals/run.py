@@ -59,6 +59,13 @@ _LOOKALIKE = "АВСЕНКМОРТХавсенкмортх"  # Cyrillic letters 
 _LATIN = str.maketrans(_LOOKALIKE, "ABCEHKMOPTXabcehkmoptx")
 _LINE = re.compile(rf"^[\s>*_`#+-]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.M)
 _NEXT = re.compile(rf"(?<=\s)[*_`]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*")  # a further label on that line
+# Items a task lists (`C1.`, `У3)`, `S4:` at a line start), an item id in a placeholder, and an answer line that
+# begins with an item id after markdown markers (`**C1:**`, `### C1 —`, `| C1 |`), with the rest of the line.
+_LISTED = re.compile(r"^[\s>*_`#•-]*([A-ZА-ЯЁ]{1,2}\d+)[*_`]*[.):：]", re.M)
+_ID = re.compile(r"(?<!\w)([A-ZА-ЯЁ]{1,2}\d+)(?!\w)")
+_START = re.compile(r"^[\s>*_`#|+-]*([A-ZА-ЯЁ]{1,2}\d+)(?!\w)(.*)$")
+_VERDICT_LINE = re.compile(r"^[\s>*_`#|+-]*(?:verdict|status|conclusion|вердикт|статус|вывод)[\s*_`]*[:：](.*)$", re.I)
+_RULE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 # Protocol artefacts: text the pipeline writes for itself that must not reach the final answer. The patterns follow
 # the code that writes it: [S#] ids (verifier._CITES), the draft marker (agent.DRAFT_MARK), the trace headings of
 # Verifier.verify and Verifier._consistency, the summary line and outcome labels of verifier.render and the
@@ -271,6 +278,58 @@ def score_parts(answer: str, problem: dict[str, Any]) -> list[bool]:
     return [part_correct(p, lines.get(p["label"].upper()), problem["lang"]) for p in problem["parts"]]
 
 
+def _item_id(text: str) -> str:
+    return text.translate(_LATIN).upper()
+
+
+def _sections(answer: str, ids: set[str], labels: set[str]) -> dict[str, list[tuple[bool, list[str]]]]:
+    """Item id -> its sections in the answer, each (table row?, lines): the start line's text after the id, then
+    the lines up to the next item start, a `---` line, a heading or a closing answer line. A row is one line."""
+    found: dict[str, list[tuple[bool, list[str]]]] = {}
+    section: list[str] | None = None
+    for line in answer_text(answer).splitlines():
+        start = _START.match(line)
+        if start and (iid := _item_id(start.group(1))) in ids:
+            row, section = line.lstrip().startswith("|"), [start.group(2)]
+            found.setdefault(iid, []).append((row, section))
+            section = None if row else section
+        elif _RULE.match(line) or line.lstrip().startswith("#") or \
+                ((m := _LINE.match(line)) is not None and _item_id(m.group(1)) in labels):
+            section = None
+        elif section is not None:
+            section.append(line)
+    return found
+
+
+def _readings(row: bool, lines: list[str], parts: list[dict[str, Any]], lang: str) -> set[tuple[bool, ...]]:
+    """The verdicts a section gives, each as its score on every verdict part: its first labelled verdict line
+    (`Verdict: X`), else the text right after the id (each cell of a table row). Text that starts with none of
+    the verdict words gives none."""
+    labelled = [m.group(1) for line in lines if (m := _VERDICT_LINE.match(line))]
+    texts = labelled[:1] or (lines[0].split("|") if row else lines[:1])
+    return {right for t in texts if any(right := tuple(part_correct(p, t, lang) for p in parts))}
+
+
+def body_verdicts(answer: str, item: dict[str, Any]) -> dict[str, bool]:
+    """Verdict part label -> right, read from the answer body, for each verdict part whose placeholder in the task
+    (`A4: <verdict for C1>`) names exactly one of the items the task lists, when that item's sections give one
+    verdict (none, or two different ones: left to the answer line)."""
+    prompt, verdict_parts = item.get("question") or "", [p for p in item["parts"] if "verdict" in p]
+    labels = {p["label"].upper() for p in item["parts"]}
+    listed = {_item_id(m.group(1)) for m in _LISTED.finditer(prompt)} - labels
+    placeholders, sections = answer_lines(prompt), _sections(answer, listed, labels)
+    found: dict[str, bool] = {}
+    for n, p in enumerate(verdict_parts):
+        named = {i for m in _ID.finditer(placeholders.get(p["label"].upper(), ""))
+                 if (i := _item_id(m.group(1))) in listed}
+        if len(named) == 1:
+            readings = {r for row, lines in sections.get(named.pop(), [])
+                        for r in _readings(row, lines, verdict_parts, item["lang"])}
+            if len(readings) == 1:
+                found[p["label"]] = readings.pop()[n]
+    return found
+
+
 def fact_correct(line: str | None, gold: dict[str, Any]) -> bool:
     """A fact answer scored strictly on its answer line (None: no line, wrong): a number or text as a reasoning
     part, a formula as is_correct does."""
@@ -279,8 +338,10 @@ def fact_correct(line: str | None, gold: dict[str, Any]) -> bool:
 
 def score(answer: str, item: dict[str, Any]) -> dict[str, Any] | None:
     """Code score of an answer: part label -> right, the labels without an answer line, the verdict parts.
-    A fact question is one part, `answer`, scored on its answer line, and also has `loose_correct` (any match in
-    the answer). None when the item has no code key (graded by the reviewer only)."""
+    A verdict part that names one listed item is read from that item's section in the answer body when it gives
+    one verdict (body_verdicts); `line_parts` keeps every part scored on its line and `sources` says where each
+    part was read (body or line). A fact question is one part, `answer`, scored on its answer line, and also has
+    `loose_correct` (any match in the answer). None when the item has no code key (graded by the reviewer only)."""
     if "answer" in item:
         line, gold = answer_lines(answer).get(FACT_LABEL), item["answer"]
         right = fact_correct(line, gold)
@@ -288,12 +349,16 @@ def score(answer: str, item: dict[str, Any]) -> dict[str, Any] | None:
                 "verdicts": {}, "loose_correct": is_correct(answer, gold)}
     if item.get("parts"):
         lines = answer_lines(answer)
-        parts = {p["label"]: ok for p, ok in zip(item["parts"], score_parts(answer, item))}
+        line_parts = {p["label"]: ok for p, ok in zip(item["parts"], score_parts(answer, item))}
+        body = body_verdicts(answer, item)
+        parts = line_parts | body
         missing = [p["label"] for p in item["parts"] if p["label"].upper() not in lines]
         verdicts = {p["label"]: parts[p["label"]] for p in item["parts"] if "verdict" in p}
     else:
         return None
-    return {"correct": all(parts.values()), "parts": parts, "missing": missing, "verdicts": verdicts}
+    return {"correct": all(parts.values()), "parts": parts, "line_parts": line_parts,
+            "sources": {label: "body" if label in body else "line" for label in parts}, "missing": missing,
+            "verdicts": verdicts}
 
 
 def artefacts(text: str) -> list[str]:
