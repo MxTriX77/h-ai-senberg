@@ -466,7 +466,8 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
         "gpu": gpu_info(),
         "context_tokens": cfg.context_tokens,
-        "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, **backend.extra_body},
+        "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, "seed": backend.seed,
+                     **backend.extra_body},
         "args": args,
     }
 

@@ -3,6 +3,7 @@ import pytest
 
 from conftest import CONNECT_ERROR, DISCONNECT, UNAVAILABLE, content, reasoning
 from haisenberg import llm
+from haisenberg.config import load_config
 from haisenberg.llm import LLMClient, UpstreamError, estimate_tokens
 
 pytestmark = pytest.mark.anyio
@@ -34,6 +35,18 @@ async def test_per_call_fields_win(cfg, fake):
     body = fake.last_body
     assert body["tools"] == tools and body["temperature"] == 0 and body["top_k"] == 20
     assert body["model"] == b.model_id and body["max_tokens"] == b.max_tokens
+
+
+@pytest.mark.parametrize("value, seed", [(None, None), ("", None), ("7", 7)])
+async def test_seed_sent_only_when_set(cfg, fake, monkeypatch, value, seed):
+    if value is None:
+        monkeypatch.delenv("EVAL_SEED", raising=False)
+    else:
+        monkeypatch.setenv("EVAL_SEED", value)
+    await drain(fake.client(load_config(cfg.root / "config" / "config.yaml").model_backend))
+    body = fake.last_body
+    assert ("seed" in body, body.get("seed")) == (seed is not None, seed)
+    assert body["temperature"] == cfg.model_backend.temperature
 
 
 async def test_no_auth_header_without_key(cfg, fake):
