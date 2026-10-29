@@ -16,11 +16,13 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
+    anchor_lines,
     answer_labels,
     code_check,
     echoes,
     fix_arithmetic,
     is_computation,
+    item_lines,
     missing_lines,
     parse_fixes,
     parse_verdicts,
@@ -110,6 +112,32 @@ def test_supplied_lines_only_the_missing_labels():
              "A2: second\nA9: true")
     assert supplied_lines(reply, ["A2"]) == {"A2": "- **a2:** false, the mass is 4 g"}
     assert supplied_lines("Sorry, I cannot.", {"A2": "A2: <verdict>"}) == {}
+
+
+def test_item_lines_name_one_listed_item():
+    task = ("Statements:\n**У1.** Масса 5 г.\n- У2) pH 7.\n3. S4: dry\nQ5 is the last one.\n"
+            "Lines: A1: <mass of У1>\nA4: <verdict for У1>\nA5: <вердикт для у2>\nA6: <S4 or У2>\nA7: <Q5>\n"
+            "A8: <verdict for S4>\nA9: <A1 in kg>")
+    assert item_lines(task) == {"A1": "У1", "A4": "У1", "A5": "У2", "A8": "S4"}  # each names one listed item
+    assert item_lines("C1. dry\nC2. pure\nA1: <verdict for C1>") == {}  # one such line is not enough
+    assert item_lines("Claims: C1. dry C2. pure. Give A1: <verdict for C1> A2: <verdict for C2>") == {}  # no list
+    assert item_lines("A1: <value>\nA2: <A1 in kJ>\nA3: <A1 in kcal>") == {}  # requested labels are no items
+    cyrillic_c1 = "С" + "1"  # a Cyrillic С in the task's list
+    task = f"{cyrillic_c1}. dry\nC2. pure\nA1: <verdict for C1>\nA2: <verdict for C2>"
+    assert item_lines(task) == {"A1": cyrillic_c1, "A2": "C2"}
+
+
+def test_anchor_lines_change_only_item_lines_given_once():
+    task = "C1. dry\nC2. pure\nC3. hot\nA1: <mass>\nA2: <verdict for C1>\nA3: <verdict for C2>\nA4: <verdict for C3>"
+    table = item_lines(task)
+    answer = "C1 is dry: true.\nC2 is pure: false.\nA1: 5 g\n**A2:** false\nA3: true\nA4: true"
+    reply = "A1: 6 g\nA2: true, dry\nA3: false\nA3: true\nA4: false"
+    new, changes = anchor_lines(task, answer, reply, table)
+    assert new == "C1 is dry: true.\nC2 is pure: false.\nA1: 5 g\n**A2:** true, dry\nA3: true\nA4: true"
+    assert changes == ["A2 false → true, dry (item C1)"]  # A3 twice in the reply, C3 not in the analysis, A1 no item
+    assert anchor_lines(task, answer, "Sorry.", table) == (answer, [])
+    twice = answer + "\nA2: false"
+    assert anchor_lines(task, twice, reply, table) == (twice, [])  # the answer has A2 twice: unsure, kept
 
 
 def test_bare_labels_are_not_claims():
