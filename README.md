@@ -60,8 +60,6 @@ Safety nets keep the answer an answer:
 
 If the retry gives nothing, the text before the markup is kept; if there is none at all, the answer says plainly that it could not be completed. The Reasoning block shows what happened ("tool call written as text: run", "empty answer: final answer asked again").
 
-Missing answer lines are asked for too. When the task spells out the lines it wants (`A9: <verdict>`: a label, a colon and a placeholder in angle brackets) and the answer leaves some out, code notices before the checks and asks the model once, without tools, for just those lines (`reasoning_policy.coverage_repair_prompt`, request fields `answer_retry_request`). Only the reply's lines that start with a missing label (and say more than the placeholder) are appended; nothing else in the answer changes, and if the call fails the answer stays as it was. An answer with every line costs nothing extra. The Reasoning block names the lines that were missing and the ones added. Switch: `reasoning_policy.coverage_repair`.
-
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
 ### Verification
