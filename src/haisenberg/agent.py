@@ -6,7 +6,8 @@ verification) while it works, a `{"draft": ...}` and, after the answer as one `{
 so any backend with tool support works. As a safety net, tool calls a chat template wrote as text are read with the
 configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once
 (written calculations are run first); an answer cut off where a call was removed gives way to the most complete one.
-Answer lines the task spells out (`A9: <verdict>`) that the draft leaves out are asked for once and appended.
+Answer lines the task spells out (`A9: <verdict>`) that the draft leaves out are asked for once and appended, and
+lines that report on an item of the task (`A4: <verdict for C1>`) are rewritten once from the answer's own analysis.
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ import httpx
 from .config import Config, ToolCallMarkup
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
-from .verifier import Verification, Verifier, answer_labels, missing_lines, strip_cites, supplied_lines
+from .verifier import (Verification, Verifier, anchor_lines, answer_labels, item_lines, missing_lines, strip_cites,
+                       supplied_lines)
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -258,6 +260,16 @@ class Agent:
                         yield item
             finally:
                 await cover.aclose()
+        if text and self.policy.line_check:  # lines that report on an item of the task, after the coverage repair
+            check = self._check_lines(_question(history), text)
+            try:
+                async for item in check:
+                    if isinstance(item, str):
+                        text = item
+                    else:
+                        yield item
+            finally:
+                await check.aclose()
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
@@ -308,6 +320,35 @@ class Agent:
         added = [label for label in missing if label in lines]
         yield {"reasoning_content": f"\n\n> answer lines added: {', '.join(added)}\n"}
         yield text.rstrip() + "\n" + "\n".join(lines[label] for label in added)
+
+    async def _check_lines(self, question: str, text: str):
+        """Answer lines whose placeholder names an item of the task (item_lines: `A4: <verdict for C1>`): one call
+        without tools with the answer and the table label -> item, asking for each line what the answer's analysis
+        of its item concluded; anchor_lines decides which lines change. Yields reasoning deltas, then the new text."""
+        table = item_lines(question)
+        if not table:
+            return
+        rows = [f"{label} → {item}" for label, item in table.items()]
+        yield {"reasoning_content": f"\n\n> line check: {', '.join(rows)}\n"}
+        prompt = self.policy.line_check_prompt.replace("{table}", "\n".join(rows)).replace("{answer}", text)
+        ask = [{"role": "user", "content": prompt}]
+        if estimate_tokens(ask, self.chars_per_token) > self.budget:
+            yield {"reasoning_content": "\n\n> line check too long for the context: lines kept\n"}
+            return
+        reply = _Reply()
+        call = self._call(ask, dict(self.policy.answer_retry_request), reply)
+        try:
+            async for delta in call:
+                yield delta
+        except (UpstreamError, httpx.HTTPError) as e:
+            yield {"reasoning_content": f"\n\n> line check failed ({e}): lines kept\n"}
+            return
+        finally:
+            await call.aclose()
+        new, changes = anchor_lines(question, text, reply.content, table)
+        yield {"reasoning_content": "\n\n" + "".join(f"> line check: {c}\n" for c in changes or ["no line changed"])}
+        if changes:
+            yield new
 
     async def _call(self, messages: list[dict[str, Any]], fields: dict[str, Any], reply: _Reply):
         """Stream one model call: reasoning and the draft go out as reasoning; tool calls are collected."""

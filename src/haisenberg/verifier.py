@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import re
+from collections import Counter
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -56,6 +57,8 @@ _LABELLED = re.compile(rf"[*_`]*{_LABEL}[*_`\s]*[:：][*_`]*(?:\s|$)")
 _REQUESTED = re.compile(rf"(?<!\w)[*_`]*({_LABEL})[*_`\s]*[:：][*_`\s]*(<(?![\s\d<>=-])[^<>\n]+>)")
 _ID = re.compile(r"\(?[^\W\d_]\d{0,2}\)?")  # the id of a label (A1, C, (b)), without a word before it
 _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic letters seen in labels
+_ITEM = re.compile(r"(?<!\w)[^\W\d_]+\d+(?!\w)")  # an item id: letters, then digits (C3, У2, Q1)
+_ITEM_START = re.compile(r"[*_`]*([^\W\d_]+\d+)[*_`]*[.):：][*_`]*(?:\s|$)")  # a list item with one: C3. / У2) / S4:
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -632,6 +635,64 @@ def supplied_lines(reply: str, labels: Iterable[str]) -> dict[str, str]:
         if label and label not in found and text and not (text.startswith("<") and text.endswith(">")):
             found[label] = line.strip()
     return found
+
+
+def item_lines(task: str) -> dict[str, str]:
+    """The answer lines the task asks for (_REQUESTED) whose placeholder names exactly one enumerated item of the
+    task (`A4: <verdict for C1>`): an id of letters and digits that also starts a line of the task as a list item
+    (`C1.`, `**У2)**`, `S4:`) and is no requested label itself. Label id -> the item id as the task's list writes
+    it, in the task's order; {} unless the task asks for at least two such lines."""
+    requested = [(_label_id(m.group(1)), m.group(2)) for m in _REQUESTED.finditer(task)]
+    labels = {_label_key(label) for label, _ in requested}
+    items: dict[str, str] = {}
+    for line in task.splitlines():
+        if (m := _ITEM_START.match(line, _MARKERS.match(line).end())) and _label_key(m.group(1)) not in labels:
+            items.setdefault(_label_key(m.group(1)), m.group(1))
+    table: dict[str, str] = {}
+    for label, placeholder in requested:
+        named = {_label_key(t) for t in _ITEM.findall(placeholder)} & items.keys()
+        if len(named) == 1 and label not in table:
+            table[label] = items[named.pop()]
+    return table if len(table) >= 2 else {}
+
+
+def _lines(text: str) -> list[tuple[str, str, int]]:
+    """Each line of text: (its label key as in answer_labels, "" when unlabelled; the line; where its value starts)."""
+    out = []
+    for line in text.splitlines():
+        m = _LABELLED.match(line, _MARKERS.match(line).end())
+        out.append((_label_key(m.group(0).strip("*_`:： \t")), line, m.end()) if m else ("", line, 0))
+    return out
+
+
+def anchor_lines(task: str, answer: str, reply: str, table: dict[str, str]) -> tuple[str, list[str]]:
+    """The answer with its lines for the labels of table (label -> item id, item_lines) set to the reply's value
+    for that label, and the changes (`A4 old → new (item C1)`). A line changes only when the reply has its label
+    on exactly one line with a value that is not a placeholder, the answer has it on exactly one line with another
+    value, and the item id occurs in the answer outside its requested lines (the lines block). Nothing else changes."""
+    requested = {_label_key(m.group(1)) for m in _REQUESTED.finditer(task)}
+    lines = _lines(answer)
+    named = {_label_key(t) for key, line, _ in lines if key not in requested for t in _ITEM.findall(line)}
+    counts = Counter(key for key, _, _ in lines)
+    values: dict[str, list[str]] = {}
+    for key, line, at in _lines(reply):
+        values.setdefault(key, []).append(line[at:].strip())
+    wanted = {_label_key(label): (label, item) for label, item in table.items()}
+    out, changes = [], []
+    for key, line, at in lines:
+        label, item = wanted.get(key, ("", ""))
+        given = values.get(key, [])
+        new, old = given[0] if len(given) == 1 else "", line[at:].strip()
+        if (label and counts[key] == 1 and new and not (new.startswith("<") and new.endswith(">"))
+                and _label_key(item) in named and _value_words(new) != _value_words(old)):
+            line = f"{line[:at].rstrip()} {new}"
+            changes.append(f"{label} {old} → {new} (item {item})")
+        out.append(line)
+    return ("\n".join(out), changes) if changes else (answer, [])
+
+
+def _value_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.casefold())
 
 
 def _answer_line(text: str, start: int, end: int) -> bool:
