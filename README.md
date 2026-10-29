@@ -1,10 +1,10 @@
 # h-ai-senberg
 
-A local, verifiable research chat for chemistry and physics.
+A local, general-purpose chatbot with verifiable reasoning. Chemistry and physics are its first knowledge domains.
 
-A local LLM answers questions and checks its claims against offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks) before showing the answer. Every claim is cited or marked unverified.
+A local LLM answers like a normal chat assistant. Behind the answer, facts are looked up in offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks), numbers are recomputed in code, and claims are checked against the sources before the answer is shown. The checks work silently: a wrong claim is corrected from a source or left unverified, and the lookups, the draft and every check appear in a collapsible Reasoning block, not in the answer.
 
-Status: early development.
+Status: in development. Quality is measured on eval sets scored in code (see [Evals](#evals)). Today every message goes through the full lookup-and-check pipeline, and the shipped system prompt is written for chemistry and physics, so casual questions also get thorough, calculation-style answers; routing each message to the depth it needs is planned.
 
 ## Setup
 
