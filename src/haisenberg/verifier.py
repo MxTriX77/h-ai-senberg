@@ -12,14 +12,14 @@ import math
 import os
 import re
 from collections import Counter
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 
-from .config import Config
+from .config import Config, StatusWords
 from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
 from .l1.store import STOPWORDS, Value
@@ -59,6 +59,10 @@ _ID = re.compile(r"\(?[^\W\d_]\d{0,2}\)?")  # the id of a label (A1, C, (b)), wi
 _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic letters seen in labels
 _ITEM = re.compile(r"(?<!\w)[^\W\d_]+\d+(?!\w)")  # an item id: letters, then digits (C3, У2, Q1)
 _ITEM_START = re.compile(r"[*_`]*([^\W\d_]+\d+)[*_`]*[.):：][*_`]*(?:\s|$)")  # a list item with one: C3. / У2) / S4:
+_LEAD = re.compile(r"[#*>\s-]*")  # Markdown markers before a section's item id (`### C3.`, `- **У2)**`)
+# A line label and its value (`**Verdict:** Incorrect — …`): up to three words, the first starting with a letter.
+_FIELD = re.compile(r"[#*>\s_`-]*([^\W\d_][^\W_]*(?: [^\W_]+){0,2})[*_`\s]*[:：](.*)")
+_REASON = re.compile(r" [—–-] |[.;,] | \(")  # where a verdict's reason starts: ` — `, `. `, `, `, ` (` …
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -693,6 +697,206 @@ def anchor_lines(task: str, answer: str, reply: str, table: dict[str, str]) -> t
 
 def _value_words(text: str) -> list[str]:
     return re.findall(r"[^\W_]+", text.casefold())
+
+
+def _verdict(value: str) -> str:
+    """A value up to its first separator (_REASON), trimmed of emphasis: `**Incorrect** — 4 g` -> `Incorrect`."""
+    return _REASON.split(value, maxsplit=1)[0].strip(" \t*_`.")
+
+
+def _sections(task: str, lines: list[tuple[str, str, int]],
+              ends: Callable[[str], bool] | None = None) -> dict[str, list[int]]:
+    """Item key -> the indices in lines (_lines of an answer) of its sections: a section starts at a line that begins,
+    after _LEAD, with an item the task lists (_ITEM_START) and ends at the next such line, at a requested line or at
+    a line that `ends` accepts."""
+    requested = {_label_key(m.group(1)) for m in _REQUESTED.finditer(task)}
+    listed = {_label_key(m.group(1)) for line in task.splitlines()
+              if (m := _ITEM_START.match(line, _MARKERS.match(line).end())) and _label_key(m.group(1)) not in requested}
+    sections: dict[str, list[int]] = {}
+    item = ""
+    for i, (key, line, _) in enumerate(lines):
+        start = _ITEM_START.match(line, _LEAD.match(line).end())
+        if key in requested:
+            item = ""
+        elif start and _label_key(start.group(1)) in listed:
+            item = _label_key(start.group(1))
+        elif ends and ends(line):
+            item = ""
+        if item:
+            sections.setdefault(item, []).append(i)
+    return sections
+
+
+def _fields(task: str, lines: list[tuple[str, str, int]],
+            sections: dict[str, list[int]]) -> dict[str, list[tuple[int, str, str]]]:
+    """Item key -> (line index, label key, verdict) of each line label in its sections: _FIELD, no requested label,
+    a value that _verdict cuts to words."""
+    requested = {_label_key(m.group(1)) for m in _REQUESTED.finditer(task)}
+    fields: dict[str, list[tuple[int, str, str]]] = {}
+    for item, found in sections.items():
+        fields[item] = []
+        for i in found:
+            field = _FIELD.match(lines[i][1])
+            label = _label_key(field.group(1)) if field else ""
+            if field and label not in requested and _value_words(value := _verdict(field.group(2))):
+                fields[item].append((i, label, value))
+    return fields
+
+
+def _verdict_label(fields: dict[str, list[tuple[int, str, str]]]) -> str:
+    """The line label found exactly once in each of the most sections, at least two; "" when none or on a tie."""
+    counts = [Counter(label for _, label, _ in found) for found in fields.values()]
+    ranked = Counter(label for c in counts for label, n in c.items() if n == 1).most_common(2)
+    if not ranked or ranked[0][1] < 2 or (len(ranked) == 2 and ranked[1][1] == ranked[0][1]):
+        return ""
+    return ranked[0][0]
+
+
+def sync_lines(task: str, answer: str) -> tuple[str, list[str]]:
+    """The answer with its lines for the labels of item_lines(task) set to the verdict of their item's own section,
+    and the changes (`A4 неверно → верно (item У1)`). A section starts at a line that begins, after _LEAD, with an
+    item the task lists (_ITEM_START) and ends at the next such line or at a requested line. The verdict label is the
+    line label (_FIELD, no requested label, a value) found exactly once in each of the most sections, at least two
+    (a tie: nothing changes); a section's verdict is that line's value cut by _verdict. A line changes only when its
+    value, cut the same way, is the verdict of some section and has other words than its item's verdict."""
+    table = item_lines(task)
+    if not table:
+        return answer, []
+    lines = _lines(answer)
+    fields = _fields(task, lines, _sections(task, lines))
+    if not (verdict := _verdict_label(fields)):
+        return answer, []
+    verdicts = {item: values[0] for item, found in fields.items()
+                if len(values := [v for _, k, v in found if k == verdict]) == 1}
+    known = [_value_words(v) for v in verdicts.values()]
+    wanted = {_label_key(label): (label, item) for label, item in table.items()}
+    out, changes = [], []
+    for key, line, at in lines:
+        if key in wanted:
+            label, item = wanted[key]
+            old, new = line[at:].strip(), verdicts.get(_label_key(item), "")
+            if new and _value_words(_verdict(old)) in known and _value_words(_verdict(old)) != _value_words(new):
+                line = f"{line[:at].rstrip()} {new}"
+                changes.append(f"{label} {old} → {new} (item {item})")
+        out.append(line)
+    return ("\n".join(out), changes) if changes else (answer, [])
+
+
+_STATUSES = ("unverified", "negative", "positive")  # verdict classes of StatusWords, in the order they are tested
+_CLAUSE_END = re.compile(r"[.!?;](?=\s|$)|\)|\n")  # where a concession's clause ends: its sentence or parenthesis
+
+
+def check_status(task: str, answer: str, words: StatusWords) -> tuple[str, list[str]]:
+    """The answer with the verdict word of its lines for the labels of item_lines(task) changed where the line's own
+    reason supports another status, and the changes (`A4 неверно → не подтверждено (item У4, R1)`). The reason is
+    the item's section (as in sync_lines, also ended by a `---` line, a heading or a bold `summary` block that is not
+    the verdict label's line) and the line's text after its verdict word; the claim is the item's text in the task's
+    list. The verdict (the line's value cut by _verdict) has the first class of _STATUSES whose words start it. Rules,
+    the first that applies:
+    R1 negative, a `short` reason, a claim without `certainty` -> unverified;
+    R2 unverified, a `short` reason without `missing`, a claim with `certainty` and without `document` -> negative;
+    R3 positive, a reason with `calculation` and a `concession` whose clause has a `premise` word (_conceded) ->
+    negative.
+    The new word is a word of that class the task names (outside its list): the one the answer itself uses most on
+    its item lines and its sections' verdict label lines, else of the task's, the one of fewest words, then the one
+    nearest a word of another class (as in `Correct / Incorrect / Unverified`); without one nothing changes. It
+    replaces the verdict word on the line and on the section's verdict label line (sync_lines' label, once in the
+    section, a verdict of the same class). A line changes only when its label is on one line and its item has a
+    section and a claim."""
+    table = item_lines(task)
+    if not table:
+        return answer, []
+    alt = {name: "|".join(f"(?:{f})" for f in fragments) for name, fragments in words.model_dump().items()}
+    find = {name: re.compile(pattern, re.I) for name, pattern in alt.items()}
+    heads = {name: re.compile(rf"\W*({alt[name]})(?!\w)", re.I) for name in _STATUSES}
+    requested = {_label_key(m.group(1)) for m in _REQUESTED.finditer(task)}
+    claims: dict[str, str] = {}
+    said = []  # the task without its list of items, whose claims may use verdict words
+    for line in task.splitlines():
+        m = _ITEM_START.match(line, _MARKERS.match(line).end())
+        if m and _label_key(m.group(1)) not in requested:
+            claims.setdefault(_label_key(m.group(1)), line[m.end():].strip())
+        else:
+            said.append(line)
+    text, spans = "\n".join(said), []
+    for name in _STATUSES:  # each word found is blanked for the next class: `not supported` holds no `supported`
+        anywhere = re.compile(rf"(?<!\w)(?:{alt[name]})(?!\w)", re.I)
+        spans += [(m.start(), m.end(), name, m.group(0)) for m in anywhere.finditer(text)]
+        text = anywhere.sub(lambda m: " " * len(m.group(0)), text)
+    named = {}  # class -> the task's word for it: fewest words, then nearest a word of another class, then first
+    for name in _STATUSES:
+        ranked = [(len(a[3].split()), min((max(b[0] - a[1], a[0] - b[1]) for b in spans if b[2] != name),
+                                          default=len(task)), a[0], a[3]) for a in spans if a[2] == name]
+        if ranked:
+            named[name] = min(ranked)[3]
+    lines = _lines(answer)
+    label = _verdict_label(_fields(task, lines, _sections(task, lines)))
+    boundary = re.compile(rf"\s*(?:-{{3,}}\s*$|#{{1,6}}\s|(?:[-*+]\s+)?\*\*\s*(?:{alt['summary']}))", re.I)
+    sections = _sections(task, lines, lambda line: bool(boundary.match(line)) and not (
+        label and (f := _FIELD.match(line)) and _label_key(f.group(1)) == label))
+    wanted, inside = {_label_key(name) for name in table}, {j for found in sections.values() for j in found}
+    used: Counter[tuple[str, str]] = Counter()  # (class, word) on the item lines and the sections' verdict lines
+    for j, (key, line, at) in enumerate(lines):
+        f = _FIELD.match(line) if label and j in inside else None
+        value = line[at:] if key in wanted else f.group(2) if f and _label_key(f.group(1)) == label else None
+        if value is not None and (status := _status(_verdict(value), heads))[0]:
+            used[status] += 1
+    for name in _STATUSES:  # the answer's own word first, when the task names it
+        given = {a[3].casefold() for a in spans if a[2] == name}
+        if own := [w for (c, w), _ in used.most_common() if c == name and w.casefold() in given]:
+            named[name] = own[0]
+    counts = Counter(key for key, _, _ in lines)
+    out, changes = [line for _, line, _ in lines], []
+    for name, item in table.items():
+        key, claim, found = _label_key(name), claims.get(_label_key(item), ""), sections.get(_label_key(item))
+        if counts[key] != 1 or not claim or not found:
+            continue
+        i = next(i for i, (k, _, _) in enumerate(lines) if k == key)
+        line, at = out[i], lines[i][2]
+        old, word = _status(_verdict(line[at:]), heads)
+        start = line.find(word, at)
+        reason = "\n".join(lines[j][1] for j in found) + "\n" + line[start + len(word):]
+        short, certain = find["short"].search(reason), find["certainty"].search(claim)
+        if old == "negative" and short and not certain:
+            rule, new = "R1", named.get("unverified")
+        elif (old == "unverified" and short and certain and not find["missing"].search(reason)
+              and not find["document"].search(claim)):
+            rule, new = "R2", named.get("negative")
+        elif old == "positive" and find["calculation"].search(reason) and _conceded(reason, find):
+            rule, new = "R3", named.get("negative")
+        else:
+            continue
+        if not new:
+            continue
+        out[i] = line[:start] + new + line[start + len(word):]
+        verdict_lines = [j for j in found if label and (f := _FIELD.match(out[j])) and _label_key(f.group(1)) == label]
+        if len(verdict_lines) == 1:
+            j = verdict_lines[0]
+            field = _FIELD.match(out[j])
+            was, given = _status(_verdict(field.group(2)), heads)
+            if was == old:
+                s = out[j].find(given, field.start(2))
+                out[j] = out[j][:s] + new + out[j][s + len(given):]
+        changes.append(f"{name} {word} → {new} (item {item}, {rule})")
+    return ("\n".join(out), changes) if changes else (answer, [])
+
+
+def _conceded(reason: str, find: dict[str, re.Pattern[str]]) -> bool:
+    """The reason has a `concession` whose clause, from it to the end of its sentence or parenthesis (_CLAUSE_END),
+    has a `premise` word (`correct despite the wrong input`, `accurate (though it uses …)`)."""
+    for m in find["concession"].finditer(reason):
+        end = _CLAUSE_END.search(reason, m.end())
+        if find["premise"].search(reason, m.start(), end.start() if end else len(reason)):
+            return True
+    return False
+
+
+def _status(verdict: str, heads: dict[str, re.Pattern[str]]) -> tuple[str, str]:
+    """The first class of heads whose pattern starts the verdict, and the verdict word it matched; ("", "") if none."""
+    for name, head in heads.items():
+        if m := head.match(verdict):
+            return name, m.group(1)
+    return "", ""
 
 
 def _answer_line(text: str, start: int, end: int) -> bool:

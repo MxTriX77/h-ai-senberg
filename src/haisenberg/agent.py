@@ -20,11 +20,11 @@ from typing import Any
 
 import httpx
 
-from .config import Config, ToolCallMarkup
+from .config import Config, StatusWords, ToolCallMarkup
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
-from .verifier import (Verification, Verifier, anchor_lines, answer_labels, item_lines, missing_lines, strip_cites,
-                       supplied_lines)
+from .verifier import (Verification, Verifier, anchor_lines, answer_labels, check_status, item_lines, missing_lines,
+                       strip_cites, supplied_lines, sync_lines)
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -270,6 +270,14 @@ class Agent:
                         yield item
             finally:
                 await check.aclose()
+        if text and self.policy.line_sync:  # the same lines set to their item's section verdict, in code
+            text, trace = _sync_lines(_question(history), text)
+            if trace:
+                yield {"reasoning_content": trace}
+        if text and self.policy.status_check:  # then a verdict word that its own reason contradicts, in code
+            text, trace = _check_status(_question(history), text, self.policy.status_words)
+            if trace:
+                yield {"reasoning_content": trace}
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
@@ -381,6 +389,24 @@ def _fate(written: list[dict[str, Any]], calc: list[dict[str, Any]]) -> str:
 def _requested_lines(text: str, question: str) -> int:
     """How many labelled answer lines of text (`A1: …`) carry a label the question names."""
     return sum(bool(re.search(rf"(?<!\w){re.escape(label)}(?!\w)", question)) for label in answer_labels(text))
+
+
+def _sync_lines(question: str, text: str) -> tuple[str, str]:
+    """Answer lines whose placeholder names an item of the task (item_lines), set by sync_lines to the verdict of
+    the item's own section in the answer; no model call. The new text and its trace ("" when no line names one)."""
+    if not item_lines(question):
+        return text, ""
+    new, changes = sync_lines(question, text)
+    return new, "\n\n" + "".join(f"> line sync: {c}\n" for c in changes or ["no line changed"])
+
+
+def _check_status(question: str, text: str, words: StatusWords) -> tuple[str, str]:
+    """The same lines with a verdict word that their own reason contradicts changed by check_status; no model call.
+    The new text and its trace ("" when no line names an item)."""
+    if not item_lines(question):
+        return text, ""
+    new, changes = check_status(question, text, words)
+    return new, "\n\n" + "".join(f"> status check: {c}\n" for c in changes or ["no line changed"])
 
 
 def _show_args(arguments: str) -> str:

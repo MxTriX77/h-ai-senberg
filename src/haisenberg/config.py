@@ -74,6 +74,34 @@ class ToolCallMarkup(_Section):
         return v
 
 
+class StatusWords(_Section):
+    """What the status check reads (regular expression fragments, case ignored; each list is one alternation)."""
+
+    positive: list[str]  # verdict words of each class (`correct`, `верно`); tested unverified, negative, positive
+    negative: list[str]
+    unverified: list[str]
+    short: list[str]  # a reason that says the evidence falls short (`does not prove`, `не доказыва`)
+    certainty: list[str]  # a claim that asserts proof or certainty (`guarantees`, `поэтому`)
+    missing: list[str]  # a reason that says material is missing (`not attached`, `нет доступа`)
+    document: list[str]  # a claim that names a document (`report`, `сертификат`)
+    concession: list[str]  # a reason that concedes something (`despite`, `хотя`)
+    premise: list[str]  # ... with, in that clause, a wrong input or premise (`based on`, `wrong`, `использ`)
+    calculation: list[str]  # a reason about a calculation (`calculat`, `расч`)
+    summary: list[str]  # a bold block that ends an item's section (`**Summary**`, `**Итог**`)
+
+    @field_validator("*")
+    @classmethod
+    def _regexes(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("must not be empty")
+        for fragment in v:
+            try:
+                re.compile(fragment)
+            except re.error as e:
+                raise ValueError(f"invalid regular expression {fragment!r}: {e}") from None
+        return v
+
+
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
     tool_prompt: str
@@ -90,6 +118,9 @@ class ReasoningPolicyConfig(_Section):
     coverage_repair_prompt: str  # the user turn of that call; {lines} = the missing lines
     line_check: bool  # answer lines whose placeholder names a task item are rewritten once from the answer's analysis
     line_check_prompt: str  # the one user turn of that call; {answer} = the answer, {table} = label -> item rows
+    line_sync: bool  # then those lines take the verdict of their item's own section in the answer (code, no call)
+    status_check: bool  # then a verdict word of those lines that its own reason contradicts is changed (code, no call)
+    status_words: StatusWords
 
     @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
     @classmethod

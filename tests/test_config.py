@@ -292,16 +292,40 @@ def test_coverage_repair_settings(tmp_path, change, named):
     ({"line_check_prompt": "Fix the lines:\n{table}"}, r"reasoning_policy\.line_check_prompt: .*\{answer\}"),
     ({"line_check_prompt": "Answer:\n{answer}"}, r"reasoning_policy\.line_check_prompt: .*\{table\}"),
     ({"line_check": None}, r"reasoning_policy\.line_check"),
+    ({"line_sync": None}, r"reasoning_policy\.line_sync"),
 ])
 def test_line_check_settings(tmp_path, change, named):
     p = load_config(write(tmp_path)).reasoning_policy
-    assert p.line_check and "{answer}" in p.line_check_prompt and "{table}" in p.line_check_prompt
+    assert p.line_check and "{answer}" in p.line_check_prompt and "{table}" in p.line_check_prompt and p.line_sync
     data = base()
     key, value = next(iter(change.items()))
     if value is None:
         del data["reasoning_policy"][key]
     else:
         data["reasoning_policy"][key] = value
+    with pytest.raises(ConfigError, match=named):
+        load_config(write(tmp_path, data))
+
+
+@pytest.mark.parametrize("change, named", [
+    ({"status_check": None}, r"reasoning_policy\.status_check"),
+    ({"status_words": None}, r"reasoning_policy\.status_words"),
+    ({"short": None}, r"reasoning_policy\.status_words\.short"),
+    ({"unverified": []}, r"reasoning_policy\.status_words\.unverified: .*must not be empty"),
+    ({"certainty": ["proves", "(so"]}, r"reasoning_policy\.status_words\.certainty: .*invalid regular expression '\(so'"),
+])
+def test_status_check_settings(tmp_path, change, named):
+    p = load_config(write(tmp_path)).reasoning_policy
+    assert p.status_check and all(p.status_words.model_dump().values())
+    assert {"не доказыва", "correlation"} <= set(p.status_words.short)  # English and Russian
+    assert {"based on", "использ"} <= set(p.status_words.premise)
+    data = base()
+    key, value = next(iter(change.items()))
+    section = data["reasoning_policy"] if key.startswith("status_") else data["reasoning_policy"]["status_words"]
+    if value is None:
+        del section[key]
+    else:
+        section[key] = value
     with pytest.raises(ConfigError, match=named):
         load_config(write(tmp_path, data))
 
