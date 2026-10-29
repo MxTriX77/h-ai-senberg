@@ -90,6 +90,7 @@ class ReasoningPolicyConfig(_Section):
     coverage_repair_prompt: str  # the user turn of that call; {lines} = the missing lines
     line_check: bool  # answer lines whose placeholder names a task item are rewritten once from the answer's analysis
     line_check_prompt: str  # the one user turn of that call; {answer} = the answer, {table} = label -> item rows
+    line_sync: bool  # then those lines take the verdict of their item's own section in the answer (code, no call)
 
     @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
     @classmethod

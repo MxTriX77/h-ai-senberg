@@ -292,10 +292,11 @@ def test_coverage_repair_settings(tmp_path, change, named):
     ({"line_check_prompt": "Fix the lines:\n{table}"}, r"reasoning_policy\.line_check_prompt: .*\{answer\}"),
     ({"line_check_prompt": "Answer:\n{answer}"}, r"reasoning_policy\.line_check_prompt: .*\{table\}"),
     ({"line_check": None}, r"reasoning_policy\.line_check"),
+    ({"line_sync": None}, r"reasoning_policy\.line_sync"),
 ])
 def test_line_check_settings(tmp_path, change, named):
     p = load_config(write(tmp_path)).reasoning_policy
-    assert p.line_check and "{answer}" in p.line_check_prompt and "{table}" in p.line_check_prompt
+    assert p.line_check and "{answer}" in p.line_check_prompt and "{table}" in p.line_check_prompt and p.line_sync
     data = base()
     key, value = next(iter(change.items()))
     if value is None:
