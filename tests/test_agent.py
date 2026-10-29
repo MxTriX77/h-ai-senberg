@@ -110,7 +110,8 @@ def test_tool_prompt_added_when_tools_offered(client, fake, cfg):
     chat(client)
     policy = cfg.reasoning_policy
     assert fake.last_body["messages"][0] == {
-        "role": "system", "content": policy.system_prompt.rstrip() + "\n\n" + policy.tool_prompt,
+        "role": "system",
+        "content": policy.system_prompt.rstrip() + "\n\n" + policy.tool_prompt.rstrip() + "\n" + policy.compute_prompt,
     }
 
 
@@ -274,7 +275,7 @@ def test_lookups_used_up_leave_the_calculator(client, fake, cfg):
     fake.scripts = [lookup_round(), calc_round(call_id="k1"), calc_round(call_id="k2"), [content("done")]]
     assert answer(chat(client)) == "done"
     assert "lookup_compound" in offered(fake.bodies[0])
-    assert [offered(b) for b in fake.bodies[1:]] == [["calculate"]] * 3  # the same tools up to the last call
+    assert [offered(b) for b in fake.bodies[1:]] == [["calculate", "compute"]] * 3  # the same up to the last call
     assert [b.get("tool_choice") for b in fake.bodies] == [None, None, None, "none"]
 
 
@@ -523,3 +524,44 @@ def test_markup_read_also_when_cut_off(cfg):
     assert markup.split("no markup") == ([], "no markup")
     assert markup.cut("Plan.\n" + XML_CALL + "\n ") and markup.cut("Plan.\n<function=calculate><parameter=expressions>2")
     assert not markup.cut(XML_CALL + "\nIt is 480.") and not markup.cut("no markup")
+
+
+# --- the compute tool ----------------------------------------------------------------------------------------
+
+def compute_round(*operations, call_id="m1"):
+    return [tool_call("compute", json.dumps({"operations": list(operations)}), call_id=call_id), finish("tool_calls")]
+
+
+def test_compute_result_reaches_the_model_and_the_trace(client, fake):
+    fake.scripts = [compute_round("weekday(2026-10-29)", "add_days(2026-10-29, 3)"), [content("Thursday.")]]
+    r = chat(client)
+    assert answer(r) == "Thursday." and "compute" in offered(fake.bodies[0])
+    call, result = fake.bodies[1]["messages"][-2:]
+    assert call["tool_calls"][0]["function"]["name"] == "compute"
+    assert result == {"role": "tool", "tool_call_id": "m1",
+                      "content": "weekday(2026-10-29) = Thursday\nadd_days(2026-10-29, 3) = 2026-11-01 (Sunday)"}
+    text = reasoning_text(r)
+    assert '> compute(operations=["weekday(2026-10-29)", "add_days(2026-10-29, 3)"])' in text
+    assert "- weekday(2026-10-29) = Thursday\n- add_days(2026-10-29, 3) = 2026-11-01 (Sunday)\n" in text
+
+
+def test_compute_rounds_are_calculator_rounds(client, fake, cfg):
+    cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 1
+    both = [tool_call("compute", json.dumps({"operations": ["count(a)"]}), call_id="m1"),
+            tool_call("calculate", json.dumps({"expressions": ["2 * 3"]}), index=1, call_id="k1"), finish("tool_calls")]
+    fake.scripts = [both, lookup_round(), [content("done")]]
+    assert answer(chat(client)) == "done"
+    assert [b.get("tool_choice") for b in fake.bodies] == [None, None, "none"]  # the lookup still had its round
+    assert sum(m["role"] == "tool" for m in fake.bodies[-1]["messages"]) == 3
+
+
+def test_compute_switched_off_in_the_loop(cfg, fake, built_store):
+    cfg.reasoning_policy.enable_multi_hop_verification = False
+    cfg.reasoning_policy.compute_tool = False
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))) as c:
+        chat(c)
+    policy = cfg.reasoning_policy
+    assert "compute" not in offered(fake.last_body)
+    system = fake.last_body["messages"][0]["content"]
+    assert system == policy.system_prompt.rstrip() + "\n\n" + policy.tool_prompt
+    assert policy.compute_prompt.strip() not in system
