@@ -783,6 +783,7 @@ def sync_lines(task: str, answer: str) -> tuple[str, list[str]]:
 
 
 _STATUSES = ("unverified", "negative", "positive")  # verdict classes of StatusWords, in the order they are tested
+_CLAUSE_END = re.compile(r"[.!?;](?=\s|$)|\)|\n")  # where a concession's clause ends: its sentence or parenthesis
 
 
 def check_status(task: str, answer: str, words: StatusWords) -> tuple[str, list[str]]:
@@ -794,9 +795,11 @@ def check_status(task: str, answer: str, words: StatusWords) -> tuple[str, list[
     the first that applies:
     R1 negative, a `short` reason, a claim without `certainty` -> unverified;
     R2 unverified, a `short` reason without `missing`, a claim with `certainty` and without `document` -> negative;
-    R3 positive, a reason with `concession` and `calculation` -> negative.
-    The new word is the task's word of that class (outside its list; of several, the one of fewest words, then the
-    one nearest a word of another class, as in `Correct / Incorrect / Unverified`); without one nothing changes. It
+    R3 positive, a reason with `calculation` and a `concession` whose clause has a `premise` word (_conceded) ->
+    negative.
+    The new word is a word of that class the task names (outside its list): the one the answer itself uses most on
+    its item lines and its sections' verdict label lines, else of the task's, the one of fewest words, then the one
+    nearest a word of another class (as in `Correct / Incorrect / Unverified`); without one nothing changes. It
     replaces the verdict word on the line and on the section's verdict label line (sync_lines' label, once in the
     section, a verdict of the same class). A line changes only when its label is on one line and its item has a
     section and a claim."""
@@ -831,6 +834,17 @@ def check_status(task: str, answer: str, words: StatusWords) -> tuple[str, list[
     boundary = re.compile(rf"\s*(?:-{{3,}}\s*$|#{{1,6}}\s|(?:[-*+]\s+)?\*\*\s*(?:{alt['summary']}))", re.I)
     sections = _sections(task, lines, lambda line: bool(boundary.match(line)) and not (
         label and (f := _FIELD.match(line)) and _label_key(f.group(1)) == label))
+    wanted, inside = {_label_key(name) for name in table}, {j for found in sections.values() for j in found}
+    used: Counter[tuple[str, str]] = Counter()  # (class, word) on the item lines and the sections' verdict lines
+    for j, (key, line, at) in enumerate(lines):
+        f = _FIELD.match(line) if label and j in inside else None
+        value = line[at:] if key in wanted else f.group(2) if f and _label_key(f.group(1)) == label else None
+        if value is not None and (status := _status(_verdict(value), heads))[0]:
+            used[status] += 1
+    for name in _STATUSES:  # the answer's own word first, when the task names it
+        given = {a[3].casefold() for a in spans if a[2] == name}
+        if own := [w for (c, w), _ in used.most_common() if c == name and w.casefold() in given]:
+            named[name] = own[0]
     counts = Counter(key for key, _, _ in lines)
     out, changes = [line for _, line, _ in lines], []
     for name, item in table.items():
@@ -848,7 +862,7 @@ def check_status(task: str, answer: str, words: StatusWords) -> tuple[str, list[
         elif (old == "unverified" and short and certain and not find["missing"].search(reason)
               and not find["document"].search(claim)):
             rule, new = "R2", named.get("negative")
-        elif old == "positive" and find["concession"].search(reason) and find["calculation"].search(reason):
+        elif old == "positive" and find["calculation"].search(reason) and _conceded(reason, find):
             rule, new = "R3", named.get("negative")
         else:
             continue
@@ -865,6 +879,16 @@ def check_status(task: str, answer: str, words: StatusWords) -> tuple[str, list[
                 out[j] = out[j][:s] + new + out[j][s + len(given):]
         changes.append(f"{name} {word} → {new} (item {item}, {rule})")
     return ("\n".join(out), changes) if changes else (answer, [])
+
+
+def _conceded(reason: str, find: dict[str, re.Pattern[str]]) -> bool:
+    """The reason has a `concession` whose clause, from it to the end of its sentence or parenthesis (_CLAUSE_END),
+    has a `premise` word (`correct despite the wrong input`, `accurate (though it uses …)`)."""
+    for m in find["concession"].finditer(reason):
+        end = _CLAUSE_END.search(reason, m.end())
+        if find["premise"].search(reason, m.start(), end.start() if end else len(reason)):
+            return True
+    return False
 
 
 def _status(verdict: str, heads: dict[str, re.Pattern[str]]) -> tuple[str, str]:

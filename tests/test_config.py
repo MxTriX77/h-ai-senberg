@@ -318,6 +318,7 @@ def test_status_check_settings(tmp_path, change, named):
     p = load_config(write(tmp_path)).reasoning_policy
     assert p.status_check and all(p.status_words.model_dump().values())
     assert {"не доказыва", "correlation"} <= set(p.status_words.short)  # English and Russian
+    assert {"based on", "использ"} <= set(p.status_words.premise)
     data = base()
     key, value = next(iter(change.items()))
     section = data["reasoning_policy"] if key.startswith("status_") else data["reasoning_policy"]["status_words"]

@@ -193,7 +193,7 @@ AUDIT_RU = ("Проверьте утверждения: верно / невер�
             "A4: <вердикт для У1>\nA5: <вердикт для У2>\nA6: <вердикт для У3>")
 REASONS_RU = ("**У1.** Давление\nНаблюдение без контроля не доказывает причинность.\n**Вердикт:** неверно\n\n"
               "**У2.** Чистота\nОдин образец нельзя обобщить на все партии.\n**Вердикт:** не подтверждено\n\n"
-              "**У3.** Выход\nРасчёт: 8 / 10 = 80 %, хотя взята масса до потерь.\n**Вердикт:** верно\n\n")
+              "**У3.** Выход\nРасчёт: 8 / 10 = 80 %, хотя использована масса до потерь.\n**Вердикт:** верно\n\n")
 
 
 @pytest.fixture
@@ -218,9 +218,24 @@ def test_check_status_follows_the_lines_own_reason(words):
 def test_check_status_writes_the_tasks_own_verdict_word(words):
     task = AUDIT_EN.replace("Verdicts: Correct / Incorrect / Unverified.", "Some claims may be wrong. If a claim cannot "
                             "be verified, mark it unverified; if the data contradict it, incorrect; else correct.")
-    new, changes = check_status(task, REASONS_EN + "A4: Incorrect\nA5: Unverified\nA6: Correct", words)
-    assert changes == ["A4 Incorrect → unverified (item C1, R1)", "A5 Unverified → incorrect (item C2, R2)",
-                       "A6 Correct → incorrect (item C3, R3)"]  # one word, next to the other classes: no prose phrase
+    reasons = (REASONS_EN.replace("Verdict: Incorrect", "Verdict: False").replace("Verdict: Correct", "Verdict: True")
+               .replace("**Unverified**", "**Not established**"))  # the answer uses no word the task names
+    new, changes = check_status(task, reasons + "A4: False\nA5: Not established\nA6: True", words)
+    assert changes == ["A4 False → unverified (item C1, R1)", "A5 Not established → incorrect (item C2, R2)",
+                       "A6 True → incorrect (item C3, R3)"]  # one word, next to the other classes: no prose phrase
+
+
+def test_check_status_prefers_the_word_the_answer_uses(words):
+    task = ("Check each claim against the data.\n- Verified: the data confirm it.\n- Contradicted: the data show it is "
+            "wrong.\n- Unverified: the data do not settle it.\nC1. The tank holds 120 L.\nC2. The single test proves "
+            "every unit is safe.\nC3. The flask is dry.\nEnd with:\nA4: <verdict for C1>\nA5: <verdict for C2>\n"
+            "A6: <verdict for C3>")
+    answer = ("C1. Tank\nMeasured 120 L.\nVerdict: Verified\n\nC2. One test\nOne test cannot be generalised to every "
+              "unit.\nVerdict: Unverified\n\nC3. Flask\nIt holds 2 % water.\nVerdict: Contradicted\n\n"
+              "A4: Verified\nA5: Unverified\nA6: Contradicted")
+    assert check_status(task, answer, words)[1] == ["A5 Unverified → Contradicted (item C2, R2)"]
+    other = answer.replace("Contradicted", "Verified")  # the answer uses no negative word: the task's nearest one
+    assert check_status(task, other, words)[1] == ["A5 Unverified → wrong (item C2, R2)"]
 
 
 def test_check_status_without_a_verdict_label_changes_only_the_line(words):
@@ -243,10 +258,26 @@ def test_check_status_keeps_lines_the_rules_do_not_reach(words, task, reasons, k
     assert kept in new.splitlines() and len(changes) == 2 and not any(c.startswith(kept[:3]) for c in changes)
 
 
+@pytest.mark.parametrize("conceded, fires", [
+    ("; calculation correct, but based on wrong shaft power.", True),
+    (", correct despite wrong input.", True),
+    (", accurate (though it uses the before-loss yield).", True),
+    (", correct, though based on the wrong limiting reagent.", True),
+    (", though based on flawed scaling logic.", True),
+    (". The table data calculates exactly to a 15 % increase, despite the summary containing a conflicting revenue "
+     "figure.", False),  # the concession names no wrong input of the claim's calculation
+    (", correct despite the rounding. The wrong height was fixed.", False),  # the premise word is past the sentence
+])
+def test_check_status_r3_needs_a_premise_in_the_concession(words, conceded, fires):
+    reasons = REASONS_EN.replace(", correct despite the wrong height.", conceded)
+    changes = check_status(AUDIT_EN, reasons + "A4: Incorrect\nA5: Unverified\nA6: Correct", words)[1]
+    assert ("A6 Correct → Incorrect (item C3, R3)" in changes) == fires
+
+
 @pytest.mark.parametrize("boundary", ["---", "## Notes", "**Summary**", "- **Final check:** all lines"])
 def test_check_status_reason_ends_with_its_section(words, boundary):
     reasons = REASONS_EN.replace(", correct despite the wrong height.", ".")
-    answer = reasons + f"{boundary}\nThe calculation is right despite the rounding.\n\nA4: Correct\nA5: Correct\nA6: Correct"
+    answer = reasons + f"{boundary}\nThe calculation is right despite the wrong height.\n\nA4: Correct\nA5: Correct\nA6: Correct"
     assert check_status(AUDIT_EN, answer, words) == (answer, [])  # the note after the boundary is no part of C3
     assert check_status(AUDIT_EN, answer.replace(f"{boundary}\n", ""), words)[1] == ["A6 Correct → Incorrect (item C3, R3)"]
 

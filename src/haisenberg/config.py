@@ -84,7 +84,8 @@ class StatusWords(_Section):
     certainty: list[str]  # a claim that asserts proof or certainty (`guarantees`, `поэтому`)
     missing: list[str]  # a reason that says material is missing (`not attached`, `нет доступа`)
     document: list[str]  # a claim that names a document (`report`, `сертификат`)
-    concession: list[str]  # a reason that concedes a wrong input (`despite`, `хотя`)
+    concession: list[str]  # a reason that concedes something (`despite`, `хотя`)
+    premise: list[str]  # ... with, in that clause, a wrong input or premise (`based on`, `wrong`, `использ`)
     calculation: list[str]  # a reason about a calculation (`calculat`, `расч`)
     summary: list[str]  # a bold block that ends an item's section (`**Summary**`, `**Итог**`)
 

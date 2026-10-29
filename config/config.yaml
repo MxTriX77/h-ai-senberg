@@ -110,9 +110,11 @@ reasoning_policy:
                                            # bold summary block, and the line's text after the word) supports another status:
                                            # R1 incorrect, the evidence falls short, a plain claim -> unverified; R2
                                            # unverified, falls short, the claim asserts proof (no missing material, no
-                                           # document named) -> incorrect; R3 correct, a conceded input of a calculation ->
-                                           # incorrect. Only a word the task names is written, on the line and on its
-                                           # section's verdict line; false: off
+                                           # document named) -> incorrect; R3 correct, a calculation and a concession whose
+                                           # clause (to the end of its sentence or parenthesis) names a wrong input or
+                                           # premise -> incorrect. Only a word the task names is written (first the one the
+                                           # answer already uses for that class), on the line and on its section's verdict
+                                           # line; false: off
   status_words:                            # what the status check reads: regex fragments, case ignored, English and Russian
     positive: ['correct', 'verified', 'верно', 'правильно', 'true', 'supported', 'consistent', 'confirmed', 'valid',
                'подтвержд\w*']             # verdict words; tested unverified first, then negative, then positive
@@ -136,7 +138,9 @@ reasoning_policy:
     document: ['journal', '(?<!\w)doi(?!\w)', 'certificat', 'report', 'standard', 'audit', 'reference', 'study',   # named in the claim
                'сертификат', 'отч[её]т', 'стандарт', 'журнал', 'исследован']
     concession: ['\bdespite\b', '\b(?:al)?though\b', '\bbut (?:based on|uses|using)\b', 'wrong (?:input|premise|value)',
-                 'incorrect (?:input|premise)', 'несмотря на', 'хотя\b', 'при неверн']   # a conceded input or premise
+                 'incorrect (?:input|premise)', 'несмотря на', 'хотя\b', 'при неверн']   # a concession ...
+    premise: ['based on', '\bus(?:es|ing|ed)\b', '\bwrong', 'flawed', '\bincorrect', 'erroneous', 'mistaken', 'основан',
+              'исходя из', 'использ', 'неверн', 'ошибочн']   # ... whose clause names a wrong input or premise (R3)
     calculation: ['calculat', 'comput', 'formula', 'arithmetic', 'расч', 'рассчит', 'вычисл', 'формул']
     summary: ['summary', 'conclusion', 'final', 'итог', 'вывод']   # `**Summary**`, `**Итог:**` … end a section
 
