@@ -16,7 +16,7 @@ model_backend:
   model_id: "${MODEL_ID:-qwen3.5-9b}"      # sent as `model`; also llama-server's --alias
   temperature: 0.6
   seed: "${EVAL_SEED:-}"                   # for eval A/Bs (same draws in both arms); empty = no seed; production chat leaves it unset
-  max_tokens: 4096                        # per call: thinking (llama_server reasoning-budget) + answer
+  max_tokens: 4096                         # per call: thinking (llama_server reasoning-budget) + answer
   timeout_s: null                          # read limit in s; null = wait as long as the backend needs (queue, slow prompt)
   wait_s: 300                              # retry a backend that refuses connections or answers 503 (loading, restarting)
   context_tokens: null                     # backend context in tokens; null = llama_server.ctx_size
