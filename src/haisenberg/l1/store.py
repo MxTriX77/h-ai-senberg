@@ -31,15 +31,23 @@ class Citation:
 
 @dataclass(frozen=True)
 class Value:
-    """A number a claim about a record can be checked against. `unit` is a regex that must follow a
-    claim's number for a mismatch to count as a contradiction ('' = any number of the same magnitude)."""
+    """A number a claim about a record can be checked against, and what quantity it is: `unit` as the source
+    writes it ('' = a pure number; see l1.units for equal spellings); `words` and `unlike`, regexes of the words
+    that name its property and other properties of such a record, as a claim writes them next to the number
+    (case ignored; '' = the record itself is the quantity, as a constant is)."""
 
     number: float
     unit: str = ""
+    words: str = ""
+    unlike: str = ""
 
 
-# A mass per amount of substance, as written after a number (text normalized: '−' and '⁻¹' as '-1').
-MASS_UNIT = r"\s*(?:g\s*(?:/|·|⋅|\s)\s*mol\b|g\s*mol\s*\^?\s*-\s*1|daltons?\b|da\b|amu\b|u\b)"
+# What a compound's numbers are, as written next to a number: its two masses, and properties a claim may give
+# that are neither (a boiling point or a density is never a molar mass).
+MOLAR_MASS_WORDS = r"molar mass|molecular (?:weight|mass)|formula (?:weight|mass)|average mass|mol\. ?wt"
+MONOISOTOPIC_WORDS = r"monoisotopic|exact mass"
+OTHER_COMPOUND_WORDS = (r"boil|melt|freez|density|dense|solubility|soluble|vapou?r pressure|flash point|pka|ph\b|"
+                        r"temperature|enthalpy|heat|viscosity|refractive index|dipole")
 
 
 @dataclass
@@ -87,7 +95,7 @@ class ConstantRecord(Record):
         return f"{value} ({how}); {self.citation.source}, version {self.citation.version}"
 
     def values(self) -> list[Value]:
-        return [Value(self.value)]
+        return [Value(self.value, self.unit)]
 
     def names(self) -> list[str]:
         return [self.name]
@@ -156,8 +164,9 @@ class CompoundRecord(Record):
         )
 
     def values(self) -> list[Value]:
-        masses = [self.molar_mass] if self.molar_mass is not None else []
-        return [Value(m, MASS_UNIT) for m in [*masses, self.monoisotopic_mass]]
+        molar = [Value(self.molar_mass, "g/mol", MOLAR_MASS_WORDS, f"{MONOISOTOPIC_WORDS}|{OTHER_COMPOUND_WORDS}")]
+        mono = Value(self.monoisotopic_mass, "Da", MONOISOTOPIC_WORDS, f"{MOLAR_MASS_WORDS}|{OTHER_COMPOUND_WORDS}")
+        return [*(molar if self.molar_mass is not None else []), mono]
 
     def formulas(self) -> list[str]:
         return [self.formula]
