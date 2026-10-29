@@ -11,8 +11,9 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -20,8 +21,9 @@ import httpx
 from .config import Config
 from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
-from .l1.store import STOPWORDS
+from .l1.store import STOPWORDS, Value
 from .l1.text import parse_formula, to_hill
+from .l1.units import parse_unit, read_unit, same_unit
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import SEARCH, Knowledge, Source, Sources, term_share
 
@@ -47,7 +49,13 @@ _ABBREV = {"e.g", "i.e", "approx", "ca", "vs", "etc", "cf", "fig", "eq", "no", "
 _MARKERS = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+|>\s*)*")
 _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]claim)\b(.*)$", re.I)
 # A label (an id such as A1, C or (b), maybe after one word: "Claim C", "Claim 3") and a colon starts the line.
-_LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
+_LABEL = r"(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})"
+_LABELLED = re.compile(rf"[*_`]*{_LABEL}[*_`\s]*[:：][*_`]*(?:\s|$)")
+# An answer line the task asks for: a label, a colon and a placeholder in angle brackets (`A9: <verdict>`), anywhere
+# in the text; a placeholder starts with no space, digit, -, = or bracket (`A: <0.1 %`, `A: <-> B` are no placeholders).
+_REQUESTED = re.compile(rf"(?<!\w)[*_`]*({_LABEL})[*_`\s]*[:：][*_`\s]*(<(?![\s\d<>=-])[^<>\n]+>)")
+_ID = re.compile(r"\(?[^\W\d_]\d{0,2}\)?")  # the id of a label (A1, C, (b)), without a word before it
+_LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic letters seen in labels
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -338,6 +346,30 @@ def _written_results(text: str, decimal_comma: bool, strict: bool) -> set[tuple[
     return out
 
 
+def fix_answer_lines(draft: str, fixes: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
+    """(the draft with each labelled answer line (`A1: …`, as in split_claims) that states exactly the old wrong
+    result of a fixed computation, once, given the fixed value too; those fixes, marked `on: answer line`). A
+    result fixed to two different values is left alone, and so is one left as written (a `note`: quoted)."""
+    by_old: dict[str, list[dict[str, str]]] = {}
+    for f in fixes:
+        if "note" not in f:
+            by_old.setdefault(f["stated"], []).append(f)
+    out, done = [], []
+    for line in draft.splitlines(keepends=True):
+        if _LABELLED.match(line[_MARKERS.match(line).end() :]):
+            spans = []
+            for old, fs in by_old.items():
+                hits = list(re.finditer(rf"(?<![\w.,]){re.escape(old)}(?!\w|[.,]\d)", line))
+                if len(hits) == 1 and len({f["fixed"] for f in fs}) == 1:
+                    spans.append((hits[0].start(), hits[0].end(), fs[0]))
+            for a, b, f in sorted(spans, key=lambda s: s[0], reverse=True):
+                line = line[:a] + f["fixed"] + line[b:]
+                done.append({"expression": f["expression"], "stated": f["stated"], "fixed": f["fixed"],
+                             "on": "answer line"})
+        out.append(line)
+    return "".join(out), done
+
+
 def _decimal_points(text: str, decimal_comma: bool) -> str:
     """Commas between digits as decimal points (same length: spans stay valid): every one with
     `decimal_comma` (Russian text), otherwise not before exactly three digits (1,900)."""
@@ -385,22 +417,54 @@ def _mentions(text: str, names: list[str]) -> bool:
     return any(len(n) >= 3 and re.search(rf"(?<!\w){re.escape(n.lower())}(?!\w)", low) for n in names)
 
 
-def code_check(claim: Claim, sources: Sources, rel_tol: float) -> tuple[str, list[str], str | None, str] | None:
-    """(outcome, ids, fixed text, note) from the structured records, or None when code cannot decide."""
+def _property(norm: str, n: Number, v: Value) -> bool | None:
+    """Whether the property words nearest the number (before it, else after it) are the value's own (True) or
+    another property's (False); None when the claim names neither."""
+    pattern = f"(?P<own>{v.words})" + (f"|{v.unlike}" if v.unlike else "")
+    found = list(re.finditer(rf"(?<!\w)(?:{pattern})", norm, re.I))
+    before = [m for m in found if m.end() <= n.start]
+    near = before[-1] if before else next((m for m in found if m.start() >= n.end), None)
+    return None if near is None else near["own"] is not None
+
+
+def _fits(n: Number, v: Value, norm: str, cited: bool, named: bool, units: bool) -> tuple[bool, bool]:
+    """(a match of the number with value v supports the claim; a mismatch contradicts it, v's record being cited).
+    With `units` both need the same quantity: no other unit after the number and no other property named nearest
+    it. Support also needs the record cited or named, or v's unit written when v is its record (a constant). A
+    contradiction also needs v's unit written after the number, or v's property (for a constant: its name) named
+    and no word after the number, and a number within a factor of ten of v. Without `units`, numbers alone:
+    support needs the record cited or named unless v is its record, a contradiction v's unit written or, when v
+    is its record, a number within a factor of ten."""
+    size = n.value * v.number > 0 and abs(math.log10(n.value / v.number)) < 1
+    written, word = read_unit(norm[n.end :])
+    record = parse_unit(v.unit)
+    unit = None if written is None else record is not None and same_unit(written, record)
+    if not units:
+        return cited or named or not v.words, (unit is True) if v.words else size
+    prop = _property(norm, n, v) if v.words else (named or None)
+    same = unit is not False and prop is not False
+    return (same and (cited or named or (unit is True and not v.words)),
+            same and size and (unit is True or (prop is True and not word)))
+
+
+def code_check(claim: Claim, sources: Sources, rel_tol: float,
+               units: bool = True) -> tuple[str, list[str], str | None, str] | None:
+    """(outcome, ids, fixed text, note) from the structured records, or None when code cannot decide. With
+    `units`, a number counts only as the same quantity as a record value (see _fits)."""
     norm = claim.text.translate(_NORM)
     nums, forms = read_numbers(claim.text), read_formulas(claim.text)
     cited = [s for i in claim.cites if (s := sources.get(i))]
+    named = {s.id: _mentions(norm, s.record.names()) for s in sources.items}
     says_formula = "formula" in norm.lower()
 
-    for s in cited:  # contradictions need a cited record and a clear quantity
-        values, fixes = s.record.values(), []
+    for s in cited:  # contradictions need a cited record and the same quantity
+        fixes = []
         for n in nums:
-            if any(_matches(n, v.number, rel_tol) for v in values):
-                continue
-            for v in values:
-                same_unit = v.unit and re.match(v.unit, norm[n.end :], re.I)
-                same_size = not v.unit and n.value * v.number > 0 and abs(math.log10(n.value / v.number)) < 1
-                if same_unit or same_size:
+            if any(_matches(n, v.number, rel_tol) and _fits(n, v, norm, True, named[c.id], units)[0]
+                   for c in cited for v in c.record.values()):
+                continue  # the value of a cited record
+            for v in s.record.values():
+                if _fits(n, v, norm, True, named[s.id], units)[1]:
                     fixes.append((n.start, n.end, _format(v.number, n), f"{norm[n.start:n.end]} ≠ {v.number:g}"))
                     break
         hills = {to_hill(f) for f in s.record.formulas()}
@@ -415,7 +479,7 @@ def code_check(claim: Claim, sources: Sources, rel_tol: float) -> tuple[str, lis
 
     ids, notes = [], []  # support: every number matches a record, or a stated formula does
     for n in nums:
-        hit = _support(n, cited, sources, norm, rel_tol)
+        hit = _support(n, cited, sources, norm, rel_tol, named, units)
         if hit is None:
             ids = []
             break
@@ -432,11 +496,11 @@ def code_check(claim: Claim, sources: Sources, rel_tol: float) -> tuple[str, lis
     return None
 
 
-def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_tol: float) -> tuple[str, float] | None:
+def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_tol: float,
+             named: dict[str, bool], units: bool) -> tuple[str, float] | None:
     for s in [*cited, *(x for x in sources.items if x not in cited)]:
-        named = s in cited or _mentions(norm, s.record.names())
         for v in s.record.values():
-            if _matches(n, v.number, rel_tol) and (named or not v.unit):
+            if _matches(n, v.number, rel_tol) and _fits(n, v, norm, s in cited, named[s.id], units)[0]:
                 return s.id, v.number
     return None
 
@@ -532,11 +596,55 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[^\W\d_]+", text.casefold())
 
 
+def _label_id(label: str) -> str:
+    """A label's id: its last word when that is an id (`Claim C` -> `C`, `with A1` -> `A1`), else the label."""
+    words = label.split()
+    return words[-1] if _ID.fullmatch(words[-1]) else " ".join(words)
+
+
+def _label_key(label: str) -> str:
+    """A label as compared: its id, case and Cyrillic look-alike letters ignored (`А1` = `a1`, `(b)` = `b`)."""
+    return _label_id(label).translate(_LOOKALIKE).casefold().strip("()")
+
+
+def missing_lines(task: str, answer: str) -> dict[str, str]:
+    """The answer lines the task asks for (_REQUESTED) that have no labelled line in the answer (answer_labels):
+    label id -> the line as the task writes it, with that id (`A9: <verdict>`), in the task's order."""
+    seen = {_label_key(label) for label in answer_labels(answer)}
+    missing: dict[str, str] = {}
+    for m in _REQUESTED.finditer(task):
+        if (key := _label_key(m.group(1))) not in seen:
+            seen.add(key)
+            label = _label_id(m.group(1))
+            missing[label] = f"{label}: {m.group(2)}"
+    return missing
+
+
+def supplied_lines(reply: str, labels: Iterable[str]) -> dict[str, str]:
+    """The reply's labelled lines (as in answer_labels) for these labels, the first per label, each with text
+    after the colon that is not only a placeholder (`<…>`): label -> the line."""
+    wanted = {_label_key(label): label for label in labels}
+    found: dict[str, str] = {}
+    for line in reply.splitlines():
+        m = _LABELLED.match(line, _MARKERS.match(line).end())
+        label = wanted.get(_label_key(m.group(0).strip("*_`:： \t"))) if m else None
+        text = line[m.end() :].strip() if m else ""
+        if label and label not in found and text and not (text.startswith("<") and text.endswith(">")):
+            found[label] = line.strip()
+    return found
+
+
 def _answer_line(text: str, start: int, end: int) -> bool:
     """A line that text[start:end] touches is a labelled answer or verdict line (`A1: …`, as in split_claims)."""
     stop = text.find("\n", end)
     lines = text[text.rfind("\n", 0, start) + 1 : stop if stop >= 0 else len(text)].splitlines()
     return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
+
+
+def answer_labels(text: str) -> set[str]:
+    """The labels of the labelled answer or verdict lines in text (`**A1:** …` -> `A1`, as in split_claims)."""
+    found = (_LABELLED.match(line, _MARKERS.match(line).end()) for line in text.splitlines())
+    return {m.group(0).strip("*_`:： \t") for m in found if m}
 
 
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
@@ -568,6 +676,57 @@ def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     if missing and (labelled or not numbers):
         return f"{'answer line' if labelled else 'no value changed'}: {', '.join(missing)} not in the quoted passage"
     return ""
+
+
+_EDIT_TERMS = 3  # terms one edit of a judge correction may replace and put in: a value with its unit, a short name
+_STEM = 4  # letters of the shorter word for two words, one inside the other, to be one word with an affix
+
+
+def _terms(text: str) -> list[tuple[str, int, int, Number | None]]:
+    """(key, start, end, number) of the numbers and other terms of the text in order, citation markers aside: a
+    number keyed by its value, any other run of letters and digits (a word, a formula such as H2O, a unit symbol)
+    by its casefolded text. Commas between digits are decimal points as in unconfirmed."""
+    blank = _CITES.sub(lambda m: " " * len(m.group()), text)
+    norm = _decimal_points(blank, bool(re.search("[А-Яа-яЁё]", text))).translate(_NORM)
+    numbers = read_numbers(norm)
+    out = [(f"#{n.value!r}", n.start, n.end, n) for n in numbers]
+    for n in numbers:
+        norm = norm[: n.start] + " " * (n.end - n.start) + norm[n.end :]
+    out += [(m.group().casefold(), m.start(), m.end(), None) for m in re.finditer(r"\w+", norm)]
+    return sorted(out, key=lambda t: t[1])
+
+
+def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None, str]:
+    """The claim `text` with a judge correction put in as a minimal edit, or None and why not. Claim and correction
+    are compared as terms (see _terms); each place they differ is an edit. Minimal: at least one edit, each replacing
+    1 to _EDIT_TERMS terms by 1 to _EDIT_TERMS terms (nothing only added or dropped: an explanation, a `not`) and no
+    word by one that contains it or that it contains (balanced → unbalanced: a changed verdict). Stated: every term
+    an edit puts in is in the passages, a number within half a unit of the last written digit of either. Only the
+    edited terms change: the rest of the claim, its emphasis and citation markers stay as written."""
+    old, new, said = _terms(text), _terms(correction), _terms(passages)
+    stated, words = [n for *_, n in said if n], {key for key, *_, n in said if not n}
+    edits = [op for op in SequenceMatcher(None, [t[0] for t in old], [t[0] for t in new], autojunk=False).get_opcodes()
+             if op[0] != "equal"]
+    if not edits:
+        return None, "not a minimal edit: it changes no value or term"
+    for _, i1, i2, j1, j2 in edits:
+        was = text[old[i1][1] : old[i2 - 1][2]] if i2 > i1 else ""
+        put = correction[new[j1][1] : new[j2 - 1][2]] if j2 > j1 else ""
+        if not was or not put:
+            return None, f"not a minimal edit: {f'adds {put!r}' if put else f'drops {was!r}'}"
+        if max(i2 - i1, j2 - j1) > _EDIT_TERMS:
+            return None, f"not a minimal edit: rewrites {was!r} as {put!r}"
+        for w in (t[0] for t in old[i1:i2] if t[0].isalpha()):
+            for v in (t[0] for t in new[j1:j2] if t[0].isalpha()):
+                if w != v and min(len(w), len(v)) >= _STEM and (w in v or v in w):
+                    return None, f"not a minimal edit: changes {w!r} to {v!r}"
+        for key, a, b, n in new[j1:j2]:
+            if not (any(abs(n.value - s.value) <= max(n.half, s.half) for s in stated) if n else key in words):
+                return None, f"not stated in the source: {correction[a:b]}"
+    out = text
+    for _, i1, i2, j1, j2 in reversed(edits):
+        out = out[: old[i1][1]] + correction[new[j1][1] : new[j2 - 1][2]] + out[old[i2 - 1][2] :]
+    return out, ""
 
 
 def parse_verdicts(text: str, given: set[str]) -> dict[int, tuple[str, list[str], str | None]]:
@@ -612,7 +771,7 @@ class Verifier:
 
     async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
         """Yield reasoning deltas while checking, then the Verification."""
-        arithmetic, checked = [], 0
+        arithmetic, checked, lines = [], 0, []
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
                                                         self.cfg.arithmetic_prefixes,
@@ -621,12 +780,17 @@ class Verifier:
                                                         self.cfg.arithmetic_max_change)
         kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
         arithmetic = [a for a in arithmetic if "note" not in a]
+        if self.cfg.arithmetic_answer_lines and arithmetic:
+            draft, lines = fix_answer_lines(draft, arithmetic)
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
                        + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic)
                        + "".join(f"- {a['expression']} = {a['stated']}: {a['note']} (would be {a['fixed']})\n"
-                                 for a in kept))
+                                 for a in kept)
+                       + "".join(f"- answer line: {a['stated']} → {a['fixed']} (as {a['expression']})\n"
+                                 for a in lines))
+        arithmetic += lines
         draft, checks = run_checkers(draft, self.cfg.checkers, question, self.cfg.keep_quotes,
                                      self.cfg.checkers_clear_only)
         for name in self.cfg.checkers:
@@ -645,7 +809,7 @@ class Verifier:
             if is_quotation(draft, mask, c.start, c.end):  # before the code checks: they would rewrite it too
                 c.outcome, c.note = UNVERIFIED, "quoted from the task: not checked"
                 yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
-            elif found := code_check(c, sources, self.cfg.rel_tol):
+            elif found := code_check(c, sources, self.cfg.rel_tol, self.cfg.unit_checks):
                 c.outcome, c.ids, c.fixed, c.note = found
                 c.note = f"code: {c.note}"
                 yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
@@ -766,12 +930,18 @@ class Verifier:
             if (verdict == "contradicts" and correction and self.cfg.ignore_prompt_echo
                     and echoes(correction, self.cfg.judge_prompt)):
                 correction, c.note = None, f"{c.note}, correction repeats the judge instructions: ignored"
+            fixed, why = correction, ""
+            if verdict == "contradicts" and correction and self.cfg.judge_minimal_edits:
+                fixed, why = minimal_edit(c.text, correction, "\n".join(
+                    f"{s.record.label()}\n{s.passage}" for s in passages if s.id in ids))
             if verdict == "supports":
                 c.outcome, c.ids = SUPPORTED, ids
+            elif why:  # a rewrite, or a value no passage states: the claim stays as written
+                c.outcome, c.note = UNVERIFIED, f"{c.note}, correction not applied ({why}): {correction}"
             elif verdict == "contradicts" and not correction and self.cfg.keep_uncorrected:
                 c.outcome, c.note = UNVERIFIED, f"{c.note}, no correction: kept"  # no value stated against it
             elif verdict == "contradicts":
-                c.outcome, c.ids, c.fixed = (CORRECTED, ids, correction) if correction else (REMOVED, ids, None)
+                c.outcome, c.ids, c.fixed = (CORRECTED, ids, fixed) if fixed else (REMOVED, ids, None)
             elif verdict == "no_claim":
                 c.outcome = NO_CLAIM
             yield _say(f"- C{c.n} {c.note}\n")
