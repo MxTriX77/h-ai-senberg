@@ -1,0 +1,32 @@
+# gemma-4-26B-A4B-it-ultra-uncensored-heretic (llmfan46): Gemma 4 26B-A4B instruct with refusals removed (Heretic
+# v1.2.0, arbitrary-rank ablation; KL divergence 0.124 to its base, MMLU 80.0 vs 82.5, refusals 3/100).
+# MoE: 30 layers of 128 experts (8 active) plus a small dense MLP, ~4B parameters active per token.
+# Own chat template, handled by llama.cpp's Gemma4 parser (b11782): thinking in a `<|channel>thought ... <channel|>`
+# block, native tool calls `<|tool_call>call:NAME{key:value}<tool_call|>`, thinking on/off via enable_thinking.
+# GGUF: mradermacher/gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF, i1-IQ4_XS (13.9 GB), text only.
+# Fit (6 GB GPU, 14.5 GB WSL): attention, dense MLPs, KV cache and the experts of the last 5 layers on the GPU, the
+# other experts in RAM (~10.1 GB). License: Apache-2.0.
+# Use: MODEL_PROFILE=gemma-4-26b-a4b-heretic
+
+model_backend:
+  model_id: "${MODEL_ID:-gemma-4-26b-a4b-heretic}"
+  max_tokens: 8192                         # thinking up to 4096 + answer; prompt budget 32768 - 8192
+  temperature: 1.0                         # the model card's one setting for every use: 1.0, top_p 0.95, top_k 64
+  extra_body:
+    top_p: 0.95
+    top_k: 64
+    min_p: 0.0
+    presence_penalty: 0.0
+
+reasoning_policy:
+  tool_call_markup:                        # Gemma 4 writes calls as call:NAME{key:<|"|>text<|"|>,...}
+    call: '<\|tool_call>.*?(?:<tool_call\|>|$)'
+    function: '<\|tool_call>call:([\w.-]+)'
+    parameter: '(\w+):<\|"\|>(.*?)<\|"\|>' # text arguments only; a leaked call with list arguments is dropped
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/gemma-4-26B-A4B-it-ultra-uncensored-heretic.i1-IQ4_XS.gguf}"
+  ctx_size: "${CTX_SIZE:-32768}"           # KV is small: 5 full-attention layers, the other 25 keep a 1024 window
+  flags:
+    n-cpu-moe: "${N_CPU_MOE:-25}"          # expert layers kept in RAM (~0.4 GB each); raise if CUDA runs out of memory
+    reasoning-budget: "${REASONING_BUDGET:-4096}"   # as for the 35B MoE profile; set REASONING_BUDGET to compare

@@ -4,7 +4,7 @@
 # Own chat template, handled by llama.cpp's Gemma4 parser (b11782): thinking in a `<|channel>thought ... <channel|>`
 # block, native tool calls `<|tool_call>call:NAME{key:value}<tool_call|>`, thinking on/off via enable_thinking.
 # GGUF: mradermacher/gemma-4-31B-it-uncensored-heretic-i1-GGUF, i1-IQ3_M (14.4 GB), text only (no mmproj).
-# Fit (6 GB GPU, 14.5 GB WSL): the last 18 of 60 layers and their KV cache on the GPU, the rest (~10.4 GB) in RAM.
+# Fit (6 GB GPU, 14.5 GB WSL): the last 16 of 60 layers and their KV cache on the GPU, the rest (~10.8 GB) in RAM.
 # License: Apache-2.0.
 # Use: MODEL_PROFILE=gemma-4-31b-heretic
 
@@ -27,4 +27,4 @@ llama_server:
   model_path: "${MODEL_PATH:-models/gemma-4-31B-it-uncensored-heretic.i1-IQ3_M.gguf}"
   ctx_size: "${CTX_SIZE:-16384}"           # as for the default model; full-attention layers hold ~70 MB of KV each
   flags:
-    gpu-layers: "${GPU_LAYERS:-18}"        # ~0.25 GB per layer with its KV cache; lower if CUDA runs out of memory
+    gpu-layers: "${GPU_LAYERS:-16}"        # ~0.25 GB per layer with its KV cache; lower if CUDA runs out of memory
