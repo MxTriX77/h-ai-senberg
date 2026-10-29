@@ -370,8 +370,10 @@ def test_consistency_settings(tmp_path):
 def test_conservative_check_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.arithmetic_prefixes is v.skip_derived_claims is v.keep_uncorrected is v.arithmetic_strict_parse is True
+    assert v.unit_checks is v.arithmetic_answer_lines is True
     assert v.arithmetic_max_change == 100
-    for key in ("keep_uncorrected", "arithmetic_strict_parse", "arithmetic_max_change"):
+    for key in ("keep_uncorrected", "unit_checks", "arithmetic_answer_lines", "arithmetic_strict_parse",
+                "arithmetic_max_change"):
         data = base()
         del data["verifier"][key]
         with pytest.raises(ConfigError, match=f"verifier.{key}"):

@@ -20,8 +20,9 @@ import httpx
 from .config import Config
 from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
-from .l1.store import STOPWORDS
+from .l1.store import STOPWORDS, Value
 from .l1.text import parse_formula, to_hill
+from .l1.units import parse_unit, read_unit, same_unit
 from .llm import LLMClient, UpstreamError, estimate_tokens
 from .tools import SEARCH, Knowledge, Source, Sources, term_share
 
@@ -344,6 +345,30 @@ def _written_results(text: str, decimal_comma: bool, strict: bool) -> set[tuple[
     return out
 
 
+def fix_answer_lines(draft: str, fixes: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
+    """(the draft with each labelled answer line (`A1: …`, as in split_claims) that states exactly the old wrong
+    result of a fixed computation, once, given the fixed value too; those fixes, marked `on: answer line`). A
+    result fixed to two different values is left alone, and so is one left as written (a `note`: quoted)."""
+    by_old: dict[str, list[dict[str, str]]] = {}
+    for f in fixes:
+        if "note" not in f:
+            by_old.setdefault(f["stated"], []).append(f)
+    out, done = [], []
+    for line in draft.splitlines(keepends=True):
+        if _LABELLED.match(line[_MARKERS.match(line).end() :]):
+            spans = []
+            for old, fs in by_old.items():
+                hits = list(re.finditer(rf"(?<![\w.,]){re.escape(old)}(?!\w|[.,]\d)", line))
+                if len(hits) == 1 and len({f["fixed"] for f in fs}) == 1:
+                    spans.append((hits[0].start(), hits[0].end(), fs[0]))
+            for a, b, f in sorted(spans, key=lambda s: s[0], reverse=True):
+                line = line[:a] + f["fixed"] + line[b:]
+                done.append({"expression": f["expression"], "stated": f["stated"], "fixed": f["fixed"],
+                             "on": "answer line"})
+        out.append(line)
+    return "".join(out), done
+
+
 def _decimal_points(text: str, decimal_comma: bool) -> str:
     """Commas between digits as decimal points (same length: spans stay valid): every one with
     `decimal_comma` (Russian text), otherwise not before exactly three digits (1,900)."""
@@ -391,22 +416,54 @@ def _mentions(text: str, names: list[str]) -> bool:
     return any(len(n) >= 3 and re.search(rf"(?<!\w){re.escape(n.lower())}(?!\w)", low) for n in names)
 
 
-def code_check(claim: Claim, sources: Sources, rel_tol: float) -> tuple[str, list[str], str | None, str] | None:
-    """(outcome, ids, fixed text, note) from the structured records, or None when code cannot decide."""
+def _property(norm: str, n: Number, v: Value) -> bool | None:
+    """Whether the property words nearest the number (before it, else after it) are the value's own (True) or
+    another property's (False); None when the claim names neither."""
+    pattern = f"(?P<own>{v.words})" + (f"|{v.unlike}" if v.unlike else "")
+    found = list(re.finditer(rf"(?<!\w)(?:{pattern})", norm, re.I))
+    before = [m for m in found if m.end() <= n.start]
+    near = before[-1] if before else next((m for m in found if m.start() >= n.end), None)
+    return None if near is None else near["own"] is not None
+
+
+def _fits(n: Number, v: Value, norm: str, cited: bool, named: bool, units: bool) -> tuple[bool, bool]:
+    """(a match of the number with value v supports the claim; a mismatch contradicts it, v's record being cited).
+    With `units` both need the same quantity: no other unit after the number and no other property named nearest
+    it. Support also needs the record cited or named, or v's unit written when v is its record (a constant). A
+    contradiction also needs v's unit written after the number, or v's property (for a constant: its name) named
+    and no word after the number, and a number within a factor of ten of v. Without `units`, numbers alone:
+    support needs the record cited or named unless v is its record, a contradiction v's unit written or, when v
+    is its record, a number within a factor of ten."""
+    size = n.value * v.number > 0 and abs(math.log10(n.value / v.number)) < 1
+    written, word = read_unit(norm[n.end :])
+    record = parse_unit(v.unit)
+    unit = None if written is None else record is not None and same_unit(written, record)
+    if not units:
+        return cited or named or not v.words, (unit is True) if v.words else size
+    prop = _property(norm, n, v) if v.words else (named or None)
+    same = unit is not False and prop is not False
+    return (same and (cited or named or (unit is True and not v.words)),
+            same and size and (unit is True or (prop is True and not word)))
+
+
+def code_check(claim: Claim, sources: Sources, rel_tol: float,
+               units: bool = True) -> tuple[str, list[str], str | None, str] | None:
+    """(outcome, ids, fixed text, note) from the structured records, or None when code cannot decide. With
+    `units`, a number counts only as the same quantity as a record value (see _fits)."""
     norm = claim.text.translate(_NORM)
     nums, forms = read_numbers(claim.text), read_formulas(claim.text)
     cited = [s for i in claim.cites if (s := sources.get(i))]
+    named = {s.id: _mentions(norm, s.record.names()) for s in sources.items}
     says_formula = "formula" in norm.lower()
 
-    for s in cited:  # contradictions need a cited record and a clear quantity
-        values, fixes = s.record.values(), []
+    for s in cited:  # contradictions need a cited record and the same quantity
+        fixes = []
         for n in nums:
-            if any(_matches(n, v.number, rel_tol) for v in values):
-                continue
-            for v in values:
-                same_unit = v.unit and re.match(v.unit, norm[n.end :], re.I)
-                same_size = not v.unit and n.value * v.number > 0 and abs(math.log10(n.value / v.number)) < 1
-                if same_unit or same_size:
+            if any(_matches(n, v.number, rel_tol) and _fits(n, v, norm, True, named[c.id], units)[0]
+                   for c in cited for v in c.record.values()):
+                continue  # the value of a cited record
+            for v in s.record.values():
+                if _fits(n, v, norm, True, named[s.id], units)[1]:
                     fixes.append((n.start, n.end, _format(v.number, n), f"{norm[n.start:n.end]} ≠ {v.number:g}"))
                     break
         hills = {to_hill(f) for f in s.record.formulas()}
@@ -421,7 +478,7 @@ def code_check(claim: Claim, sources: Sources, rel_tol: float) -> tuple[str, lis
 
     ids, notes = [], []  # support: every number matches a record, or a stated formula does
     for n in nums:
-        hit = _support(n, cited, sources, norm, rel_tol)
+        hit = _support(n, cited, sources, norm, rel_tol, named, units)
         if hit is None:
             ids = []
             break
@@ -438,11 +495,11 @@ def code_check(claim: Claim, sources: Sources, rel_tol: float) -> tuple[str, lis
     return None
 
 
-def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_tol: float) -> tuple[str, float] | None:
+def _support(n: Number, cited: list[Source], sources: Sources, norm: str, rel_tol: float,
+             named: dict[str, bool], units: bool) -> tuple[str, float] | None:
     for s in [*cited, *(x for x in sources.items if x not in cited)]:
-        named = s in cited or _mentions(norm, s.record.names())
         for v in s.record.values():
-            if _matches(n, v.number, rel_tol) and (named or not v.unit):
+            if _matches(n, v.number, rel_tol) and _fits(n, v, norm, s in cited, named[s.id], units)[0]:
                 return s.id, v.number
     return None
 
@@ -662,7 +719,7 @@ class Verifier:
 
     async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
         """Yield reasoning deltas while checking, then the Verification."""
-        arithmetic, checked = [], 0
+        arithmetic, checked, lines = [], 0, []
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
                                                         self.cfg.arithmetic_prefixes,
@@ -671,12 +728,17 @@ class Verifier:
                                                         self.cfg.arithmetic_max_change)
         kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
         arithmetic = [a for a in arithmetic if "note" not in a]
+        if self.cfg.arithmetic_answer_lines and arithmetic:
+            draft, lines = fix_answer_lines(draft, arithmetic)
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
                        + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic)
                        + "".join(f"- {a['expression']} = {a['stated']}: {a['note']} (would be {a['fixed']})\n"
-                                 for a in kept))
+                                 for a in kept)
+                       + "".join(f"- answer line: {a['stated']} → {a['fixed']} (as {a['expression']})\n"
+                                 for a in lines))
+        arithmetic += lines
         draft, checks = run_checkers(draft, self.cfg.checkers, question, self.cfg.keep_quotes,
                                      self.cfg.checkers_clear_only)
         for name in self.cfg.checkers:
@@ -695,7 +757,7 @@ class Verifier:
             if is_quotation(draft, mask, c.start, c.end):  # before the code checks: they would rewrite it too
                 c.outcome, c.note = UNVERIFIED, "quoted from the task: not checked"
                 yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
-            elif found := code_check(c, sources, self.cfg.rel_tol):
+            elif found := code_check(c, sources, self.cfg.rel_tol, self.cfg.unit_checks):
                 c.outcome, c.ids, c.fixed, c.note = found
                 c.note = f"code: {c.note}"
                 yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
