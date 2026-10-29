@@ -23,6 +23,7 @@ from haisenberg.verifier import (
     fix_arithmetic,
     is_computation,
     missing_lines,
+    minimal_edit,
     parse_fixes,
     parse_verdicts,
     quoted,
@@ -770,11 +771,65 @@ ECHO = "C1: supports S1\nC2: contradicts S1 | the claim rewritten so that it agr
 ])
 def test_judge_echo_not_applied(cfg, fake, knowledge, ignore, keep, expected):
     cfg.verifier.ignore_prompt_echo, cfg.verifier.keep_uncorrected = ignore, keep
+    cfg.verifier.judge_minimal_edits = False  # this switch alone (minimal edits would also refuse the echo)
     fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. It is blue [S1].")], [content(ECHO)]]
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         r = chat(c)
     assert answer(r) == expected
     assert ("correction repeats the judge instructions: ignored" in reasoning_text(r)) is ignore
+
+
+BOILS = "Ethanol\nIts boiling point is 78.37 °C."
+
+
+@pytest.mark.parametrize("claim, passage, correction, fixed", [
+    ("Ethanol boils at 79 °C [S1].", BOILS, "Ethanol boils at 78.37 °C", "Ethanol boils at 78.37 °C [S1]."),
+    ("Ethanol boils at 79 °C [S1].", BOILS, "Ethanol boils at 78.4 °C.", "Ethanol boils at 78.4 °C [S1]."),  # rounded
+    ("Ethanol boils at **79 °C** [S1].", BOILS, "Ethanol boils at 78.37 °C", "Ethanol boils at **78.37 °C** [S1]."),
+    ("It is blue [S1].", "Ethanol\nIt is a colorless liquid.", "Ethanol is colorless.", "Ethanol is colorless [S1]."),
+    ("Этанол кипит при 79 °C [S1].", "Этанол\nТемпература кипения 78,37 °C.", "Этанол кипит при 78,37 °C.",
+     "Этанол кипит при 78,37 °C [S1]."),
+])
+def test_minimal_edit_applied(claim, passage, correction, fixed):
+    assert minimal_edit(claim, correction, passage) == (fixed, "")  # only the edited terms change
+
+
+@pytest.mark.parametrize("claim, correction, why", [
+    ("Ethanol boils at 79 °C [S1].", "Ethanol has a boiling point of 78.37 °C.",
+     "not a minimal edit: rewrites 'boils at 79' as 'has a boiling point of 78.37'"),
+    ("Ethanol boils at 79 °C [S1].", "Ethanol boils at 78.37 °C, not 79 °C as the answer says.",
+     "not a minimal edit: adds"),
+    ("Ethanol boils at 79 °C [S1].", "Ethanol boils at 80.1 °C.", "not stated in the source: 80.1"),
+    ("Ethanol boils at 79 °C [S1].", "Ethanol boils at 78.0 °C.", "not stated in the source: 78.0"),  # finer than 78.37
+    ("Ethanol boils at 79 °C [S1].", "**Ethanol boils at 79 °C.**", "not a minimal edit: it changes no value or term"),
+    ("The equation is balanced [S1].", "The equation is not balanced.", "not a minimal edit: adds 'not'"),
+    ("The equation is not balanced [S1].", "The equation is balanced.", "not a minimal edit: drops 'not'"),
+    ("The equation is balanced [S1].", "The equation is unbalanced.",
+     "not a minimal edit: changes 'balanced' to 'unbalanced'"),
+    ("Statement B is true [S1].", "Statement B is false.", "not stated in the source: false"),
+])
+def test_minimal_edit_refused(claim, correction, why):
+    fixed, said = minimal_edit(claim, correction, f"{BOILS} An unbalanced equation is not balanced.")
+    assert fixed is None and said.startswith(why)
+
+
+REWRITE = "C1: supports S1\nC2: contradicts S1 | It is not blue, ethanol is a colorless liquid."
+
+
+@pytest.mark.parametrize("on, expected", [
+    (True, "Ethanol is a liquid. It is blue."),
+    (False, "Ethanol is a liquid. It is not blue, ethanol is a colorless liquid."),
+])
+def test_judge_correction_not_a_minimal_edit(cfg, fake, knowledge, on, expected):
+    cfg.verifier.judge_minimal_edits = on
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. It is blue [S1].")], [content(REWRITE)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    assert answer(r) == expected
+    steps = reasoning_text(r)
+    assert ("C2 judge: contradicts S1, correction not applied (not a minimal edit: adds 'not'): It is not blue, "
+            "ethanol is a colorless liquid." in steps) is on
+    assert ("C2 corrected from S1" in steps) is not on
 
 
 # --- arithmetic ---------------------------------------------------------------------------------------
@@ -1146,6 +1201,7 @@ def test_quoted_equation_kept_in_the_answer(cfg, fake, knowledge, keep):
 @pytest.mark.parametrize("keep", [True, False])
 def test_restated_claim_not_judged(cfg, fake, knowledge, keep):
     cfg.verifier.keep_quotes = keep
+    cfg.verifier.judge_minimal_edits = False  # this switch alone (S1 does not state 1987: minimal edits would refuse)
     draft = "**S3. Harbour Instruments Ltd was founded in 1994.** ✗ WRONG [S1]\nEthanol is blue [S1].\n"
     verdicts = "C1: contradicts S1 | Harbour Instruments Ltd was founded in 1987.\nC2: contradicts S1 | Ethanol is colorless."
     fake.scripts = [SEARCH_ETHANOL, [content(draft)], [content(verdicts)]]

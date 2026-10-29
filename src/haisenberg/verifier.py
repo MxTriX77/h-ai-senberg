@@ -13,6 +13,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -677,6 +678,57 @@ def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     return ""
 
 
+_EDIT_TERMS = 3  # terms one edit of a judge correction may replace and put in: a value with its unit, a short name
+_STEM = 4  # letters of the shorter word for two words, one inside the other, to be one word with an affix
+
+
+def _terms(text: str) -> list[tuple[str, int, int, Number | None]]:
+    """(key, start, end, number) of the numbers and other terms of the text in order, citation markers aside: a
+    number keyed by its value, any other run of letters and digits (a word, a formula such as H2O, a unit symbol)
+    by its casefolded text. Commas between digits are decimal points as in unconfirmed."""
+    blank = _CITES.sub(lambda m: " " * len(m.group()), text)
+    norm = _decimal_points(blank, bool(re.search("[А-Яа-яЁё]", text))).translate(_NORM)
+    numbers = read_numbers(norm)
+    out = [(f"#{n.value!r}", n.start, n.end, n) for n in numbers]
+    for n in numbers:
+        norm = norm[: n.start] + " " * (n.end - n.start) + norm[n.end :]
+    out += [(m.group().casefold(), m.start(), m.end(), None) for m in re.finditer(r"\w+", norm)]
+    return sorted(out, key=lambda t: t[1])
+
+
+def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None, str]:
+    """The claim `text` with a judge correction put in as a minimal edit, or None and why not. Claim and correction
+    are compared as terms (see _terms); each place they differ is an edit. Minimal: at least one edit, each replacing
+    1 to _EDIT_TERMS terms by 1 to _EDIT_TERMS terms (nothing only added or dropped: an explanation, a `not`) and no
+    word by one that contains it or that it contains (balanced → unbalanced: a changed verdict). Stated: every term
+    an edit puts in is in the passages, a number within half a unit of the last written digit of either. Only the
+    edited terms change: the rest of the claim, its emphasis and citation markers stay as written."""
+    old, new, said = _terms(text), _terms(correction), _terms(passages)
+    stated, words = [n for *_, n in said if n], {key for key, *_, n in said if not n}
+    edits = [op for op in SequenceMatcher(None, [t[0] for t in old], [t[0] for t in new], autojunk=False).get_opcodes()
+             if op[0] != "equal"]
+    if not edits:
+        return None, "not a minimal edit: it changes no value or term"
+    for _, i1, i2, j1, j2 in edits:
+        was = text[old[i1][1] : old[i2 - 1][2]] if i2 > i1 else ""
+        put = correction[new[j1][1] : new[j2 - 1][2]] if j2 > j1 else ""
+        if not was or not put:
+            return None, f"not a minimal edit: {f'adds {put!r}' if put else f'drops {was!r}'}"
+        if max(i2 - i1, j2 - j1) > _EDIT_TERMS:
+            return None, f"not a minimal edit: rewrites {was!r} as {put!r}"
+        for w in (t[0] for t in old[i1:i2] if t[0].isalpha()):
+            for v in (t[0] for t in new[j1:j2] if t[0].isalpha()):
+                if w != v and min(len(w), len(v)) >= _STEM and (w in v or v in w):
+                    return None, f"not a minimal edit: changes {w!r} to {v!r}"
+        for key, a, b, n in new[j1:j2]:
+            if not (any(abs(n.value - s.value) <= max(n.half, s.half) for s in stated) if n else key in words):
+                return None, f"not stated in the source: {correction[a:b]}"
+    out = text
+    for _, i1, i2, j1, j2 in reversed(edits):
+        out = out[: old[i1][1]] + correction[new[j1][1] : new[j2 - 1][2]] + out[old[i2 - 1][2] :]
+    return out, ""
+
+
 def parse_verdicts(text: str, given: set[str]) -> dict[int, tuple[str, list[str], str | None]]:
     """Claim number -> (verdict, decisive ids among `given`, correction) from the judge's reply lines."""
     out: dict[int, tuple[str, list[str], str | None]] = {}
@@ -878,12 +930,18 @@ class Verifier:
             if (verdict == "contradicts" and correction and self.cfg.ignore_prompt_echo
                     and echoes(correction, self.cfg.judge_prompt)):
                 correction, c.note = None, f"{c.note}, correction repeats the judge instructions: ignored"
+            fixed, why = correction, ""
+            if verdict == "contradicts" and correction and self.cfg.judge_minimal_edits:
+                fixed, why = minimal_edit(c.text, correction, "\n".join(
+                    f"{s.record.label()}\n{s.passage}" for s in passages if s.id in ids))
             if verdict == "supports":
                 c.outcome, c.ids = SUPPORTED, ids
+            elif why:  # a rewrite, or a value no passage states: the claim stays as written
+                c.outcome, c.note = UNVERIFIED, f"{c.note}, correction not applied ({why}): {correction}"
             elif verdict == "contradicts" and not correction and self.cfg.keep_uncorrected:
                 c.outcome, c.note = UNVERIFIED, f"{c.note}, no correction: kept"  # no value stated against it
             elif verdict == "contradicts":
-                c.outcome, c.ids, c.fixed = (CORRECTED, ids, correction) if correction else (REMOVED, ids, None)
+                c.outcome, c.ids, c.fixed = (CORRECTED, ids, fixed) if fixed else (REMOVED, ids, None)
             elif verdict == "no_claim":
                 c.outcome = NO_CLAIM
             yield _say(f"- C{c.n} {c.note}\n")
