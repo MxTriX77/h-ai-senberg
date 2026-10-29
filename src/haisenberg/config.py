@@ -49,12 +49,18 @@ class ModelBackendConfig(_Section):
     api_key: str
     model_id: str
     temperature: float
+    seed: NonNegativeInt | None = None  # sent as `seed` when set; None (empty EVAL_SEED) = no seed
     max_tokens: int
     timeout_s: PositiveFloat | None  # read limit; None = wait as long as the backend needs
     wait_s: NonNegativeFloat  # retry a backend that refuses connections or answers 503 this long
     context_tokens: PositiveInt | None = None  # None = llama_server.ctx_size
     chars_per_token: PositiveFloat  # token estimate for the context budget
     extra_body: dict[str, Any] = {}
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _empty_seed(cls, v: Any) -> Any:
+        return None if v == "" else v
 
 
 class ToolCallMarkup(_Section):
@@ -88,6 +94,8 @@ class ReasoningPolicyConfig(_Section):
     answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
     coverage_repair: bool  # requested answer lines missing from the draft are asked for once and appended
     coverage_repair_prompt: str  # the user turn of that call; {lines} = the missing lines
+    line_check: bool  # answer lines whose placeholder names a task item are rewritten once from the answer's analysis
+    line_check_prompt: str  # the one user turn of that call; {answer} = the answer, {table} = label -> item rows
 
     @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
     @classmethod
@@ -101,6 +109,13 @@ class ReasoningPolicyConfig(_Section):
     def _names_lines(cls, v: str) -> str:
         if "{lines}" not in v:
             raise ValueError("must contain {lines} (the missing lines)")
+        return v
+
+    @field_validator("line_check_prompt")
+    @classmethod
+    def _names_answer_and_table(cls, v: str) -> str:
+        if "{answer}" not in v or "{table}" not in v:
+            raise ValueError("must contain {answer} and {table} (the answer, the label -> item rows)")
         return v
 
 

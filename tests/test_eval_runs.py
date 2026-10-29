@@ -291,6 +291,9 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     assert man["eval_files"] == [{"path": "evals/questions.yaml", "sha256": file_sha256(QUESTIONS)}]
     assert man["context_tokens"] == cfg.context_tokens and man["sampling"]["temperature"] == cfg.model_backend.temperature
     assert set(man["sampling"]) >= {"max_tokens", *cfg.model_backend.extra_body} and "git" in man and man["date"]
+    assert man["sampling"]["seed"] is None  # EVAL_SEED unset
+    cfg.model_backend.seed = 7
+    assert manifest(cfg, "r1", "A", [], [], cache)["sampling"]["seed"] == 7
     entry = json.loads(cache.read_text(encoding="utf-8"))[str(model.resolve())]
     assert entry["sha256"] == man["model_file"]["sha256"]
     # cached by path, size and mtime: a stored digest is reused, a changed file is hashed again
