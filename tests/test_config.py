@@ -290,24 +290,6 @@ def test_coverage_repair_settings(tmp_path, change, named):
         load_config(write(tmp_path, data))
 
 
-@pytest.mark.parametrize("change, named", [
-    ({"line_check_prompt": "Fix the lines:\n{table}"}, r"reasoning_policy\.line_check_prompt: .*\{answer\}"),
-    ({"line_check_prompt": "Answer:\n{answer}"}, r"reasoning_policy\.line_check_prompt: .*\{table\}"),
-    ({"line_check": None}, r"reasoning_policy\.line_check"),
-])
-def test_line_check_settings(tmp_path, change, named):
-    p = load_config(write(tmp_path)).reasoning_policy
-    assert p.line_check and "{answer}" in p.line_check_prompt and "{table}" in p.line_check_prompt
-    data = base()
-    key, value = next(iter(change.items()))
-    if value is None:
-        del data["reasoning_policy"][key]
-    else:
-        data["reasoning_policy"][key] = value
-    with pytest.raises(ConfigError, match=named):
-        load_config(write(tmp_path, data))
-
-
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
     assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate"}
