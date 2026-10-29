@@ -1,0 +1,11 @@
+# Test arm only (branch ls-test, not for main): the qwen3.5-9b profile with the line sync switched off, for the
+# PR #57 A/B on one commit. Use: MODEL_PROFILE=qwen3.5-9b-sync-off
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"
+
+reasoning_policy:
+  line_sync: false
