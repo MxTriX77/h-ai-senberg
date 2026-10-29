@@ -58,6 +58,7 @@ NVIDIA_SMI = ["nvidia-smi", "--query-gpu=name,power.limit,power.draw,memory.tota
 _LOOKALIKE = "АВСЕНКМОРТХавсенкмортх"  # Cyrillic letters a model may write in a label instead of the Latin ones
 _LATIN = str.maketrans(_LOOKALIKE, "ABCEHKMOPTXabcehkmoptx")
 _LINE = re.compile(rf"^[\s>*_`#+-]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.M)
+_NEXT = re.compile(rf"(?<=\s)[*_`]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*")  # a further label on that line
 # Protocol artefacts: text the pipeline writes for itself that must not reach the final answer. The patterns follow
 # the code that writes it: [S#] ids (verifier._CITES), the draft marker (agent.DRAFT_MARK), the trace headings of
 # Verifier.verify and Verifier._consistency, the summary line and outcome labels of verifier.render and the
@@ -190,6 +191,25 @@ def answer_text(answer: str) -> str:
     return re.sub(r"\[S\d+(?:\s*[,;]\s*S?\d+)*\]", "", text)
 
 
+# Small counts written as words, read as digits so a text key matches either way ("two up" = "2 up"). Language
+# data (English, Russian with the gender and genitive forms a count takes), not a subject list.
+_COUNTS = {w: str(n) for n, words in enumerate((
+    "zero ноль нуль", "one один одна одно одного одной", "two два две двух", "three три трёх трех",
+    "four четыре четырёх четырех", "five пять пяти", "six шесть шести", "seven семь семи", "eight восемь восьми",
+    "nine девять девяти", "ten десять десяти")) for w in words.split()}
+_COUNT = re.compile(rf"(?<!\w)(?:{'|'.join(_COUNTS)})(?!\w)", re.I)
+
+
+def _digits(text: str) -> str:
+    return _COUNT.sub(lambda m: _COUNTS[m.group().lower()], text)
+
+
+def text_match(keys: list[str], text: str) -> bool:
+    """An accepted word or phrase occurs in the text as a whole word, ignoring case; counts as digits or words."""
+    text = _digits(text)
+    return any(re.search(rf"(?<!\w){re.escape(_digits(w))}(?!\w)", text, re.I) for w in keys)
+
+
 def is_correct(answer: str, gold: dict[str, Any]) -> bool:
     text = answer_text(answer)
     if "number" in gold:
@@ -199,13 +219,22 @@ def is_correct(answer: str, gold: dict[str, Any]) -> bool:
     if "formula" in gold:
         want = to_hill(gold["formula"])
         return any(hill == want for hill, _, _ in read_formulas(text, need_digit=False))
-    return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text, re.I) for w in gold["text"])
+    return text_match(gold["text"], text)
 
 
 def answer_lines(answer: str) -> dict[str, str]:
     """Label (A1, A2, ...) -> the text of the last line that starts with that label and a colon (a Cyrillic
-    look-alike letter in the label, such as А, reads as the Latin one)."""
-    return {m.group(1).translate(_LATIN).upper(): m.group(2).strip() for m in _LINE.finditer(answer_text(answer))}
+    look-alike letter in the label, such as А, reads as the Latin one). A line holding further labels of its
+    letter after a space (`A1: 22.0 g A2: 16.8 L`) is split there: each label gets the text up to the next."""
+    lines: dict[str, str] = {}
+    for m in _LINE.finditer(answer_text(answer)):
+        label, text, start = m.group(1).translate(_LATIN).upper(), m.group(2), 0
+        for n in _NEXT.finditer(text):
+            if (nxt := n.group(1).translate(_LATIN).upper())[0] == label[0]:
+                lines[label] = text[start:n.start()].strip()
+                label, start = nxt, n.end()
+        lines[label] = text[start:].strip()
+    return lines
 
 
 def _figures(n: Number) -> int:
@@ -230,7 +259,7 @@ def part_correct(part: dict[str, Any], line: str | None, lang: str = "en") -> bo
         # figures (0.0237 written as 0.024; 2.61 written as 3 stays wrong).
         return abs(n.value - value) <= tol + eps or (_figures(n) >= 2 and abs(n.value - value) <= n.half + eps)
     if "text" in part:
-        return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", line, re.I) for w in part["text"])
+        return text_match(part["text"], line)
     if "verdict" in part:
         start = re.sub(r"^(?:the|a|an)\s+", "", re.sub(r"^\W+", "", line.lower()))
         return any(re.match(rf"{re.escape(str(w).lower())}(?!\w)", start) for w in part["verdict"])

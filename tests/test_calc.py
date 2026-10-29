@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from haisenberg.calc import CalcError, computations, evaluate, find_arithmetic, prefixed, run_tool
+from haisenberg.calc import CalcError, computations, converted, evaluate, find_arithmetic, prefixed, run_tool
 
 
 @pytest.mark.parametrize("expression, value", [
@@ -156,3 +156,79 @@ def test_computations(text, values):
 def test_chain_checks_each_step():
     text = "n = 2.00/138.12 = 0.01448 mol × 180.16 g/mol = 2.609 g"
     assert [round(a.plain, 4) for a in find_arithmetic(text)] == [0.0145, 2.6087]
+
+
+# c4: only a whole left side is read; a × 10ⁿ is one number.
+@pytest.mark.parametrize("text, expression, value", [
+    ("ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32", "6.4e7 / 2.0e6", 32),
+    ("4.5 × 10⁹ / 125 × 10⁶ = 36", "4.5e9 / 125e6", 36),
+    ("x = 6.4·10^7 / 2.0·10^6 = 32", "6.4e7 / 2.0e6", 32),
+    (r"$3.0 \times 10^{4} / 1.5 \times 10^{2} = 200$", "3.0e4 / 1.5e2", 200),
+    ("pH = -log(1.34 × 10^-3) = 2.87", "-log(1.34e-3)", 2.873),  # a function of one number is arithmetic
+    ("1.6e-19 × 2 = 3.2e-19", "1.6e-19 * 2", 3.2e-19),  # e-notation is one number, "e-19" is no unit
+])
+def test_powers_of_ten_are_one_number(text, expression, value):
+    (a,) = find_arithmetic(text)
+    assert (a.expression, a.plain) == (expression, pytest.approx(value, rel=1e-3))
+
+
+def test_powers_of_ten_left_to_right_when_not_strict():
+    (a,) = find_arithmetic("ratio = 6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32", strict=False)
+    assert a.plain == pytest.approx(3.2e13)
+
+
+@pytest.mark.parametrize("text", [
+    "250 × 10⁶ bytes/s = 250 MB/s",  # one number: a unit conversion
+    "10⁹ bits/s = 1 Gbit/s",
+    r"$(5.00 \times 10^{-3}) = 5.00 \times 10^{-5}$",
+    "μ0 = 2π × 10⁻³ = 6.283 × 10⁻³",
+    "KE = ½ · 800 kg · (20.0 m/s)² = 160,000 J",  # a factor before the expression
+    "growth = (v₂ − v₁) / 48.00 × 100 = 8.5 %",  # cut before "× 100"
+    "half of 12 × 4 = 24",
+    "половина от 12 × 4 = 24",
+    "Area × 2 × 3 = 6",  # a variable and an operator
+    "x · 2 × 3 = 6",
+    "€ (2 × 3) = 6",
+    "**Step 1** 2.5 × 4 = 12",  # Markdown bold is not a power
+    "rate = 2.6B / (30×24×60×60) = 1003",  # scale suffixes
+    "20k × 3 = 60000",
+    "2 million × 3 = 6 000 000",
+    "1,5 млн × 3 = 4 500 000",
+])
+def test_cut_off_left_sides_skipped(text):
+    assert found(text, decimal_comma="млн" in text) == []
+
+
+@pytest.mark.parametrize("text, expression, value", [
+    ("margin = ($2,500,000 − $1,750,000) / $2,500,000 × 100 = 30.0 %", "(2500000 - 1750000) / 2500000 * 100", 30),
+    ("$1,200 × 3 = $3,600", "1200 * 3", 3600),
+    ("€5 × 4 = 20 €", "5 * 4", 20),
+    ("**2.5 × 4 = 12 kg**", "2.5 * 4", 10),  # emphasis around the equation
+    ("*2.5 × 4 = 12 kg*", "2.5 * 4", 10),
+    ("**Cost:** 2 × 3 = 6", "2 * 3", 6),
+    ("The mass of CaO is 0.0500 × 56.08 = 3.80 g", "0.0500 * 56.08", 2.804),
+])
+def test_whole_left_sides_read(text, expression, value):
+    (a,) = find_arithmetic(text)
+    assert (a.expression, a.plain) == (expression, pytest.approx(value))
+
+
+def test_cut_off_left_side_read_when_not_strict():
+    (a,) = find_arithmetic("KE = ½ · 800 kg · (20.0 m/s)² = 160,000 J", strict=False)
+    assert a.plain == pytest.approx(320000)
+
+
+@pytest.mark.parametrize("expression, units, is_conversion", [
+    ("10 Gbit/s * 60 s", "GB", True),  # bits → bytes
+    ("125e6 bytes/s * 2", "MB/s", True),
+    ("2 MB * 3", "bytes", True),
+    ("2 m * 3", "cm", True),
+    ("1000 * 9.81 * 0.04 * 6 W", "kW", False),  # an SI prefix on a known unit: the prefix readings decide
+    ("2 h * 60", "min", False),
+    ("0.0555 mol * 6.022e23 mol⁻¹", "molecules", False),
+    ("4.5e9 / 8", "MB", False),  # no unit on the left to convert from
+    ("2 GB * 3", "GB", False),
+    ("2 m * 3", "more", False),
+])
+def test_unit_conversions(expression, units, is_conversion):
+    assert converted(expression, units) is is_conversion

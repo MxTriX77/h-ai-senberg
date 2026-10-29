@@ -90,6 +90,11 @@ BENZENE = {"id": "q", "set": "S1", "question": "bp?", "answer": {"number": 80.1,
     ("Ethanol is CH3CH2OH, not CH3OH.\nA1: CH3OH", {"formula": "C2H6O"}, False, True),
     ("It is Boyle's law.\nA1: Charles's law", {"text": ["Boyle"]}, False, True),
     ("A1: Boyle's law", {"text": ["Boyle"]}, True, True),
+    ("The electron mass is 9.109 383 7139 × 10^-31 kg.\nA1: 9.109 383 7139 × 10^-31 kg",
+     {"number": 9.1093837139e-31, "rel_tol": 0.001}, True, True),  # CODATA grouping, last group of four
+    ("A1: 2 up quarks and 1 down quark", {"text": ["two up quarks and one down quark", "uud"]}, True, True),
+    ("Two up quarks and one down quark.\nA1: 3 up quarks and 1 down quark",
+     {"text": ["two up quarks and one down quark"]}, False, True),
 ])
 def test_fact_score_strict_and_loose(answer, gold, strict, loose):
     s = score(answer, {**BENZENE, "answer": gold})
@@ -189,6 +194,35 @@ def test_answer_lines_last_wins_and_markdown():
     assert answer_lines(text) == {"A1": "2.61 g", "A2": "80.5 %", "A3": "salicylic acid"}
 
 
+@pytest.mark.parametrize("text, lines", [
+    ("A1: верно A2: неверно A3: не подтверждено", {"A1": "верно", "A2": "неверно", "A3": "не подтверждено"}),
+    ("Итог:\nA1: inconsistent A2: 0.167 mol A3: 0.200 mol",
+     {"A1": "inconsistent", "A2": "0.167 mol", "A3": "0.200 mol"}),
+    ("**A1:** 22.0 g **A2:** 16.8 L", {"A1": "22.0 g", "A2": "16.8 L"}),
+    ("А1: верно, А2：неверно", {"A1": "верно,", "A2": "неверно"}),  # Cyrillic А, full-width colon
+    ("A1: 2.5\nA1: 2.61 g A2: 80.5 %\nA2: 81 %", {"A1": "2.61 g", "A2": "81 %"}),  # last occurrence wins
+])
+def test_several_answer_lines_on_one_line(text, lines):
+    assert answer_lines(text) == lines
+
+
+@pytest.mark.parametrize("text, lines", [
+    ("A1: 0.5 mol\nSee note: A2 is the mass\nA2: 16 g", {"A1": "0.5 mol", "A2": "16 g"}),
+    ("A1: See note: A2 is 16 g", {"A1": "See note: A2 is 16 g"}),  # no colon after A2
+    ("A1: 0.5 mol (A2: 16 g)", {"A1": "0.5 mol (A2: 16 g)"}),  # not after a space
+    ("A2: mass of O2: 16 g", {"A2": "mass of O2: 16 g"}),  # a formula, not a label of the line's letter
+    ("A1: S4: wrong unit, S5: wrong sum", {"A1": "S4: wrong unit, S5: wrong sum"}),
+])
+def test_colons_in_text_do_not_split(text, lines):
+    assert answer_lines(text) == lines
+
+
+def test_one_line_answer_scored_per_part():
+    problem = {"lang": "en", "parts": [{"label": "A1", "number": 22.0, "rel_tol": 0.01},
+                                      {"label": "A2", "number": 16.8, "rel_tol": 0.01}]}
+    assert score_parts("A1: 22.0 g A2: 16.8 L", problem) == [True, True]
+
+
 def test_cyrillic_look_alike_labels():
     text = "\u04101: 2,61 г\n**\u0410\u0032**\uff1a верно\n\u04303: Масса\n\u04121: x"  # А1, А2 full-width colon, а3, В1
     assert answer_lines(text) == {"A1": "2,61 г", "A2": "верно", "A3": "Масса", "B1": "x"}  # values untouched
@@ -221,6 +255,15 @@ def test_cyrillic_look_alike_labels():
     ({"ids": ["S4", "S5"]}, "S4 and S5", "en", True),
     ({"ids": ["S4", "S5"]}, "S4", "en", False),
     ({"text": ["HCl"]}, "HCl is limiting", "en", True),
+    ({"text": ["two up quarks and one down quark"]}, "2 up quarks and 1 down quark", "en", True),  # counts: digits
+    ({"text": ["2 up quarks and 1 down quark"]}, "Two up quarks and one down quark", "en", True),  # or words
+    ({"text": ["two up quarks and one down quark"]}, "3 up quarks and 1 down quark", "en", False),
+    ({"text": ["два u-кварка и один d-кварк"]}, "2 u-кварка и 1 d-кварк", "ru", True),
+    ({"text": ["из двух u-кварков"]}, "из 3 u-кварков", "ru", False),
+    ({"text": ["someone"]}, "some1", "en", False),  # only whole words are counts
+    ({"number": 1234.5, "abs_tol": 0}, "1 234,5", "en", True),  # grouping and decimal comma as before
+    ({"number": 1234.5, "abs_tol": 0}, "1,234.5", "en", True),
+    ({"number": 1234.5, "abs_tol": 0}, "1 234,5", "ru", True),
     ({"number": 1, "abs_tol": 0}, None, "en", False),
 ])
 def test_part_correct(part, line, lang, ok):

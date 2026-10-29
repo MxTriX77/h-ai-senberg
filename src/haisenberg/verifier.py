@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from .config import Config
-from .calc import Arithmetic, computations, find_arithmetic, prefixed
+from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
 from .l1.store import STOPWORDS
 from .l1.text import parse_formula, to_hill
@@ -34,7 +34,8 @@ OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
 _NUM = re.compile(
     r"(?<![\w.^/\\-])(-?)(\d{1,3}(?:(?:[ ,]|\\,)\d{3})+(?!\d)|\d+)"  # sign, integer part (maybe grouped in threes)
-    r"(?:\.(\d+(?: \d{1,3}(?!\d))*))?"  # decimals (maybe grouped, CODATA style)
+    r"(?:\.(\d+(?: \d{1,3}(?!\d))*(?:(?<=[. ]\d{3}) \d{4}(?!\d))?))?"  # decimals (maybe grouped, CODATA style:
+    # threes, the last group maybe four: 9.109 383 7139)
     r"(?:\s*(?:[eE]|(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:\^|\*\*)?)\s*\{?\(?([-+]?\d+)\)?\}?)?"  # exponent
     r"(?!\w)"
 )
@@ -265,8 +266,8 @@ def _result_units(tail: str) -> str:
     return " ".join(units)
 
 
-def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
-                   task: str = "") -> tuple[str, list[dict[str, str]], int]:
+def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True, task: str = "", strict: bool = True,
+                   max_change: float = 0.0) -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
     A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
     result in % as itself or as a fraction) and, with `prefixes`, of the SI prefixes in its chain (a unit
@@ -274,12 +275,16 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
     10^±3, ±6, ±9): off by more than half a unit of its last digit and rel_tol. It is rewritten only when the
     right value is clear; otherwise it is left as written, and so is a number that cannot be read as one.
     With the `task`, a wrong result that is quoted from it (the task writes the same expression with the same
-    result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`."""
+    result, and the result lies in a quotation, see quoted) is left as written and listed with a `note`.
+    With `strict`, only whole left sides are read (calc.find_arithmetic) and a wrong result that is a unit
+    conversion (calc.converted) is left as written. With `max_change`, a fix that changes the stated number by
+    that factor or more, flips its sign or goes to or from zero (at the stated precision), and a division whose
+    stated result is the reciprocal of its value, are not applied either and listed with a `note`."""
     decimal_comma = bool(re.search("[А-Яа-яЁё]", draft))  # Russian text: every comma between digits
     fixes, checked = [], 0
-    in_task = _written_results(task, decimal_comma) if task else set()
+    in_task = _written_results(task, decimal_comma, strict) if task else set()
     mask = quoted(draft, task) if task else []
-    for a in find_arithmetic(draft, decimal_comma):
+    for a in find_arithmetic(draft, decimal_comma, strict):
         window = _decimal_points(draft[a.result_at : a.result_at + 80], decimal_comma)
         numbers = read_numbers(window)
         if not numbers or numbers[0].start != 0:
@@ -289,11 +294,14 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
         n, checked = numbers[0], checked + 1
         in_percent = a.as_percent or bool(re.match(r"\s*\\?%", window[n.end :]))
         stated = [(n.value, n.half)] + ([(n.value / 100, n.half / 100)] if in_percent else [])
-        scaled = prefixes and not in_percent and prefixed(f"{a.expression} {_result_units(window[n.end :])}")
+        units = _result_units(window[n.end :])
+        scaled = prefixes and not in_percent and prefixed(f"{a.expression} {units}")
         scales = _SCALES if scaled else (1.0,)
         if any(abs(v * s - lhs) <= max(half * s, rel_tol * abs(lhs))
                for lhs in (a.fraction, a.plain) for v, half in stated for s in scales):
             continue
+        if strict and converted(a.expression, units):
+            continue  # "10 Gbit/s × 60 s = 75 GB": a unit conversion, not plain arithmetic
         right = _right_result(a, in_percent)
         if right is not None and scaled:  # the scale meant: the one within a factor of ten of the stated value
             near = [right / s for s in scales if right * n.value > 0 and abs(math.log10(right / s / n.value)) < 1]
@@ -304,6 +312,14 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
         fix = {"expression": a.expression, "stated": draft[start:end], "fixed": _format(right, n), "at": (start, end)}
         if (a.expression, n.value) in in_task and all(mask[start:end]):
             fix["note"] = "quoted from the task, left as written"
+        elif max_change and "/" in a.expression and any(
+                lhs and abs(v - 1 / lhs) <= max(half, rel_tol / abs(lhs)) for lhs in (a.fraction, a.plain)
+                for v, half in stated):  # "€1224 / €4200 = 3.43 years" meant 4200 / 1224
+            fix["note"] = "result is the reciprocal: division written the other way round?"
+        elif max_change and (right * n.value < 0 or max(abs(right), abs(n.value))
+                             >= max_change * min(abs(right), abs(n.value))
+                             or re.fullmatch(r"-?0(?:\.0+)?", fix["fixed"])):  # 0.5 written as "0"
+            fix["note"] = "not fixed: change too large to be a slip"
         fixes.append(fix)
     for f in sorted(fixes, key=lambda f: f["at"], reverse=True):
         start, end = f.pop("at")
@@ -312,10 +328,10 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True,
     return draft, fixes, checked
 
 
-def _written_results(text: str, decimal_comma: bool) -> set[tuple[str, float]]:
+def _written_results(text: str, decimal_comma: bool, strict: bool) -> set[tuple[str, float]]:
     """(expression, stated result) of every `expression = result` written in the text."""
     out = set()
-    for a in find_arithmetic(text, decimal_comma):
+    for a in find_arithmetic(text, decimal_comma, strict):
         numbers = read_numbers(_decimal_points(text[a.result_at : a.result_at + 80], decimal_comma))
         if numbers and numbers[0].start == 0:
             out.add((a.expression, numbers[0].value))
@@ -600,7 +616,9 @@ class Verifier:
         if self.cfg.arithmetic_check:
             draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
                                                         self.cfg.arithmetic_prefixes,
-                                                        question if self.cfg.keep_quotes else "")
+                                                        question if self.cfg.keep_quotes else "",
+                                                        self.cfg.arithmetic_strict_parse,
+                                                        self.cfg.arithmetic_max_change)
         kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
         arithmetic = [a for a in arithmetic if "note" not in a]
         if checked:
