@@ -4,7 +4,8 @@
 verification) while it works, a `{"draft": ...}` and, after the answer as one `{"content": ...}`, a
 `{"verification": report}` for in-process callers, then `{"finish_reason": ...}`. Only standard OpenAI chat fields are used (D-003),
 so any backend with tool support works. As a safety net, tool calls a chat template wrote as text are read with the
-configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once.
+configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once
+(written calculations are run first); an answer cut off where a call was removed gives way to the most complete one.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from typing import Any
 from .config import Config, ToolCallMarkup
 from .llm import LLMClient, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
-from .verifier import Verification, Verifier, strip_cites
+from .verifier import Verification, Verifier, answer_labels, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -76,6 +77,11 @@ class _Markup:
                           "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}})
         return calls, self.call.sub("", text).strip()
 
+    def cut(self, text: str) -> bool:
+        """The text ends in a written call: without it, it ends where the call was."""
+        ends = [m.end() for m in self.call.finditer(text)]
+        return bool(ends) and not text[ends[-1]:].strip()
+
     def _read(self, call: str) -> tuple[str, dict[str, Any]]:
         if f := self.function.search(call):
             return f.group(1), dict(self.parameter.findall(call, f.end()))
@@ -100,6 +106,26 @@ class Agent:
         self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
         self.chars_per_token = cfg.model_backend.chars_per_token
         self.markup = _Markup(self.policy.tool_call_markup) if self.policy.text_tool_calls else None
+
+    def _calculations(self, written: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The calculate calls among calls written as text that cannot run as a round: run anyway (plain code)."""
+        run = self.policy.run_written_calculations and self.knowledge.calculator
+        return [c for c in written if c["function"]["name"] == CALCULATE] if run else []
+
+    def _run_tool(self, messages: list[dict[str, Any]], call: dict[str, Any], sources: Sources) -> tuple[str, bool]:
+        """Run one tool call and append its result, shortened to fit the context: (the result lines for the
+        reasoning, whether the result fitted)."""
+        fn = call["function"]
+        result, lines, _ = self.knowledge.run(fn["name"], fn["arguments"], sources)
+        shown = "".join(f"- {line}\n" for line in lines) + "\n"
+        message = {"role": "tool", "tool_call_id": call["id"], "content": ""}
+        room = int((self.budget - self._estimate([*messages, message])) * self.chars_per_token)
+        fits = len(result) <= room
+        if not fits:
+            result = result[: max(0, room - len(CUT_NOTE))] + CUT_NOTE
+            shown += "- (result shortened to fit the context; no more lookups)\n\n"
+        messages.append({**message, "content": result})
+        return shown, fits
 
     def _estimate(self, messages: list[dict[str, Any]]) -> int:
         return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
@@ -149,14 +175,17 @@ class Agent:
             finally:
                 await call.aclose()
             calls = reply.tool_calls() if may_call else []
+            cut = final = False
             if not calls and self.markup:
                 written, rest = self.markup.split(reply.content)
                 if written:  # the template's tool-call text in the reply: run it if allowed, else drop it and ask again
                     names = {t["function"]["name"] for t in offered}
                     run = may_call and all(c["function"]["name"] in names for c in written)
-                    note = "run" if run else "removed, final answer asked again"
+                    calc = [] if run else self._calculations(written)  # run all the same, then ask again
+                    note = "run" if run else f"{_fate(written, calc)}, final answer asked again"
                     yield {"reasoning_content": f"\n\n> tool call written as text: {note}\n"}
-                    calls, reply.content, ask_again = (written if run else []), rest, not run
+                    cut, final = self.markup.cut(reply.content), bool(calc)
+                    calls, reply.content, ask_again = (written if run else calc), rest, not run
             if not calls:
                 break
             if calcs_left and (not lookups_left or all(c["function"]["name"] == CALCULATE for c in calls)):
@@ -167,36 +196,54 @@ class Agent:
             for c in calls:
                 fn = c["function"]
                 yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
-                result, lines, _ = self.knowledge.run(fn["name"], fn["arguments"], sources)
-                yield {"reasoning_content": "".join(f"- {line}\n" for line in lines) + "\n"}
-                message = {"role": "tool", "tool_call_id": c["id"], "content": ""}
-                room = int((self.budget - self._estimate([*messages, message])) * self.chars_per_token)
-                if len(result) > room:  # keep within the context; no further tool rounds after this one
-                    result, room_left = result[: max(0, room - len(CUT_NOTE))] + CUT_NOTE, False
-                    yield {"reasoning_content": "- (result shortened to fit the context; no more lookups)\n\n"}
-                messages.append({**message, "content": result})
+                shown, fits = self._run_tool(messages, c, sources)
+                room_left = room_left and fits  # a shortened result: no further tool rounds after this one
+                yield {"reasoning_content": shown}
+            if final:
+                break
         text = reply.content.strip()
         if not text and self.policy.empty_answer_retry and not ask_again:
             yield {"reasoning_content": "\n\n> empty answer: final answer asked again\n"}
             ask_again = True
-        if ask_again:  # once, without tools, from the conversation so far
-            ask = [*messages, {"role": "user", "content": self.policy.answer_retry_prompt}]
+        if ask_again:  # without tools, from the conversation so far; once more after a calculation written in it
+            ask = list(messages)
             fields = {**fields, **({"tool_choice": "none"} if tools else {}), **self.policy.answer_retry_request}
-            if (prompt := self._estimate(ask)) > self.budget:
-                room = self.context - prompt
-                fields["max_tokens"] = min(fields.get("max_tokens", room), room)
-            retry = _Reply()
-            call = self._call(ask, fields, retry)
-            try:
-                async for delta in call:
-                    yield delta
-            finally:
-                await call.aclose()
-            again = self.markup.split(retry.content)[1] if self.markup else retry.content.strip()
-            if again:
-                text, reply = again, retry
-            else:
+            tried = [("the draft", text, cut, reply)]
+            for name in ("the retry", "the answer after its calculation"):
+                ask.append({"role": "user", "content": self.policy.answer_retry_prompt})
+                if (prompt := self._estimate(ask)) > self.budget:
+                    room = self.context - prompt
+                    fields["max_tokens"] = min(fields.get("max_tokens", room), room)
+                retry = _Reply()
+                call = self._call(ask, fields, retry)
+                try:
+                    async for delta in call:
+                        yield delta
+                finally:
+                    await call.aclose()
+                written, again = self.markup.split(retry.content) if self.markup else ([], retry.content.strip())
+                calc = self._calculations(written) if len(tried) == 1 else []  # one more call at most
+                if written:  # the retry's written calls are never dropped silently
+                    note = _fate(written, calc) + (", final answer asked once more" if calc else "")
+                    yield {"reasoning_content": f"\n\n> tool call written as text in the retry: {note}\n"}
+                tried.append((name, again, bool(written) and self.markup.cut(retry.content), retry))
+                if not calc:
+                    break
+                ask.append({"role": "assistant", "content": again or None, "tool_calls": calc})
+                for c in calc:
+                    fn = c["function"]
+                    yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
+                    yield {"reasoning_content": self._run_tool(ask, c, sources)[0]}
+            name, text, cut, reply = tried[-1]
+            if not text:
                 yield {"reasoning_content": "\n\n> no answer on the retry\n"}
+            if cut or not text:  # never a fragment that ends where a call was removed: the most complete answer
+                question = _question(history)
+                if ranked := [((_requested_lines(t[1], question), not t[2], len(t[1])), t) for t in tried if t[1]]:
+                    (labelled, complete, chars), (name, text, cut, reply) = max(ranked, key=lambda r: r[0])
+                    state = "complete" if complete else "ends at a removed tool call"
+                    yield {"reasoning_content": f"\n\n> answer kept: {name} ({labelled} requested answer lines, {state},"
+                                                f" {chars} characters)\n"}
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
@@ -236,6 +283,18 @@ class Agent:
                 reply.finish = choice.get("finish_reason") or reply.finish
         finally:
             await stream.aclose()
+
+
+def _fate(written: list[dict[str, Any]], calc: list[dict[str, Any]]) -> str:
+    """What became of calls written as text that could not run as a tool round."""
+    if not calc:
+        return "removed"
+    return "calculation run" + (", other calls removed" if len(calc) < len(written) else "")
+
+
+def _requested_lines(text: str, question: str) -> int:
+    """How many labelled answer lines of text (`A1: …`) carry a label the question names."""
+    return sum(bool(re.search(rf"(?<!\w){re.escape(label)}(?!\w)", question)) for label in answer_labels(text))
 
 
 def _show_args(arguments: str) -> str:

@@ -539,6 +539,12 @@ def _answer_line(text: str, start: int, end: int) -> bool:
     return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
 
 
+def answer_labels(text: str) -> set[str]:
+    """The labels of the labelled answer or verdict lines in text (`**A1:** …` -> `A1`, as in split_claims)."""
+    found = (_LABELLED.match(line, _MARKERS.match(line).end()) for line in text.splitlines())
+    return {m.group(0).strip("*_`:： \t") for m in found if m}
+
+
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     """Why a review fix whose OLD text occurs once in the answer does not resolve a conflict inside the answer,
     or "" when it does: its CONFLICT quote is elsewhere in the answer, NEW adds something, every number NEW adds
