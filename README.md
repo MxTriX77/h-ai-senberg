@@ -217,6 +217,8 @@ uv run python -m evals.run --authored data/evals/authored/b01 --split dev --sets
 
 The fact questions are set S1 and the reasoning problems set S2 in the logs.
 
+`EVAL_SEED=<n>` (an integer ≥ 0, `model_backend.seed`) sends that sampling seed with every model call and records it in the manifest's `sampling`: with the same seed in both arms of an A/B (llama-server `--parallel 1`), an answer the change does not touch comes out the same. Unset or empty, no seed is sent.
+
 ### Authored items
 
 Further items are written as YAML files in batch folders (git-ignored, under `data/`). `--authored DIR` (repeatable) loads every `*.yaml` in the folder; then only the authored items are run unless `--set` is given too. `--split dev|holdout|monitor` keeps the authored items of one split, `--sets S3,S4,...` keeps the items of those sets (S1 and S2 included). One file holds a list of items:
