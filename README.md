@@ -1,10 +1,10 @@
 # h-ai-senberg
 
-A local, verifiable research chat for chemistry and physics.
+A local, general-purpose chatbot with verifiable reasoning. Chemistry and physics are its first knowledge domains.
 
-A local LLM answers questions and checks its claims against offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks) before showing the answer. Every claim is cited or marked unverified.
+A local LLM answers like a normal chat assistant. Behind the answer, facts are looked up in offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks), numbers are recomputed in code, and claims are checked against the sources before the answer is shown. The checks work silently: a wrong claim is corrected from a source or left unverified, and the lookups, the draft and every check appear in a collapsible Reasoning block, not in the answer.
 
-Status: early development.
+Status: in development. Quality is measured on eval sets scored in code (see [Evals](#evals)). Today every message goes through the full lookup-and-check pipeline, and the shipped system prompt is written for chemistry and physics, so casual questions also get thorough, calculation-style answers; routing each message to the depth it needs is planned.
 
 ## Setup
 
@@ -59,8 +59,6 @@ Safety nets keep the answer an answer:
 - **Empty answers.** When the model leaves its whole answer in the thinking and returns no content, it is asked once more the same way. Switch: `reasoning_policy.empty_answer_retry`.
 
 If the retry gives nothing, the text before the markup is kept; if there is none at all, the answer says plainly that it could not be completed. The Reasoning block shows what happened ("tool call written as text: run", "empty answer: final answer asked again").
-
-Missing answer lines are asked for too. When the task spells out the lines it wants (`A9: <verdict>`: a label, a colon and a placeholder in angle brackets) and the answer leaves some out, code notices before the checks and asks the model once, without tools, for just those lines (`reasoning_policy.coverage_repair_prompt`, request fields `answer_retry_request`). Only the reply's lines that start with a missing label (and say more than the placeholder) are appended; nothing else in the answer changes, and if the call fails the answer stays as it was. An answer with every line costs nothing extra. The Reasoning block names the lines that were missing and the ones added. Switch: `reasoning_policy.coverage_repair`.
 
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
