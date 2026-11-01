@@ -603,10 +603,21 @@ def answer_labels(text: str) -> set[str]:
     return {m.group(0).strip("*_`:： \t") for m in found if m}
 
 
+def _unit_key(text: str, end: int) -> tuple[str, str]:
+    """(kind, unit) written right after a number that ends at `end`: `%` or a currency sign as both, a unit
+    read_unit knows as (its SI powers, those and its scale), or ("", "") for none or an unknown word."""
+    if m := re.match(r"[ \t]*([%€$£¥₹₽])", text[end:]):
+        return m[1], m[1]
+    unit, _ = read_unit(text[end:])
+    kind = repr(sorted((k, p) for k, p in unit[1].items() if p)) if unit else ""
+    return (kind, f"{unit[0]:g}{kind}") if kind != "[]" and kind else ("", "")
+
+
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     """Why a review fix whose OLD text occurs once in the answer does not resolve a conflict inside the answer,
     or "" when it does: its CONFLICT quote is elsewhere in the answer, NEW adds something, every number NEW adds
-    is stated in the quote (within the rounding of either) or is the value of a computation written there, and
+    (a new value, or an old one with another unit) measures what OLD's numbers measure and is stated in the quote
+    with the same unit or none (within the rounding of either) or is the value of a computation written there, and
     every word NEW adds is in the quote too when it adds no number or OLD is on a labelled answer/verdict line."""
     old, new, quote = fix["old"], fix["new"], fix.get("conflict", "")
     at = answer.find(old)
@@ -618,11 +629,17 @@ def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     if labelled and not _answer_line(f"{answer[:at]}{new}{answer[at + len(old) :]}", at, at + len(new)):
         return "the answer line would lose its label"
     comma = bool(re.search("[А-Яа-яЁё]", answer))  # Russian text: every comma between digits is a decimal comma
-    stated, computed = read_numbers(_decimal_points(quote, comma)), computations(quote, comma)
-    had = {n.value for n in read_numbers(_decimal_points(old, comma))}
-    numbers = [n for n in read_numbers(_decimal_points(new, comma)) if n.value not in had]
+    o, w, q = (_decimal_points(t, comma) for t in (old, new, quote))
+    stated, computed = read_numbers(q), computations(quote, comma)
+    had = {(n.value, _unit_key(o, n.end)[1]) for n in read_numbers(o)}
+    kinds = {k for n in read_numbers(o) if (k := _unit_key(o, n.end)[0])}
+    numbers = [n for n in read_numbers(w) if (n.value, _unit_key(w, n.end)[1]) not in had]
     for n in numbers:
-        if not (any(abs(n.value - s.value) <= max(n.half, s.half) for s in stated)
+        kind, unit = _unit_key(w, n.end)
+        if kind and kinds and kind not in kinds:  # "the 12 % loss" → "the 12 h loss": another quantity
+            return f"{new[n.start : n.end]} measures something else than {old!r}"
+        if not (any(abs(n.value - s.value) <= max(n.half, s.half) and unit in ("", _unit_key(q, s.end)[1])
+                    or abs(n.value - s.value) <= max(n.half, s.half) and not _unit_key(q, s.end)[1] for s in stated)
                 or any(abs(n.value - v) <= n.half for v in computed)):
             return f"{new[n.start : n.end]} is not stated in the quoted passage"
     words = [w for w in _words(new) if w not in set(_words(old))]
