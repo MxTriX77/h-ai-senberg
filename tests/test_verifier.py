@@ -993,6 +993,7 @@ def test_fix_carried_to_later_uses(draft, expected):
     ("3 × 150 = 350 kcal; 700 / 2 = 350 kcal.", "", "", ""),  # another computation's own result
     ("3 × 150 = 350 kcal. Group sizes: 350, 120.", "", "", ""),  # a bare number in prose: maybe another quantity
     ("a = 2 × 3 = 7, b = 2 × 4 = 7. So 7 in all.", "", "", "> not carried: 7 was fixed to 2 different values"),
+    ("Cost: 4 × 4 = 17. Meet at 17:00, or at 9:17.", "", "", ""),  # a clock time's hour or minutes: not the value
 ])
 def test_fix_not_carried(draft, asked, task, why):
     fixed, fixes, _ = fix_arithmetic(draft, 0.005, task=task)
