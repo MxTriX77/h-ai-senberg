@@ -283,6 +283,44 @@ class VerifierConfig(_Section):
         return v
 
 
+class EvidenceConfig(_Section):
+    """Evidence ledger for requests that list items to judge (D-032); see haisenberg.evidence."""
+
+    enabled: bool
+    min_items: PositiveInt  # the last user message lists at least this many items
+    strong_words: list[str]  # a statement holding one (at a word start) is a claim of proof
+    ledger_prompt: str
+    repair_prompt: str  # {missing}: the listed ids without an entry
+    writer_prompt: str
+    independent: bool  # also one judgment per listed item in its own call, without the draft or the ledger
+    independent_max_items: PositiveInt  # at most this many items get one
+    item_prompt: str  # {id}, {text}: the item to judge
+    ledger_request: dict[str, Any] = {}  # fields merged into the ledger and repair calls
+    writer_request: dict[str, Any] = {}  # fields merged into the writer call
+    item_request: dict[str, Any] = {}  # fields merged into each independent judgment call
+
+    @field_validator("ledger_prompt", "repair_prompt", "writer_prompt", "item_prompt")
+    @classmethod
+    def _not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+    @field_validator("repair_prompt")
+    @classmethod
+    def _names_missing(cls, v: str) -> str:
+        if "{missing}" not in v:
+            raise ValueError("must contain {missing}")
+        return v
+
+    @field_validator("item_prompt")
+    @classmethod
+    def _names_the_item(cls, v: str) -> str:
+        if "{id}" not in v or "{text}" not in v:
+            raise ValueError("must contain {id} and {text}")
+        return v
+
+
 class LlamaServerConfig(_Section):
     enabled: bool
     executable: str
@@ -307,6 +345,7 @@ class Config(_Section):
     retrieval: RetrievalConfig
     tools: dict[str, ToolText]
     verifier: VerifierConfig
+    evidence: EvidenceConfig
     llama_server: LlamaServerConfig
     ui: UiConfig
 

@@ -1,0 +1,14 @@
+# A/B arm for the independent judgment per item (D-043): the default model (as config/qwen3.5-9b.yaml) with the
+# evidence ledger on and each listed item also judged in its own call, without the draft or the ledger.
+# The other arm is qwen3.5-9b-evidence (the ledger alone).
+# Use: MODEL_PROFILE=qwen3.5-9b-evidence-independent
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"
+
+evidence:
+  enabled: true
+  independent: true

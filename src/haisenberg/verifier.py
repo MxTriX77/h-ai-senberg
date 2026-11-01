@@ -914,14 +914,19 @@ class Verifier:
 
     async def _complete(self, messages: list[dict[str, Any]]) -> str:
         """The judge's answer text; its reasoning tokens, if any, are ignored."""
-        parts: list[str] = []
-        stream = self.llm.stream_chat(messages, **self.cfg.request)
-        try:
-            async for chunk in stream:
-                parts.append(((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content") or "")
-        finally:
-            await stream.aclose()
-        return "".join(parts)
+        return await complete(self.llm, messages, self.cfg.request)
+
+
+async def complete(llm: LLMClient, messages: list[dict[str, Any]], request: dict[str, Any]) -> str:
+    """The answer text of one call with these request fields; its reasoning tokens, if any, are ignored."""
+    parts: list[str] = []
+    stream = llm.stream_chat(messages, **request)
+    try:
+        async for chunk in stream:
+            parts.append(((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content") or "")
+    finally:
+        await stream.aclose()
+    return "".join(parts)
 
 
 # --- answer -----------------------------------------------------------------------------------------

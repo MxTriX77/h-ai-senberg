@@ -6,6 +6,7 @@ verification) while it works, a `{"draft": ...}` and, after the answer as one `{
 so any backend with tool support works. As a safety net, tool calls a chat template wrote as text are read with the
 configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once
 (written calculations are run first); an answer cut off where a call was removed gives way to the most complete one.
+With `evidence.enabled`, a message that lists items to judge then goes through the evidence ledger (evidence.py).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config, ThinkingBudgetConfig, ToolCallMarkup
+from .evidence import Evidence, Settled
 from .llm import LLMClient, estimate_tokens
 from .tools import CALC_TOOLS, CALCULATE, Knowledge, Sources
 from .verifier import Verification, Verifier, answer_labels, read_numbers, strip_cites
@@ -116,6 +118,7 @@ class Agent:
         self.max_tokens = cfg.model_backend.max_tokens  # per call without a thinking budget (and with field "")
         self.chars_per_token = cfg.model_backend.chars_per_token
         self.markup = _Markup(self.policy.tool_call_markup) if self.policy.text_tool_calls else None
+        self.evidence = Evidence(cfg, llm, checks=self.verifier is not None) if cfg.evidence.enabled else None
 
     def _calculations(self, written: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The calculate calls among calls written as text that cannot run as a round: run anyway (plain code)."""
@@ -166,7 +169,8 @@ class Agent:
             thinking = {tb.field: think, "max_tokens": think + tb.answer_tokens}
         budget = self.context - thinking.get("max_tokens", self.max_tokens)  # prompt tokens a reasoner call may use
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        messages += self._fit_history(messages[0], history, budget)
+        turns = self._fit_history(messages[0], history, budget)
+        messages += turns
         need = self._estimate(messages)
         if thinking and need > budget:  # a long question: think less, down to min_tokens, rather than refuse it
             fit = max(tb.min_tokens, self.context - need - tb.answer_tokens)
@@ -275,8 +279,9 @@ class Agent:
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
+        question = _question(history)
         if self.verifier and draft:
-            check = self.verifier.verify(_question(history), draft, sources)
+            check = self.verifier.verify(question, draft, sources)
             try:
                 async for item in check:
                     if isinstance(item, Verification):
@@ -285,6 +290,17 @@ class Agent:
                         yield item
             finally:
                 await check.aclose()
+        if self.evidence and draft and (items := self.evidence.triggered(question)):
+            trail = ask if ask_again else messages  # the retry's copy holds its own tool results too
+            run = self.evidence.run(turns, items, answer, _tool_results(trail))
+            try:
+                async for item in run:
+                    if isinstance(item, Settled):
+                        answer, report = item.answer, {**report, "ledger": item.report}
+                    else:
+                        yield item
+            finally:
+                await run.aclose()
         if self.annotated:
             yield {"content": answer + sources.source_list(answer)}
         else:  # a plain chat answer: the ids and the checks stay in the reasoning block
@@ -318,6 +334,17 @@ def _fate(written: list[dict[str, Any]], calc: list[dict[str, Any]]) -> str:
     if not calc:
         return "removed"
     return "calculation run" + (", other calls removed" if len(calc) < len(written) else "")
+
+
+def _tool_results(messages: list[dict[str, Any]]) -> str:
+    """The tool calls of the conversation with their results, as text (for the evidence ledger)."""
+    calls, out = {}, []
+    for m in messages:
+        for c in m.get("tool_calls") or []:
+            calls[c["id"]] = f"{c['function']['name']}({_show_args(c['function']['arguments'])})"
+        if m["role"] == "tool":
+            out.append(f"> {calls.get(m['tool_call_id'], 'tool')}\n{m['content']}")
+    return "\n\n".join(out)
 
 
 def _requested_lines(text: str, question: str) -> int:

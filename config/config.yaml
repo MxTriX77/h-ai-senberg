@@ -284,6 +284,117 @@ verifier:                                  # claim checks on the draft; on/off: 
     max_tokens: 1024
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: no thinking for the judge
 
+evidence:                                  # evidence ledger (D-032): verdicts settled by rules from the recorded evidence
+  enabled: false                           # off until the A/B; the arm profile config/qwen3.5-9b-evidence.yaml turns it on
+  min_items: 3                             # runs when the last user message lists this many items (lines starting with
+                                           # an id: 1. / a) / C1. / У3) / Claim A:, or bulleted lines); else no change
+  strong_words: [prove, proof, guarantee, confirm, establish, validat, verif, independent,
+                 доказ, гарантир, подтвержд, установлен, валидир, верифиц, независим]
+                                           # a statement with one of these (at a word start) is a claim of proof;
+                                           # only proof words: scope words (always, every, therefore …) are left to
+                                           # strong_enough, which can only lower a status (R-d)
+  ledger_prompt: |
+    You build an evidence ledger for the items the user's last message lists. Judge each item only on the
+    evidence recorded here: the conversation (the material given), the tool results and the draft answer.
+    Write one entry per listed item, with its id as listed:
+    - statement: the item as the message states it.
+    - asserts: what the statement claims: fact (something is or was so), cause (something causes, explains or
+      results in something), forecast (what will happen), computed (a value worked out from data), or proof
+      (the evidence proves, guarantees, confirms, establishes or validates something, or makes it independent,
+      universal or true in every case).
+    - for / against: the evidence that the statement is true / that it is false, each {"evidence", "from"},
+      from one of: given (stated in the material), source (a tool result), computation (a calculation in the
+      draft or a tool result), knowledge (general knowledge, not checked here), assumption (assumed, not shown).
+      "against" is only evidence that the statement is false: that something is not shown, or that the
+      evidence falls short, is a gap, never evidence against. A calculation done right on a wrong input is
+      evidence against the statement that rests on it: name the right input and what it gives.
+    - assumptions: what the statement needs that nothing here shows; gaps: material the request refers to but
+      does not include (an attached report, a certificate, a full paper, a dataset), only that, not evidence that
+      would be needed in general.
+    - depends_on: ids of listed items this one builds on.
+    - strong_enough: true only when the evidence for supports the statement at its full strength: every scope
+      word (all, any, every, always, never), every guarantee and every causal link. A ratio, a correlation, a
+      timing, one example or one batch never supports a cause, a forecast or a general rule at full strength.
+      That the material says something shows that it says so, not that it is true; a check of something by
+      itself is not independent.
+    - status: established (the evidence for settles it at full strength and nothing is against it),
+      contradicted (the material, a source or a computation shows it false, or it claims a proof the evidence
+      cannot give), unverified (the evidence here does not settle it either way), or hypothesis (a possible
+      explanation that nothing here shows).
+    - reason: one sentence: why this status.
+    Put listed items that are only given data or instructions, not something to judge, under "skipped". Every
+    listed id appears once, under items or under skipped. Write the text fields in the language of the message.
+    Reply with JSON only:
+    {"items": [{"id": "", "statement": "", "asserts": "fact", "for": [{"evidence": "", "from": "given"}],
+    "against": [], "assumptions": [], "gaps": [], "depends_on": [], "strong_enough": false,
+    "status": "unverified", "reason": ""}], "skipped": [{"id": "", "why": ""}]}
+  repair_prompt: |
+    Your ledger has no entry for these listed items: {missing}. Reply with JSON only, in the same format, with
+    entries (or skipped items) for exactly these ids.
+  writer_prompt: |
+    You write the final answer to the user's request from the draft answer and a settled evidence ledger. The
+    ledger's statuses are final: rules settled them from the recorded evidence.
+    - Keep the draft: its structure, sections, calculations, numbers, tables and format. Drop nothing the
+      ledger does not change.
+    - Give every ledger item the verdict of its settled status, with its reason, everywhere the answer states
+      a verdict on it (its own part, tables, summaries). Use the verdict words the request asks for; otherwise:
+      established: true; contradicted: false, with the evidence against it; unverified: cannot be confirmed
+      with the material available, and what is missing; hypothesis: a possibility nothing here shows (the
+      request's word for "not confirmed" when it has no word for it).
+    - Items not yet judged: keep what the draft says about them; if the draft leaves one out, answer it
+      briefly and say what would settle it.
+    - Add no evidence, numbers or sources that are not in the ledger or the draft.
+    Write only the answer, in the language of the request, without the ledger, its field names, rule names or
+    remarks about this rewrite.
+  independent: false                       # also judge each listed item in its own call, without the draft or the
+                                           # ledger; a different settled status makes the item unverified (R-f).
+                                           # Needs enabled; the arm profile qwen3.5-9b-evidence-independent turns it on
+  independent_max_items: 10                # items past this many keep the ledger's judgment
+  item_prompt: |
+    Judge one item of the user's last message, {id}: {text}
+    Judge only this item, as the message states it; the other items are context. Use the data the request gives,
+    the tool results (if any) and your own calculations, worked out step by step. General knowledge counts only as
+    "knowledge", never as given material or a source.
+    Work out:
+    - asserts: what the item claims: fact (something is or was so), cause (something causes, explains or results
+      in something), forecast (what will happen), computed (a value worked out from data), or proof (the evidence
+      proves, guarantees, confirms, establishes or validates something, or makes it independent, universal or
+      true in every case).
+    - for / against: the evidence that the item is true / that it is false, each {"evidence", "from"}, from one
+      of: given (stated in the material), source (a tool result), computation (a calculation from the given data
+      or a tool result), knowledge (general knowledge, not checked here), assumption (assumed, not shown).
+      "against" is only evidence that the item is false: that something is not shown, or that the evidence falls
+      short, is a gap, never evidence against. A calculation done right on a wrong input is evidence against the
+      item that rests on it: name the right input and what it gives.
+    - assumptions: what the item needs that nothing here shows; gaps: material the request refers to but does not
+      include (an attached report, a certificate, a full paper, a dataset), only that, not evidence that would be
+      needed in general.
+    - depends_on: ids of other listed items this one builds on.
+    - strong_enough: true only when the evidence for supports the item at its full strength: every scope word
+      (all, any, every, always, never), every guarantee and every causal link. A ratio, a correlation, a timing,
+      one example or one batch never supports a cause, a forecast or a general rule at full strength. That the
+      material says something shows that it says so, not that it is true; a check of something by itself is not
+      independent.
+    - status: established (the evidence for settles it at full strength and nothing is against it), contradicted
+      (the material, a source or a computation shows it false, or it claims a proof the evidence cannot give),
+      unverified (the evidence here does not settle it either way), or hypothesis (a possible explanation that
+      nothing here shows).
+    - reason: one sentence: why this status.
+    Write the text fields in the language of the message. End the reply with one JSON object, nothing after it:
+    {"id": "{id}", "statement": "", "asserts": "fact", "for": [{"evidence": "", "from": "given"}], "against": [],
+    "assumptions": [], "gaps": [], "depends_on": [], "strong_enough": false, "status": "unverified", "reason": ""}
+  ledger_request:                        # fields merged into the ledger and repair calls (per-model quirks, D-013)
+    temperature: 0.0
+    max_tokens: 3072
+    response_format: {type: json_object}   # OpenAI JSON mode; llama-server turns it into a JSON grammar
+    chat_template_kwargs: {enable_thinking: false}
+  writer_request:                          # fields merged into the writer call
+    temperature: 0.2
+    max_tokens: 4096                       # the whole answer again
+    chat_template_kwargs: {enable_thinking: false}
+  item_request: {}                         # fields merged into each independent judgment call: the model's default
+                                           # request, thinking on (its own reasoning-budget per item), no JSON mode
+
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend
   executable: "${LLAMA_SERVER_EXE:-llama-server}"
