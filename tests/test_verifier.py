@@ -34,6 +34,7 @@ from haisenberg.verifier import (
     Verifier,
     split_claims,
     unconfirmed,
+    verdict_tokens,
 )
 from test_server import chat, events
 
@@ -541,6 +542,9 @@ def test_parse_fixes():
 
 
 def test_conclusion_fixed(reviewing, fake, cfg):
+    # `consistent` → `implausibly high` changes a verdict, but with the answer's own 98.6 %: it stands with the
+    # verdict guard on (user case 1, D-032)
+    assert cfg.verifier.consistency_keep_verdicts
     fake.chunks = [content("C1: not_said\nC2: not_said")]
     fake.scripts = [[content(DRAFT)], [content("C1: not_said\nC2: not_said")], [content(REVIEW)]]
     r = chat(reviewing, [{"role": "user", "content": "Check the report."}])
@@ -631,7 +635,7 @@ async def review(cfg, fake, knowledge, reply, text=REPORT, task="Task."):
     ("about 120 °C", "about 114 °C", "ΔT = 96 − (−18) ≈ 114 °C"),
 ])
 async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, old, new, conflict):
-    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
+    cfg.verifier.consistency_keep_verdicts = False  # the quote rule, on verdicts too
     text, steps = await review(cfg, fake, knowledge, f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w")
     assert text == REPORT.replace(old, new) and f"{old!r} → {new!r} (w)" in steps
 
@@ -652,7 +656,7 @@ async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, o
     ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "the answer line would lose its label"),
 ])
 async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, new, conflict, why):
-    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
+    cfg.verifier.consistency_keep_verdicts = False  # the quote rule, on verdicts too
     reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: clarity"
     text, steps = await review(cfg, fake, knowledge, reply)
     assert text == REPORT and f"skipped {old!r} ({why})" in steps
@@ -660,30 +664,78 @@ async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, 
 
 @pytest.mark.anyio
 async def test_review_quotes_switched_off(cfg, fake, knowledge):
-    cfg.verifier.consistency_quotes = cfg.verifier.consistency_keep_answer_lines = False
+    cfg.verifier.consistency_quotes = cfg.verifier.consistency_keep_verdicts = False
     text, _ = await review(cfg, fake, knowledge, "OLD: A1: 4.17\nNEW: A1: 3.65\nWHY: the sheet's formula")
     assert text == REPORT.replace("A1: 4.17", "A1: 3.65")
 
 
+def test_verdict_tokens(cfg):
+    words = cfg.verifier.verdict_words
+    assert verdict_tokens("C3 is not verified; it isn’t correct, but INCORRECTLY so. Неверно.", words) == [
+        "not", "verif", "isn't", "correct", "incorrect", "неверн"]
+    assert verdict_tokens("Note: none of the 5 kg is right-hand, нельзя", words) == ["right"]  # whole-word negators
+    assert verdict_tokens("about 120 °C", words) == []
+
+
+# Verdict flips with a quote that passes the quote rules: only consistency_keep_verdicts keeps them out.
+FLIPS = [
+    ("The log shows 5 kg, so the statement is correct.\n\nC3 is incorrect.",  # free-form, EN
+     "C3 is incorrect.", "C3 is correct.", "so the statement is correct"),
+    ("Среднее 486,5 мг, значит утверждение верно.\n\nУтверждение 4 неверно.",  # free-form, RU
+     "Утверждение 4 неверно", "Утверждение 4 верно", "значит утверждение верно"),
+    ("No test record is given, so it is not verified.\n\nThe yield claim is verified.",  # a negator added
+     "The yield claim is verified.", "The yield claim is not verified.", "so it is not verified"),
+    ("| Claim | Verdict |\n|---|---|\n| C3 | incorrect |\n\nThe log shows 5 kg, so C3 is correct.",  # a table cell
+     "| C3 | incorrect |", "| C3 | correct |", "so C3 is correct"),
+    ("The log shows 5 kg, so the statement is true.\n\nA3: false",  # a labelled line
+     "A3: false", "A3: true", "so the statement is true"),
+]
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("old, new, conflict, named", [
-    ("A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C", "'ΔT = 96 − (−18) ≈ 114 °C'"),  # even with a good quote
-    ("A2: 120", "A2: 114", None, "'w'"),  # without one, its reason is named
-    ("True", "False", "so the statement is false", "'so the statement is false'"),  # on "- **B:** True"
-    ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "'5000 / 1200 = 4.17'"),  # would drop the label
+@pytest.mark.parametrize("text, old, new, conflict", FLIPS)
+async def test_review_keeps_verdicts(cfg, fake, knowledge, text, old, new, conflict):
+    assert cfg.verifier.consistency_keep_verdicts  # shipped default
+    reply = f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w"
+    kept, steps = await review(cfg, fake, knowledge, reply, text)
+    assert kept == text and f"skipped {old!r} (verdict kept; conflict: {conflict!r})" in steps
+    cfg.verifier.consistency_keep_verdicts = False  # off: the quote rules alone, which these fixes pass
+    assert (await review(cfg, fake, knowledge, reply, text))[0] == text.replace(old, new)
+
+
+@pytest.mark.anyio
+async def test_review_verdict_change_needs_the_answers_own_number(cfg, fake, knowledge):
+    text = "The theoretical yield is 23.75 g, so 23.4 g is a 98.6 % yield.\n\nYield: 85 % (consistent)"
+    own = "OLD: 85 % (consistent)\nNEW: 98.6 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\nWHY: w"
+    assert (await review(cfg, fake, knowledge, own, text))[0].endswith("Yield: 98.6 % (implausibly high)")
+    invented = "OLD: 85 % (consistent)\nNEW: 91 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\nWHY: w"
+    kept, steps = await review(cfg, fake, knowledge, invented, text)
+    assert kept == text and "skipped '85 % (consistent)' (verdict kept" in steps
+
+
+@pytest.mark.anyio
+async def test_review_keeps_verdicts_names_the_reason_without_a_quote(cfg, fake, knowledge):
+    _, steps = await review(cfg, fake, knowledge, "OLD: True\nNEW: False\nWHY: w")
+    assert "skipped 'True' (verdict kept; conflict: 'w')" in steps
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("text, old, new, conflict", [
+    (REPORT, "A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C"),  # a number on a labelled line
+    (REPORT, "about 120 °C", "about 114 °C", "ΔT = 96 − (−18) ≈ 114 °C"),
+    ("The batch weighed 5.2 kg, as logged.\n\nC3 is incorrect: the batch weighed 5 kg.",  # a number next to a verdict
+     "C3 is incorrect: the batch weighed 5 kg.", "C3 is incorrect: the batch weighed 5.2 kg.", "The batch weighed 5.2 kg"),
 ])
-async def test_review_keeps_answer_lines(cfg, fake, knowledge, old, new, conflict, named):
-    assert cfg.verifier.consistency_keep_answer_lines  # shipped default
-    reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: w"
-    text, steps = await review(cfg, fake, knowledge, reply)
-    assert text == REPORT and f"skipped {old!r} (answer line kept; conflict: {named})" in steps
+async def test_review_with_verdicts_kept_still_fixes_numbers(cfg, fake, knowledge, text, old, new, conflict):
+    reply = f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w"
+    assert (await review(cfg, fake, knowledge, reply, text))[0] == text.replace(old, new)
 
 
 @pytest.mark.anyio
-async def test_review_with_answer_lines_kept_still_fixes_other_text(cfg, fake, knowledge):
-    reply = "OLD: about 120 °C\nNEW: about 114 °C\nCONFLICT: ΔT = 96 − (−18) ≈ 114 °C\nWHY: w"
-    text, _ = await review(cfg, fake, knowledge, reply)
-    assert text == REPORT.replace("about 120 °C", "about 114 °C")
+async def test_review_with_verdicts_kept_still_follows_the_quote_rules(cfg, fake, knowledge):
+    reply = "OLD: A1: 4.17\nNEW: 4.2\nCONFLICT: 5000 / 1200 = 4.17\nWHY: w"  # same verdict words, drops the label
+    text, steps = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT and "skipped 'A1: 4.17' (the answer line would lose its label)" in steps
 
 
 @pytest.mark.parametrize("new, why", [("A4: неверно", ""), ("A4: 486,5", ""), ("A4: 486,4", "486,4 is not stated")])
