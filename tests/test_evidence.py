@@ -220,6 +220,7 @@ async def run(cfg, fake, text=TASK, enabled=True):
     (TASK, False), ("Judge:\nC1. x\nC2. y", True), ("What is the boiling point of ethanol?", True),
 ], ids=["off", "two-items", "no-list"])
 async def test_off_or_not_triggered_is_unchanged(cfg, fake, text, enabled):
+    cfg.reasoning_policy.thinking_budget.field = ""  # on the stack: #54 off too, so the output is main's exactly
     fake.scripts = [[content(DRAFT)]]
     *_, items = await run(cfg, fake, text, enabled)
     assert items == [{"reasoning_content": DRAFT_MARK}, {"reasoning_content": DRAFT}, {"draft": DRAFT},

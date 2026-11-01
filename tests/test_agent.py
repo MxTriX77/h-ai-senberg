@@ -527,7 +527,10 @@ def test_fixed_budget_a_arm(cfg, client, fake):
 
 def test_long_question_thinks_less_rather_than_refused(cfg, fake, knowledge):
     question = {"role": "user", "content": LONG_TASK}  # its own budget: over 3900 + 3072
-    system = {"role": "system", "content": f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"}
+    text = f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"
+    if knowledge.computer:  # the compute tool's prompt is part of the system message too (#55)
+        text = f"{text.rstrip()}\n{cfg.reasoning_policy.compute_prompt}"
+    system = {"role": "system", "content": text}
     need = estimate_tokens([system, question], cfg.model_backend.chars_per_token, knowledge.tools)
 
     def ask(ctx_size):
