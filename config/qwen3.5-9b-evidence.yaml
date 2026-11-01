@@ -1,0 +1,12 @@
+# A/B arm for the evidence ledger (D-032): the default model (as config/qwen3.5-9b.yaml) with the ledger on.
+# The other arm is qwen3.5-9b (evidence.enabled: false, the default).
+# Use: MODEL_PROFILE=qwen3.5-9b-evidence
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"
+
+evidence:
+  enabled: true

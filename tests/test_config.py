@@ -250,6 +250,25 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
         assert load_config(path).model_backend.model_id
 
 
+def test_evidence_settings_and_arm_profile(tmp_path, monkeypatch):
+    path = write(tmp_path)
+    ev = load_config(path).evidence
+    assert ev.enabled is False and ev.min_items == 3 and {"guarantee", "гарантир"} <= set(ev.strong_words)
+    assert ev.ledger_request["response_format"] == {"type": "json_object"} and "{missing}" in ev.repair_prompt
+    arm = REPO / "config" / "qwen3.5-9b-evidence.yaml"
+    write_profile(tmp_path, arm.stem, yaml.safe_load(arm.read_text(encoding="utf-8")))
+    monkeypatch.setenv(PROFILE_ENV, arm.stem)
+    cfg = load_config(path)
+    assert cfg.evidence.enabled is True and cfg.evidence.writer_prompt == ev.writer_prompt
+
+
+def test_evidence_repair_prompt_names_the_missing_ids(tmp_path):
+    data = base()
+    data["evidence"]["repair_prompt"] = "Add the missing items."
+    with pytest.raises(ConfigError, match=r"evidence\.repair_prompt"):
+        load_config(write(tmp_path, data))
+
+
 @pytest.mark.parametrize("section, key, value, named", [
     ("reasoning_policy", "max_search_depth", -1, r"reasoning_policy\.max_search_depth"),
     ("reasoning_policy", "tool_prompt", None, r"reasoning_policy\.tool_prompt"),
