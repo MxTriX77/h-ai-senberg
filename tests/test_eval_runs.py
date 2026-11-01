@@ -18,6 +18,7 @@ import evals.run as run
 from conftest import CONNECT_ERROR, content
 from evals.report import report
 from evals.rescore import main as rescore_main
+from evals.unsourced import main as unsourced_main
 from evals.review import check_reviews, merge, pack
 from evals.run import (
     QUESTIONS,
@@ -432,6 +433,35 @@ def test_report_shows_strict_and_loose_fact_scores(tmp_path):
     text = report([write_run(tmp_path / "run-f", "D", logs)])
     for name in ("S1", "all"):
         assert f"| run-f | {name} | D | 3 | 0 | 0 | 2/3 (66.7 %) | 2 / 3 of 3 |" in text
+
+
+def test_report_shows_unsourced_numbers_per_answer(tmp_path):
+    logs = [item_log("i1", {"A1": True}), item_log("i2", {"A1": True})]
+    logs[0]["unsourced"], logs[1]["unsourced"] = 3, 0
+    lines = report([write_run(tmp_path / "run-u", "D", logs),
+                    write_run(tmp_path / "run-old", "D", [item_log("i1", {"A1": True})])]).splitlines()
+    assert lines[0].endswith(" | unsourced numbers per answer |")
+    assert next(x for x in lines if x.startswith("| run-u | all |")).endswith(" | 1.5 |")
+    assert next(x for x in lines if x.startswith("| run-old | all |")).endswith(" | – |")  # logged before the flag
+
+
+def test_offline_unsourced_counts_and_sample(tmp_path, capsys):
+    prompt = "The report claims a yield of 81.7 % from 20.40 g."
+    trace = ('thinking: 99.9 % sounds right\n\n> calculate(expressions=["20.40 / 24.97"])\n- 20.40 / 24.97 = 0.8169803764\n\n'
+             '> search_knowledge(query="aspirin purity")  [re-search C1]\n- [S1] Aspirin\n- C1 judge: supports S1, 99.9 %\n')
+    answer = ("The ratio is 0.817 and the yield 81.7 % [S1]; aspirin melts at 135 °C. Purity 99.9 %. Students get 60–70 %."
+              "\n\n*Verification: 12 claims: 11 supported, 1 unverified, 0 corrected, 0 removed.*\n\nSources:\n- [S1] Aspirin")
+    logs = [item_log("i1", {"A1": True}, answer=answer, messages=[{"role": "user", "content": prompt}]),
+            item_log("i2", {"A1": True}, answer=" ")]  # no answer: not counted
+    logs[0]["reasoning"] = trace  # the calculator result is a source; the model's thinking and the judge are not
+    logs[0]["verification"] = {"claims": [{"text": "t", "outcome": "supported", "ids": ["S1"], "note": "code: 135 ≈ 135 (S1)"}]}
+    folder = write_run(tmp_path / "run-x", "D", logs)
+    held = write_run(tmp_path / "run-h", "D", logs, tmp_path / "holdout-v1" / "s3.yaml")
+    assert unsourced_main([str(folder), str(held), "--sample", "5"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[:2] == ["run-x: 1 answers, 2 unsourced numbers, 2.00 per answer", "run-h: skipped (holdout)"]
+    assert sorted(x.split("  | ")[0] for x in out[3:]) == ["run-x i1: 60–70 %", "run-x i1: 99.9 %"]
+    assert "Purity 99.9 %. Students" in out[3] + out[4]
 
 
 def test_rescore_reads_the_body_and_keeps_the_first_scores(tmp_path, capsys):

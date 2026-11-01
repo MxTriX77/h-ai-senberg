@@ -34,8 +34,9 @@ def _rows(runs: list[tuple[str, dict]]) -> list[tuple[str, str, str, dict]]:
 def code_table(runs: list[tuple[str, dict]]) -> list[str]:
     lines = ["| run | set | mode | items | errors | empty | solved | facts strict / loose | parts | parts line-only"
              " | verdict parts | verdict parts read from the body | missing lines | false / true corrections"
-             " | with artefacts | tool-call leaks | S6 ok: artefacts / chars / latency | latency p50 / p90 s |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             " | with artefacts | tool-call leaks | S6 ok: artefacts / chars / latency | latency p50 / p90 s"
+             " | unsourced numbers per answer |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for run, name, mode, s in _rows(runs):
         c = s.get("conversation")
         conv = f"{c['artefact_free']} / {c['max_chars']} / {c['max_latency']} of {c['items']}" if c else "–"
@@ -50,7 +51,8 @@ def code_table(runs: list[tuple[str, dict]]) -> list[str]:
             f" | {_f(s.get('body_verdict_parts'))}"
             f" | {s['missing_lines']}"
             f" | {s['false_corrections']} / {s['true_corrections']} | {s['with_artefacts']} | {s['tool_call_leaks']}"
-            f" | {conv} | {_f(s['latency_median_s'])} / {_f(s['latency_p90_s'])} |")
+            f" | {conv} | {_f(s['latency_median_s'])} / {_f(s['latency_p90_s'])}"
+            f" | {_f(s.get('unsourced_per_answer'))} |")  # none in summaries written before the flag
     return lines
 
 

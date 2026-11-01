@@ -1326,3 +1326,29 @@ async def test_quoted_wrong_product_answer_line_in_the_loop(cfg, fake, knowledge
     items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(question)]
     assert next(i["content"] for i in items if "content" in i) == f"{COST_DRAFT}\n\nA1: 560 euros"
     assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []
+
+
+# --- unsourced numbers: flagged, never changed -------------------------------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["flag", "off"])
+async def test_unsourced_numbers_flagged_in_the_report_and_the_trace(cfg, fake, knowledge, mode):
+    cfg.verifier.unsourced_numbers = mode
+    draft = ("Benzene has a molar mass of 78.11 g/mol and boils at 80.1 °C. The batch of 450 kg gave 0.985 of theory."
+             " A typical student yield is 60–70 %.")
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [[tool_call("lookup_compound", '{"query": "benzene"}', call_id="c1"), finish("tool_calls")],
+                    [tool_call("calculate", '{"expressions": ["23.4 / 23.75"]}', call_id="k1"), finish("tool_calls")],
+                    [content(draft)]]
+    history = [{"role": "user", "content": "The batch is 450 kg."}, {"role": "assistant", "content": "Noted."},
+               {"role": "user", "content": "Check the yield."}]
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(history)]
+    report = next(i["verification"] for i in items if "verification" in i)
+    steps = "".join(i.get("reasoning_content", "") for i in items)
+    assert next(i["content"] for i in items if "content" in i) == draft  # flag only: the answer is not changed
+    if mode == "flag":  # 78.11 from the lookup, 80.1 from a re-search passage, 450 from an earlier turn, 0.985 from
+        assert [f["text"] for f in report["unsourced"]] == ["60–70 %"]  # the calculator: only the yield is unsourced
+        assert steps.endswith("\n\n> unsourced numbers: 1 (60–70 %)\n")
+    else:
+        assert "unsourced" not in report and "unsourced numbers" not in steps

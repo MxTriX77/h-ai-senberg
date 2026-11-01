@@ -652,6 +652,7 @@ async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict
         "answer": answer,
         "reasoning": trace,
         "verification": report,
+        "unsourced": len(report["unsourced"]) if "unsourced" in report else None,  # numbers no source states
         "timings": timings,
         "model_calls": agent.llm.calls - calls,
         "chars": {"reasoning": len(trace), "draft": len(draft), "answer": len(answer)},
@@ -682,6 +683,7 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
     claims = sum(counts.values())
     solved = sum(s["final"]["correct"] for s in scored)
     facts = [s["final"] for s in scored if "loose_correct" in s["final"]]
+    unsourced = [r["unsourced"] for r in logs if r.get("unsourced") is not None]  # logs of a run with the flag on
     summary: dict[str, Any] = {
         "items": len(logs),
         "errors": len(logs) - len(ok),
@@ -717,6 +719,7 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
         "consistency_fixes": sum(len(r["verification"].get("consistency", [])) for r in logs),
         "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in logs),
         "check_fixes": sum(c["fixed"] is not None for r in logs for c in r["verification"].get("checks", [])),
+        "unsourced_per_answer": round(statistics.mean(unsourced), 2) if unsourced else None,
     }
     if conv := [r["conversation"] for r in logs if "conversation" in r]:
         summary["conversation"] = {"items": len(conv), **{k: sum(c[k] for c in conv) for k in conv[0]}}

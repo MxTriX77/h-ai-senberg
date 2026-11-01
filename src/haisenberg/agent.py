@@ -19,6 +19,7 @@ from typing import Any
 from .config import Config, ToolCallMarkup
 from .llm import LLMClient, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
+from .unsourced import trace_line, unsourced
 from .verifier import Verification, Verifier, answer_labels, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
@@ -26,12 +27,17 @@ CUT_NOTE = "\n[... shortened: context budget]"
 NO_ANSWER = "**The answer could not be completed:** the model returned no answer. Please send the question again."
 
 
+def _text(message: dict[str, Any]) -> str:
+    """A message's content as text (content parts joined)."""
+    c = message.get("content") or ""
+    return c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+
+
 def _question(history: list[dict[str, Any]]) -> str:
-    """The last user message as text (content parts joined)."""
+    """The last user message as text."""
     for m in reversed(history):
         if m["role"] == "user":
-            c = m["content"]
-            return c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+            return _text(m)
     return ""
 
 
@@ -102,6 +108,7 @@ class Agent:
         verify = self.policy.enable_multi_hop_verification and knowledge.tools
         self.verifier = Verifier(cfg, llm, knowledge) if verify else None
         self.annotated = cfg.verifier.answer_style == "annotated"
+        self.flag_unsourced = cfg.verifier.unsourced_numbers == "flag"
         self.context = cfg.context_tokens
         self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
         self.chars_per_token = cfg.model_backend.chars_per_token
@@ -257,6 +264,13 @@ class Agent:
                         yield item
             finally:
                 await check.aclose()
+            if self.flag_unsourced:  # flag only: the answer stays as it is
+                said = ask if ask_again else messages
+                shown = strip_cites(answer).rsplit("\n\n*Verification:", 1)[0]  # without render's summary line
+                report["unsourced"] = found = unsourced(
+                    shown, [_text(m) for m in history],
+                    [m["content"] for m in said if m["role"] == "tool"] + [s.passage for s in sources.items])
+                yield {"reasoning_content": f"\n\n{trace_line(found)}\n"}
         if self.annotated:
             yield {"content": answer + sources.source_list(answer)}
         else:  # a plain chat answer: the ids and the checks stay in the reasoning block

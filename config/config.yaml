@@ -194,6 +194,10 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # retrieved reference record gives another value for the same quantity (a number
                                            # with the same unit, within ×2, in a line or sentence holding half the claim's
                                            # words); nothing is rewritten; false: as before. No effect without literature
+  unsourced_numbers: flag                  # after the checks: list the final answer's numbers that neither the
+                                           # conversation, a tool result nor the answer's own written computations state
+                                           # (verification report `unsourced`, one reasoning line); the answer is not
+                                           # changed; off: not listed
   checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
   checkers_clear_only: true                # a checker rewrites only what is clearly its subject; a fix it doubts is
                                            # only reported (element_balance: a formula with an explicit count of 1
