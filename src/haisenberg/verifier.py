@@ -34,11 +34,17 @@ OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
 
 # Same-length normalisation for reading numbers and formulas, so spans stay valid in the original text.
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
+# Numbers keep their superscripts: `× 10³` must not read like `× 103` or `× 100`.
+_SUPER = "⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹"
+_NUM_NORM = {k: v for k, v in _NORM.items() if chr(k) not in _SUPER}
+_FROM_SUPER = str.maketrans(_SUPER, "-+0123456789")
 _NUM = re.compile(
     r"(?<![\w.^/\\-])(-?)(\d{1,3}(?:(?:[ ,]|\\,)\d{3})+(?!\d)|\d+)"  # sign, integer part (maybe grouped in threes)
     r"(?:\.(\d+(?: \d{1,3}(?!\d))*(?:(?<=[. ]\d{3}) \d{4}(?!\d))?))?"  # decimals (maybe grouped, CODATA style:
     # threes, the last group maybe four: 9.109 383 7139)
-    r"(?:\s*(?:[eE]|(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:\^|\*\*)?)\s*\{?\(?([-+]?\d+)\)?\}?)?"  # exponent
+    r"(?:\s*(?:[eE]\s*\{?\(?([-+]?\d+)\)?\}?"  # exponent: e-notation, or × 10 with ^ or **, with superscript
+    r"|(?:[×x*·⋅]|\\times|\\cdot)\s*10(?:\s*(?:\^|\*\*)\s*\{?\(?([-+]?\d+)\)?\}?"  # digits, or with a minus
+    r"|([⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)|(-\d+))))?"  # right after the 10 (`× 10-19`); `× 100` has no exponent
     r"(?!\w)"
 )
 _FORMULA = re.compile(r"(?<![\w()\[\]-])((?:[A-Z][a-z]?\d*)+)(?![\w()\[\]-])")
@@ -218,14 +224,18 @@ class Number:
 
 
 def read_numbers(text: str) -> list[Number]:
-    norm = text.translate(_NORM)
+    norm = text.translate(_NUM_NORM)
     out = []
     for m in _NUM.finditer(norm):
-        sign, integer, decimals, exp = m.groups()
+        sign, integer, decimals, *exps = m.groups()
+        exp = next((x.translate(_FROM_SUPER) for x in exps if x), None)
         digits, dec = re.sub(r"[ ,\\]", "", integer), (decimals or "").replace(" ", "")
         e = int(exp) if exp else 0
-        value = float(f"{sign}{digits}.{dec or '0'}") * 10.0**e
-        out.append(Number(value, 0.5 * 10.0 ** (e - len(dec)), m.start(), m.end(), len(dec), exp is not None))
+        try:
+            value, half = float(f"{sign}{digits}.{dec or '0'}") * 10.0**e, 0.5 * 10.0 ** (e - len(dec))
+        except OverflowError:  # `1e999`: no number a check could use
+            continue
+        out.append(Number(value, half, m.start(), m.end(), len(dec), exp is not None))
     return out
 
 
@@ -643,8 +653,8 @@ def _terms(text: str) -> list[tuple[str, int, int, Number | None]]:
     number keyed by its value, any other run of letters and digits (a word, a formula such as H2O, a unit symbol)
     by its casefolded text. Commas between digits are decimal points as in unconfirmed."""
     blank = _CITES.sub(lambda m: " " * len(m.group()), text)
-    norm = _decimal_points(blank, bool(re.search("[А-Яа-яЁё]", text))).translate(_NORM)
-    numbers = read_numbers(norm)
+    points = _decimal_points(blank, bool(re.search("[А-Яа-яЁё]", text)))
+    norm, numbers = points.translate(_NORM), read_numbers(points)  # read_numbers keeps the superscripts
     out = [(f"#{n.value!r}", n.start, n.end, n) for n in numbers]
     for n in numbers:
         norm = norm[: n.start] + " " * (n.end - n.start) + norm[n.end :]

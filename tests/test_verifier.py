@@ -115,6 +115,20 @@ def test_four_digits_after_a_decimal_are_another_number(text, values):
     assert [n.value for n in read_numbers(text)] == pytest.approx(values)
 
 
+@pytest.mark.parametrize("text, spans", [
+    ("23.4 / 23.75 × 100 = 98.5 %", ["23.4", "23.75", "100", "98.5"]),  # × 100 is no exponent
+    ("x × 103 and 2 x 100", ["103", "2", "100"]),
+    ("1.6×10-19 C", ["1.6×10-19"]),  # a minus right after the 10 is one
+    ("3 x 10**8 m/s", ["3 x 10**8"]),
+])
+def test_times_ten_needs_a_written_exponent(text, spans):
+    assert [text[n.start : n.end] for n in read_numbers(text)] == spans
+
+
+def test_numbers_beyond_float_range_are_skipped():
+    assert [n.value for n in read_numbers("1e999 J, or 2 × 10^400 J, and 5 J")] == [5]
+
+
 def test_digits_in_words_are_not_numbers():
     assert read_numbers("Carbon-14 decays to nitrogen-14 [S2] in C8H10N4O2 and U-235.") == []
 
