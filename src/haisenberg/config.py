@@ -133,6 +133,8 @@ class ReasoningPolicyConfig(_Section):
     enable_multi_hop_verification: bool
     max_search_depth: NonNegativeInt
     max_calc_rounds: NonNegativeInt  # rounds of calculator calls only, not counted in max_search_depth; 0 = counted
+    compute_tool: bool  # offer the compute tool (procedures) next to the calculator, with compute_prompt
+    compute_prompt: str  # added after the tool prompt when the compute tool is offered
     text_tool_calls: bool  # a tool call written as text is run (rounds left) or removed and the answer asked again
     tool_call_markup: ToolCallMarkup
     empty_answer_retry: bool  # an empty final answer is asked again once
@@ -141,7 +143,7 @@ class ReasoningPolicyConfig(_Section):
     answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
     thinking_budget: ThinkingBudgetConfig
 
-    @field_validator("system_prompt", "tool_prompt", "answer_retry_prompt")
+    @field_validator("system_prompt", "tool_prompt", "compute_prompt", "answer_retry_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():

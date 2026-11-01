@@ -69,6 +69,13 @@ reasoning_policy:
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
   max_calc_rounds: 1                       # rounds of calculate calls only, on top: they use no lookup rounds; 0 = they do
+                                           # (compute calls count as calculate calls)
+  compute_tool: true                       # offer the built-in compute tool (tools.compute) right after calculate and add
+                                           # compute_prompt; false = neither
+  compute_prompt: |                        # added on the line after the tool prompt when the compute tool is offered
+    Work out procedures with the compute tool, not step by step in your head (dates and weekdays, durations
+    and clock times, lists and sets, sorting, ranges, task schedules), all steps in one call, and use its
+    results as they are.
   text_tool_calls: true                    # a tool call written as text in the reply is run when its tool has rounds
                                            # left, else removed and the final answer asked for again (once)
   tool_call_markup:                        # how chat templates write a tool call as text (regex; . matches newlines)
@@ -158,6 +165,24 @@ tools:                                     # texts of the agent tools; which too
       one call. Returns one line per expression with its value.
     parameters:
       expressions: 'The expressions, e.g. ["2.10 / (2.00 / 138.12 * 180.16) * 100", "sqrt(2 * 9.81 * 5)"].'
+  compute:                                 # built in: offered right after calculate (switch: reasoning_policy.compute_tool)
+    description: >-
+      Run exact procedures that are easy to get wrong step by step. Each operation is name(arguments); dates
+      are YYYY-MM-DD, clock times and durations H:MM (or H:MM:SS, or a number with s, min, h, d or week), a
+      list is [a, b, c] (quote an item that holds a comma: "a, b"). Dates: weekday(date); add_days(date, n),
+      add_weeks(date, n), add_months(date, n) (n may be negative; a month end is clamped); days_between(date1,
+      date2); count_weekdays(date1, date2, Monday, ...) (both dates included). Times: clock(09:45 + 2:30 -
+      0:15); duration(1:30 + 2:45 - 0:50); time_between(22:30, 06:15); convert(90, min, h). Lists: sort(a, b,
+      c) and sort_desc(...) (as numbers, times or text); unique(...); count(...); position(item, [list]);
+      union([list], [list], ...), intersection(...), difference([list], [list], ...) (items of the first list
+      in none of the others); range(a, b) or range(a, b, step) (integers, both ends included). Schedules:
+      schedule(A: 3; B: 2 after A; C: 4 after A; D: 1 after B, C) gives the earliest and latest start and
+      finish and the slack of every task, the critical paths and the total duration. Tables (rows are lists,
+      columns numbered from 1): sort_rows(column, [row], [row], ...) and sort_rows_desc(...);
+      column_stats(column, [row], ...) (sum, min, max). Put all the steps into one call. Returns one line per
+      operation with its exact result, or an error saying what is wrong.
+    parameters:
+      operations: 'The operations, e.g. ["weekday(2026-10-29)", "add_months(2026-01-31, 1)", "difference([a, b, c], [b])"].'
 
 verifier:                                  # claim checks on the draft; on/off: reasoning_policy.enable_multi_hop_verification
   judge_prompt: |
