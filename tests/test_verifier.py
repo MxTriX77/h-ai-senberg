@@ -998,6 +998,27 @@ def test_grouped_numbers_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+@pytest.mark.parametrize("draft", [  # recorded drafts (c02-s5-09, c01-s3-11): all were "fixed" to 49:50, 19:15, ...
+    "- Convert to UTC: 10:50 - 1 hour = 09:50 UTC",
+    "- Convert to H local time (UTC-4): 17:15 + 4 hours = 21:15 H local time",
+    "- Convert to F local time: 18:50 - 2 = 16:50 F local time",
+    "Lisbon 07:40 UTC+0 = 07:40 UTC. Helsinki 14:15 UTC+2 = 12:15 UTC.",
+    "Departure at 22 + 3 = 01:00 the next day",  # a clock time as the result
+])
+def test_clock_times_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("Total: 2 h + 3 h = 6 h", "Total: 2 h + 3 h = 5 h"),
+    ("A2: (1000 − 800) / 800 = 0.30", "A2: (1000 − 800) / 800 = 0.25"),  # a label's colon is no clock time
+    ("**S7:** (4.2-3.8)/3.8 × 100 = 12.5%", "**S7:** (4.2-3.8)/3.8 × 100 = 10.5%"),
+])
+def test_hours_and_labelled_lines_still_checked(draft, expected):
+    assert fix_arithmetic(draft, 0.005)[0] == expected
+
+
 @pytest.mark.parametrize("draft, expected", [
     ("m = 0.0500 × 56.08 = 3.80 g.\n\nA1: 3.80 g", "m = 0.0500 × 56.08 = 2.80 g.\n\nA1: 2.80 g"),
     ("m = 0.0500 × 56.08 = 3.80 g.\n- **A1:** 3.80 g of CaO", "m = 0.0500 × 56.08 = 2.80 g.\n- **A1:** 2.80 g of CaO"),
