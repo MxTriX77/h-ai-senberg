@@ -528,7 +528,9 @@ def test_parse_fixes():
 
 
 def test_conclusion_fixed(reviewing, fake, cfg):
-    cfg.verifier.consistency_keep_verdicts = False  # `consistent` → `implausibly high` changes a verdict
+    # `consistent` → `implausibly high` changes a verdict, but with the answer's own 98.6 %: it stands with the
+    # verdict guard on (user case 1, D-032)
+    assert cfg.verifier.consistency_keep_verdicts
     fake.chunks = [content("C1: not_said\nC2: not_said")]
     fake.scripts = [[content(DRAFT)], [content("C1: not_said\nC2: not_said")], [content(REVIEW)]]
     r = chat(reviewing, [{"role": "user", "content": "Check the report."}])
@@ -677,6 +679,16 @@ async def test_review_keeps_verdicts(cfg, fake, knowledge, text, old, new, confl
     assert kept == text and f"skipped {old!r} (verdict kept; conflict: {conflict!r})" in steps
     cfg.verifier.consistency_keep_verdicts = False  # off: the quote rules alone, which these fixes pass
     assert (await review(cfg, fake, knowledge, reply, text))[0] == text.replace(old, new)
+
+
+@pytest.mark.anyio
+async def test_review_verdict_change_needs_the_answers_own_number(cfg, fake, knowledge):
+    text = "The theoretical yield is 23.75 g, so 23.4 g is a 98.6 % yield.\n\nYield: 85 % (consistent)"
+    own = "OLD: 85 % (consistent)\nNEW: 98.6 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\nWHY: w"
+    assert (await review(cfg, fake, knowledge, own, text))[0].endswith("Yield: 98.6 % (implausibly high)")
+    invented = "OLD: 85 % (consistent)\nNEW: 91 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\nWHY: w"
+    kept, steps = await review(cfg, fake, knowledge, invented, text)
+    assert kept == text and "skipped '85 % (consistent)' (verdict kept" in steps
 
 
 @pytest.mark.anyio

@@ -611,6 +611,16 @@ def _answer_line(text: str, start: int, end: int) -> bool:
     return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
 
 
+def _follows_own_numbers(answer: str, fix: dict[str, str]) -> bool:
+    """A review fix that changes a verdict may stand only when it brings a number the answer itself states or
+    computes elsewhere (`85 % (consistent)` → `98.6 % (implausibly high)` next to its own 98.6 %): the verdict
+    then follows the answer's own numbers. A bare flip (`incorrect` → `correct`) never does."""
+    comma = bool(re.search("[А-Яа-яЁё]", answer))
+    had = {n.value for n in read_numbers(_decimal_points(fix["old"], comma))}
+    adds = any(n.value not in had for n in read_numbers(_decimal_points(fix["new"], comma)))
+    return adds and not unconfirmed(answer, fix)
+
+
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
     """Why a review fix whose OLD text occurs once in the answer does not resolve a conflict inside the answer,
     or "" when it does: its CONFLICT quote is elsewhere in the answer, NEW adds something, every number NEW adds
@@ -854,7 +864,8 @@ class Verifier:
             elif self.cfg.keep_quotes and rewrites_quote(answer, question, f["old"], f["new"]):
                 why = "quoted from the task"
             elif self.cfg.consistency_keep_verdicts and (verdict_tokens(f["old"], self.cfg.verdict_words)
-                                                         != verdict_tokens(f["new"], self.cfg.verdict_words)):
+                                                         != verdict_tokens(f["new"], self.cfg.verdict_words)) \
+                    and not _follows_own_numbers(answer, f):
                 why = f"verdict kept; conflict: {f.get('conflict') or f['why'] or 'not named'!r}"
             else:
                 why = unconfirmed(answer, f) if self.cfg.consistency_quotes else ""
