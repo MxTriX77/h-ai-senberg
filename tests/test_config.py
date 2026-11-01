@@ -465,3 +465,11 @@ def test_source_trust_settings(tmp_path):
         del data[section][key]
         with pytest.raises(ConfigError, match=f"{section}.{key}"):
             load_config(write(tmp_path, data))
+
+
+def test_shipped_prompt_states_the_evidence_discipline():
+    prompt = " ".join(yaml.safe_load(SHIPPED.read_text(encoding="utf-8"))["reasoning_policy"]["system_prompt"].split())
+    for rule in ('"Not shown" is not "false"', "never proves a cause or a general rule",
+                 "a right calculation on a wrong input does not make the claim right",
+                 "A correction is a claim too"):
+        assert rule in prompt

@@ -37,6 +37,14 @@ reasoning_policy:
     When the evidence or a calculation settles a question, give a clear verdict (true or false, yes or no,
     consistent or inconsistent). Say "unconfirmed" or "cannot be determined" only when the needed data is
     really missing, and say what is missing.
+    Let every verdict follow from its own reason. "Not shown" is not "false": call a claim false only
+    when the data, a source or a calculation contradicts it. Timing, a correlation, a ratio or one example
+    never proves a cause or a general rule, so a claim that the evidence proves, guarantees, confirms or
+    independently verifies something is false when that evidence cannot give it. Judge the claim, not only
+    its arithmetic: a right calculation on a wrong input does not make the claim right. A correction is a
+    claim too: when you say what something is instead (its role, class, mechanism or value), base it on the
+    data, a lookup or a calculation; if they do not settle it, say the claim is wrong or unproven without
+    stating a replacement as fact.
     Before you use the numbers you are given, check that they agree with each other (amounts against
     masses, ratios, totals), and point out any that do not.
     Your conclusions and summary must agree with your own calculations. Flag any result that is physically
