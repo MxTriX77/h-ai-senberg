@@ -6,7 +6,6 @@ verification) while it works, a `{"draft": ...}` and, after the answer as one `{
 so any backend with tool support works. As a safety net, tool calls a chat template wrote as text are read with the
 configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once
 (written calculations are run first); an answer cut off where a call was removed gives way to the most complete one.
-Answer lines the task spells out (`A9: <verdict>`) that the draft leaves out are asked for once and appended.
 """
 
 from __future__ import annotations
@@ -17,13 +16,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-
 from .config import Config, ThinkingBudgetConfig, ToolCallMarkup
-from .llm import LLMClient, UpstreamError, estimate_tokens
+from .llm import LLMClient, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
-from .verifier import (Verification, Verifier, answer_labels, missing_lines, read_numbers, strip_cites,
-                       supplied_lines)
+from .verifier import Verification, Verifier, answer_labels, read_numbers, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -168,8 +164,7 @@ class Agent:
             thinking = {tb.field: think, "max_tokens": think + tb.answer_tokens}
         budget = self.context - thinking.get("max_tokens", self.max_tokens)  # prompt tokens a reasoner call may use
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        asked = self._fit_history(messages[0], history, budget)
-        messages += asked
+        messages += self._fit_history(messages[0], history, budget)
         need = self._estimate(messages)
         if thinking and need > budget:  # a long question: think less, down to min_tokens, rather than refuse it
             fit = max(tb.min_tokens, self.context - need - tb.answer_tokens)
@@ -275,16 +270,6 @@ class Agent:
                     state = "complete" if complete else "ends at a removed tool call"
                     yield {"reasoning_content": f"\n\n> answer kept: {name} ({labelled} requested answer lines, {state},"
                                                 f" {chars} characters)\n"}
-        if text and self.policy.coverage_repair:  # requested answer lines the draft left out, before the checks
-            cover = self._cover(asked, _question(history), text)
-            try:
-                async for item in cover:
-                    if isinstance(item, str):
-                        text = item
-                    else:
-                        yield item
-            finally:
-                await cover.aclose()
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
@@ -304,37 +289,6 @@ class Agent:
             yield {"content": strip_cites(answer)}
         yield {"verification": report}  # for in-process callers (evals); the server forwards only text fields
         yield {"finish_reason": reply.finish or "stop"}
-
-    async def _cover(self, asked: list[dict[str, Any]], question: str, text: str):
-        """Answer lines the task asks for that the draft leaves out: asked for in one call without tools, and the
-        reply's lines with exactly those labels appended. Yields reasoning deltas, then the new text (if any)."""
-        missing = missing_lines(question, text)
-        if not missing:
-            return
-        yield {"reasoning_content": f"\n\n> answer lines missing: {', '.join(missing)}; asked for them\n"}
-        prompt = self.policy.coverage_repair_prompt.replace("{lines}", "\n".join(missing.values()))
-        ask = [{"role": "system", "content": self.policy.system_prompt}, *asked,
-               {"role": "assistant", "content": text}, {"role": "user", "content": prompt}]
-        if estimate_tokens(ask, self.chars_per_token) > self.context - self.max_tokens:  # no thinking budget
-            yield {"reasoning_content": "\n\n> answer line request too long for the context: answer kept\n"}
-            return
-        reply = _Reply()
-        call = self._call(ask, dict(self.policy.answer_retry_request), reply)
-        try:
-            async for delta in call:
-                yield delta
-        except (UpstreamError, httpx.HTTPError) as e:
-            yield {"reasoning_content": f"\n\n> answer line request failed ({e}): answer kept\n"}
-            return
-        finally:
-            await call.aclose()
-        lines = supplied_lines(reply.content, missing)
-        if not lines:
-            yield {"reasoning_content": "\n\n> no requested answer line in the reply: answer kept\n"}
-            return
-        added = [label for label in missing if label in lines]
-        yield {"reasoning_content": f"\n\n> answer lines added: {', '.join(added)}\n"}
-        yield text.rstrip() + "\n" + "\n".join(lines[label] for label in added)
 
     async def _call(self, messages: list[dict[str, Any]], fields: dict[str, Any], reply: _Reply):
         """Stream one model call: reasoning and the draft go out as reasoning; tool calls are collected."""

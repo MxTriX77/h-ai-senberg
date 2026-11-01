@@ -16,13 +16,11 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
-    answer_labels,
     code_check,
     echoes,
     fix_answer_lines,
     fix_arithmetic,
     is_computation,
-    missing_lines,
     minimal_edit,
     parse_fixes,
     parse_verdicts,
@@ -35,7 +33,6 @@ from haisenberg.verifier import (
     run_checkers,
     Verifier,
     split_claims,
-    supplied_lines,
     unconfirmed,
 )
 from test_server import chat, events
@@ -81,37 +78,6 @@ def test_labelled_answer_and_verdict_lines_are_not_claims():
              "Statement 2: false, see 12 mL\n(c): it is 7 g heavier\nNote: water boils at 100 °C [S1].\nА1: 4,2 г\n")
     assert len(split_claims(draft)) == 7  # the Russian line has no Latin letter: never a claim
     assert [c.text for c in split_claims(draft, skip_labelled=True)] == ["Note: water boils at 100 °C [S1]."]
-
-
-def test_answer_labels():
-    draft = "A1: 5 g\n- **A2:** true\nClaim D: Incorrect\nNote: x\n(c): 7 g\nThe A3 value is 4"
-    assert answer_labels(draft) == {"A1", "A2", "Claim D", "(c)"}
-
-
-def test_missing_lines_the_task_spells_out():
-    folded = ("Claim 1: the received mass matches the certificate. Claim 2: the product is dry. Finish with exactly "
-              "these lines: A1: <claim 1> A2: <claim 2> **A3:** <claim 3>")  # a YAML-folded task: one line
-    assert missing_lines(folded, "A1: true\n- **A3:** false") == {"A2": "A2: <claim 2>"}
-    lines = "Finish with exactly these lines:\nA1: <mass in g>\nA2: <verdict>\n"
-    assert missing_lines(lines, "**A1:** 5 g\nа2: true") == {}  # bold, case and a Cyrillic look-alike letter
-    assert list(missing_lines(lines, "A1 is 5 g")) == ["A1", "A2"]  # in the task's order
-
-
-def test_missing_lines_ignore_what_the_task_does_not_ask_for():
-    assert missing_lines("Claim 1: the mass is 5 g. Answer with A1: <claim 1>", "A1: true") == {}  # material
-    task = "Atom X: [Ne] 3s1. Sample A: <0.1 % water. Sample B: < 5 %. Step C: <-> D. Give A1: <X or Y>"
-    assert missing_lines(task, "") == {"A1": "A1: <X or Y>"}  # brackets, values, arrows: no placeholders
-    task = "`Claim C: <verdict>` and Statement 7: <true or false>"
-    assert missing_lines(task, "") == {"C": "C: <verdict>", "Statement 7": "Statement 7: <true or false>"}
-    assert missing_lines(task, "C: true\nstatement 7: false") == {}  # labels compare by their id ("Give A1" = "A1")
-    assert missing_lines("No labelled lines asked for: <none>", "") == {}
-
-
-def test_supplied_lines_only_the_missing_labels():
-    reply = ("Here are the lines:\nA1: false\nA2: <verdict>\nA2:\nClaim 2: true\n- **a2:** false, the mass is 4 g\n"
-             "A2: second\nA9: true")
-    assert supplied_lines(reply, ["A2"]) == {"A2": "- **a2:** false, the mass is 4 g"}
-    assert supplied_lines("Sorry, I cannot.", {"A2": "A2: <verdict>"}) == {}
 
 
 def test_bare_labels_are_not_claims():
