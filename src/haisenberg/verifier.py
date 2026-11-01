@@ -657,7 +657,8 @@ def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None,
     are compared as terms (see _terms); each place they differ is an edit. Minimal: at least one edit, each replacing
     1 to _EDIT_TERMS terms by 1 to _EDIT_TERMS terms (nothing only added or dropped: an explanation, a `not`) and no
     word by one that contains it or that it contains (balanced → unbalanced: a changed verdict). Stated: every term
-    an edit puts in is in the passages, a number within half a unit of the last written digit of either. Only the
+    an edit puts in is in the passages, a number within half a unit of the last written digit of either, and no
+    number or content word it takes out is (a passage that states both does not contradict the claim). Only the
     edited terms change: the rest of the claim, its emphasis and citation markers stay as written."""
     old, new, said = _terms(text), _terms(correction), _terms(passages)
     stated, words = [n for *_, n in said if n], {key for key, *_, n in said if not n}
@@ -679,6 +680,10 @@ def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None,
         for key, a, b, n in new[j1:j2]:
             if not (any(abs(n.value - s.value) <= max(n.half, s.half) for s in stated) if n else key in words):
                 return None, f"not stated in the source: {correction[a:b]}"
+        for key, a, b, n in old[i1:i2]:  # the source states what the edit takes out too: no contradiction
+            if (any(abs(n.value - s.value) <= max(n.half, s.half) for s in stated) if n
+                    else key in words and len(key) >= 3 and key not in STOPWORDS):
+                return None, f"not a contradiction: the source also states {text[a:b]}"
     out = text
     for _, i1, i2, j1, j2 in reversed(edits):
         out = out[: old[i1][1]] + correction[new[j1][1] : new[j2 - 1][2]] + out[old[i2 - 1][2] :]

@@ -779,6 +779,23 @@ def test_minimal_edit_refused(claim, correction, why):
     assert fixed is None and said.startswith(why)
 
 
+@pytest.mark.parametrize("claim, passage, correction", [  # the passage states what the edit takes out too
+    ("Galena has the rock salt (halite) structure.",
+     "Galena, PbS, has the same cubic crystal structure as halite (rock salt), like sodium chloride.",
+     "Galena has the rock salt (galena) structure."),
+    ("The proton mass has a standard uncertainty of 5.2 × 10⁻³⁷ kg.",
+     "proton mass = 1.67262192595e-27 kg (standard uncertainty 5.2e-37 kg); the electron mass uncertainty is 5.1e-40 kg.",
+     "The proton mass has a standard uncertainty of 5.1 × 10⁻⁴⁰ kg."),
+    ("Iron melts at 1538 °C and boils at 2862 °C.", "Iron: melting point 1538 °C, boiling point 2862 °C.",
+     "Iron melts at 2862 °C and boils at 2862 °C."),
+    ("Nitrogen makes up 78 % of air; oxygen 21 %.", "Dry air contains 78 % nitrogen and 21 % oxygen by volume.",
+     "Nitrogen makes up 21 % of air; oxygen 21 %."),
+])
+def test_correction_of_a_term_the_source_states_refused(claim, passage, correction):
+    fixed, said = minimal_edit(claim, correction, passage)
+    assert fixed is None and said.startswith("not a contradiction: the source also states")
+
+
 REWRITE = "C1: supports S1\nC2: contradicts S1 | It is not blue, ethanol is a colorless liquid."
 
 
