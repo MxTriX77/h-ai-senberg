@@ -15,3 +15,5 @@ evidence:
 
 verifier:
   carry_fixes_forward: true
+  arithmetic_answer_lines: false   # #67 carries fixes in any format; #41's labelled-line rule is format-bound (D-042)
+                                   # and on the replay of all drafts 4 of its 9 changed lines were false (LOG 11-01)
