@@ -222,7 +222,7 @@ class Agent:
                 calcs += 1
             else:
                 rounds += 1
-            messages.append({"role": "assistant", "content": reply.content or None, "tool_calls": calls})
+            messages.append({"role": "assistant", "content": reply.content or None, "tool_calls": _sendable(calls)})
             for c in calls:
                 fn = c["function"]
                 yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
@@ -261,7 +261,7 @@ class Agent:
                 tried.append((name, again, bool(written) and self.markup.cut(retry.content), retry))
                 if not calc:
                     break
-                ask.append({"role": "assistant", "content": again or None, "tool_calls": calc})
+                ask.append({"role": "assistant", "content": again or None, "tool_calls": _sendable(calc)})
                 for c in calc:
                     fn = c["function"]
                     yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
@@ -327,6 +327,19 @@ class Agent:
                 reply.finish = choice.get("finish_reason") or reply.finish
         finally:
             await stream.aclose()
+
+
+def _sendable(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The calls as the history may carry them: arguments that are not JSON (cut off at the token limit) become
+    `{}`, since the backend rejects every later request that holds them; the tool result says the call failed."""
+    out = []
+    for c in calls:
+        try:
+            json.loads(c["function"]["arguments"] or "{}")
+            out.append(c)
+        except json.JSONDecodeError:
+            out.append({**c, "function": {**c["function"], "arguments": "{}"}})
+    return out
 
 
 def _fate(written: list[dict[str, Any]], calc: list[dict[str, Any]]) -> str:
