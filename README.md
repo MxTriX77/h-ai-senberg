@@ -1,10 +1,10 @@
 # h-ai-senberg
 
-A local, verifiable research chat for chemistry and physics.
+A local, general-purpose chatbot with verifiable reasoning. Chemistry and physics are its first knowledge domains.
 
-A local LLM answers questions and checks its claims against offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks) before showing the answer. Every claim is cited or marked unverified.
+A local LLM answers like a normal chat assistant. Behind the answer, facts are looked up in offline sources (Wikipedia chemistry/physics subsets, PubChem, CODATA, open textbooks), numbers are recomputed in code, and claims are checked against the sources before the answer is shown. The checks work silently: a wrong claim is corrected from a source or left unverified, and the lookups, the draft and every check appear in a collapsible Reasoning block, not in the answer.
 
-Status: early development.
+Status: in development. Quality is measured on eval sets scored in code (see [Evals](#evals)). Today every message goes through the full lookup-and-check pipeline, and the shipped system prompt is written for chemistry and physics, so casual questions also get thorough, calculation-style answers; routing each message to the depth it needs is planned.
 
 ## Setup
 
@@ -40,7 +40,7 @@ The server owns the policy: the system prompt from `config/config.yaml` replaces
 - **Failures end the answer, not the connection.** If anything fails during an answer (the backend dies, rejects a request, or the app hits an error), the answer says what went wrong and that the question can be sent again, and the stream ends normally.
 - **llama-server is restarted.** When the llama-server the app started exits (a crash, a kill), the app logs its exit code or signal and starts it again; the next question works once it has loaded. Set `LLAMA_LOG_FILE=/path/llama.log` to also keep llama-server's own log in a file.
 - **The context cannot overflow.** Each model call fits `prompt + max_tokens` into the context (`llama_server.ctx_size`, or `model_backend.context_tokens` for a remote backend), estimating tokens as characters / `model_backend.chars_per_token` (2.0, on the safe side of the 2.4 measured on dense tool results). Old turns of a long chat are dropped first, tool results are shortened when they would not fit (and the model then answers with what it has), and the judge gets only the passages that fit.
-- **Thinking scales with the question.** Each reasoner call of one answer carries the same thinking budget (`reasoning_policy.thinking_budget`): `min_tokens` (1024) for a short question, up to `max_tokens` (4096) for a long one with many numbers and several parts or requested answer lines. The share in between adds up the question's characters, its numbers and its enumerated parts, each with its own `start`, `full` and `weight` in the config; the Reasoning block shows the result (`thinking budget: 2900 tokens`). llama-server reads it per request as `thinking_budget_tokens` (b11782 and later), and its `--reasoning-budget` (`REASONING_BUDGET`, which also sets `max_tokens` of the budget) stays the hard cap. These calls may write the budget plus `answer_tokens` (3072), and their prompt room is the context minus that, so a short question keeps 1024 + 3072 = 4096 tokens and today's prompt room; only long ones give up prompt room for thinking. A question too long for its budget thinks less instead, down to `min_tokens` (`thinking budget: 1524 tokens (shrunk to fit the prompt)`), so it is refused only where it was before. The judge, review, retry and missing-answer-line calls do not think, get no budget and keep `model_backend.max_tokens` (4096). `field: ""` sends none (for backends without it); with `REASONING_BUDGET=1024` that is the behaviour before this setting.
+- **Thinking scales with the question.** Each reasoner call of one answer carries the same thinking budget (`reasoning_policy.thinking_budget`): `min_tokens` (1024) for a short question, up to `max_tokens` (4096) for a long one with many numbers and several parts or requested answer lines. The share in between adds up the question's characters, its numbers and its enumerated parts, each with its own `start`, `full` and `weight` in the config; the Reasoning block shows the result (`thinking budget: 2900 tokens`). llama-server reads it per request as `thinking_budget_tokens` (b11782 and later), and its `--reasoning-budget` (`REASONING_BUDGET`, which also sets `max_tokens` of the budget) stays the hard cap. These calls may write the budget plus `answer_tokens` (3072), and their prompt room is the context minus that, so a short question keeps 1024 + 3072 = 4096 tokens and today's prompt room; only long ones give up prompt room for thinking. A question too long for its budget thinks less instead, down to `min_tokens` (`thinking budget: 1524 tokens (shrunk to fit the prompt)`), so it is refused only where it was before. The judge, review and retry calls do not think, get no budget and keep `model_backend.max_tokens` (4096). `field: ""` sends none (for backends without it); with `REASONING_BUDGET=1024` that is the behaviour before this setting.
 
 ### Tools and citations
 
@@ -60,8 +60,6 @@ Safety nets keep the answer an answer:
 - **Empty answers.** When the model leaves its whole answer in the thinking and returns no content, it is asked once more the same way. Switch: `reasoning_policy.empty_answer_retry`.
 
 If the retry gives nothing, the text before the markup is kept; if there is none at all, the answer says plainly that it could not be completed. The Reasoning block shows what happened ("tool call written as text: run", "empty answer: final answer asked again").
-
-Missing answer lines are asked for too. When the task spells out the lines it wants (`A9: <verdict>`: a label, a colon and a placeholder in angle brackets) and the answer leaves some out, code notices before the checks and asks the model once, without tools, for just those lines (`reasoning_policy.coverage_repair_prompt`, request fields `answer_retry_request`). Only the reply's lines that start with a missing label (and say more than the placeholder) are appended; nothing else in the answer changes, and if the call fails the answer stays as it was. An answer with every line costs nothing extra. The Reasoning block names the lines that were missing and the ones added. Switch: `reasoning_policy.coverage_repair`.
 
 The Reasoning block shows the model's thinking, every tool call with the sources it returned (`[S1] Ethanol`, …) and the draft, in which the model cites sources as `[S1]`. The answer follows once the model is done, as a plain chat answer (see Verification).
 
@@ -246,6 +244,10 @@ items:
 
 Items without `parts` get no code score; the blind review grades them.
 
+### Verdicts read from the answer body
+
+A verdict part tied to one item the task lists (`C1.`, `У3)`, `S4:` at a line start) is read where the answer discusses that item, as a reader would, not from the closing line: the part's label is the item (`C1: <Correct / Incorrect / Unverified>`) or its placeholder names that item alone (`A4: <verdict for C1>`). The item's section starts at a line that begins, after Markdown markers, with its id (`**C1:**`, `### C1 —`, `- C1:`, a table row `| C1 |`) and ends at the next item, a `---` line, a heading or an answer line; the answer lines at the end are never part of a section. Its verdict is the first labelled verdict line (`Verdict:`, `Status:`, `Conclusion:`, `Вердикт:`, `Статус:`, `Вывод:`), else the verdict word right after the id or in a cell of its row, with quoted text left out (`**S8:** "CO is the oxidising agent" is wrong` gives none: the quote restates the claim). Verdict words are those of the task's verdict parts, matched as on a line. When the item has no section, its sections give no verdict, or they give two different ones, the closing line counts as before; numbers, names, id lists and verdict parts tied to no item are always read from their lines. Each score keeps `line_parts` (every part from its line) and `sources` (`body` or `line` per part). `uv run python -m evals.rescore RUN [RUN ...]` scores recorded runs again from their stored answers, without a model, in place (the first rescore keeps the old scores as `scores_before_rescore`; a log whose prompt changed since stays as it is) and prints, per run, parts before → after, the line-only total and the verdict parts read from the body; `--dry-run` only prints.
+
 ### Modes
 
 `--mode A|B|C|D` switches pipeline components off in-process, before the agent is built (`evals/modes.yaml`); prompts and sampling stay the same. Without `--mode` the config applies as it is (mode `config`).
@@ -267,7 +269,7 @@ Each run writes `${DATA_DIR:-data}/evals/<run-id>/` in the data folder (default 
 
 Run again with the same `--run-id` to resume: items with a log are skipped, and with `--retry-errors` the failed ones run again. A run is resumed only when nothing that defines it changed: mode, config, commit, dirty flag and uncommitted changes, model file sha256, every store's path, size and mtime, and sampling; each eval file it uses must be in the manifest with the same sha256 (fewer files are fine). Anything else is refused with the names of the fields that differ: use a new `--run-id`. A reviewed run keeps its review metrics.
 
-Code metrics (per set): items, errors, empty answers, solved items, fact questions right strictly and loosely, parts right, verdict parts right, missing answer lines, false corrections (a part right in the draft and wrong in the final answer) and true corrections, answers with protocol artefacts (`[S#]` ids, the draft marker, verification or consistency headings, outcome labels, raw tool-call markup; tool-call leaks are also counted on their own), the S6 checks (no artefacts, at most `max_chars`, at most `max_latency_s`), latency median and 90th percentile, model calls, and the claim outcomes and fixes of the verifier (supported claims, unmarked contradictions, consistency, arithmetic and checker fixes).
+Code metrics (per set): items, errors, empty answers, solved items, fact questions right strictly and loosely, parts right (and right on their lines only), verdict parts right (and how many were read from the body), missing answer lines, false corrections (a part right in the draft and wrong in the final answer) and true corrections, answers with protocol artefacts (`[S#]` ids, the draft marker, verification or consistency headings, outcome labels, raw tool-call markup; tool-call leaks are also counted on their own), the S6 checks (no artefacts, at most `max_chars`, at most `max_latency_s`), latency median and 90th percentile, model calls, and the claim outcomes and fixes of the verifier (supported claims, unmarked contradictions, consistency, arithmetic and checker fixes).
 
 ### Report
 
@@ -276,7 +278,7 @@ uv run python -m evals.report 20261023-1400-A 20261023-1500-B             # one 
 uv run python -m evals.report 20261023-1500-B --base 20261023-1400-A      # plus paired deltas on the same items
 ```
 
-It prints markdown tables: code metrics per set and mode (with the fact questions' strict and loose scores, `strict / loose of n`), review metrics when the run was reviewed, and with `--base` the change on the items both runs have (solved, parts right, items better and worse, artefacts, latency, review score).
+It prints markdown tables: code metrics per set and mode (with the fact questions' strict and loose scores, `strict / loose of n`, the parts right line-only next to the body-first parts, and the verdict parts read from the body; `–` for runs scored before body reading), review metrics when the run was reviewed, and with `--base` the change on the items both runs have (solved, parts right, items better and worse, artefacts, latency, review score).
 
 ### Blind review
 

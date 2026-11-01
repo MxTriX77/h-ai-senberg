@@ -11,7 +11,7 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -49,13 +49,7 @@ _ABBREV = {"e.g", "i.e", "approx", "ca", "vs", "etc", "cf", "fig", "eq", "no", "
 _MARKERS = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+|>\s*)*")
 _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]claim)\b(.*)$", re.I)
 # A label (an id such as A1, C or (b), maybe after one word: "Claim C", "Claim 3") and a colon starts the line.
-_LABEL = r"(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})"
-_LABELLED = re.compile(rf"[*_`]*{_LABEL}[*_`\s]*[:：][*_`]*(?:\s|$)")
-# An answer line the task asks for: a label, a colon and a placeholder in angle brackets (`A9: <verdict>`), anywhere
-# in the text; a placeholder starts with no space, digit, -, = or bracket (`A: <0.1 %`, `A: <-> B` are no placeholders).
-_REQUESTED = re.compile(rf"(?<!\w)[*_`]*({_LABEL})[*_`\s]*[:：][*_`\s]*(<(?![\s\d<>=-])[^<>\n]+>)")
-_ID = re.compile(r"\(?[^\W\d_]\d{0,2}\)?")  # the id of a label (A1, C, (b)), without a word before it
-_LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic letters seen in labels
+_LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -594,44 +588,6 @@ def parse_fixes(text: str) -> list[dict[str, str]]:
 
 def _words(text: str) -> list[str]:
     return re.findall(r"[^\W\d_]+", text.casefold())
-
-
-def _label_id(label: str) -> str:
-    """A label's id: its last word when that is an id (`Claim C` -> `C`, `with A1` -> `A1`), else the label."""
-    words = label.split()
-    return words[-1] if _ID.fullmatch(words[-1]) else " ".join(words)
-
-
-def _label_key(label: str) -> str:
-    """A label as compared: its id, case and Cyrillic look-alike letters ignored (`А1` = `a1`, `(b)` = `b`)."""
-    return _label_id(label).translate(_LOOKALIKE).casefold().strip("()")
-
-
-def missing_lines(task: str, answer: str) -> dict[str, str]:
-    """The answer lines the task asks for (_REQUESTED) that have no labelled line in the answer (answer_labels):
-    label id -> the line as the task writes it, with that id (`A9: <verdict>`), in the task's order."""
-    seen = {_label_key(label) for label in answer_labels(answer)}
-    missing: dict[str, str] = {}
-    for m in _REQUESTED.finditer(task):
-        if (key := _label_key(m.group(1))) not in seen:
-            seen.add(key)
-            label = _label_id(m.group(1))
-            missing[label] = f"{label}: {m.group(2)}"
-    return missing
-
-
-def supplied_lines(reply: str, labels: Iterable[str]) -> dict[str, str]:
-    """The reply's labelled lines (as in answer_labels) for these labels, the first per label, each with text
-    after the colon that is not only a placeholder (`<…>`): label -> the line."""
-    wanted = {_label_key(label): label for label in labels}
-    found: dict[str, str] = {}
-    for line in reply.splitlines():
-        m = _LABELLED.match(line, _MARKERS.match(line).end())
-        label = wanted.get(_label_key(m.group(0).strip("*_`:： \t"))) if m else None
-        text = line[m.end() :].strip() if m else ""
-        if label and label not in found and text and not (text.startswith("<") and text.endswith(">")):
-            found[label] = line.strip()
-    return found
 
 
 def _answer_line(text: str, start: int, end: int) -> bool:
