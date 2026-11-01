@@ -238,11 +238,11 @@ evidence:                                  # evidence ledger (D-032): verdicts s
   enabled: false                           # off until the A/B; the arm profile config/qwen3.5-9b-evidence.yaml turns it on
   min_items: 3                             # runs when the last user message lists this many items (lines starting with
                                            # an id: 1. / a) / C1. / У3) / Claim A:, or bulleted lines); else no change
-  strong_words: [prove, proof, guarantee, confirm, establish, validat, verif, independent, universal, always, never,
-                 every, any, all cases, by definition, impossible, therefore, hence,
-                 доказ, гарантир, подтвержд, установлен, валидир, верифиц, независим, универсальн, всегда, никогда,
-                 кажд, любо, во всех случаях, по определению, наверняка, невозможн, следовательно, поэтому]
-                                           # a statement with one of these (at a word start) is a claim of proof
+  strong_words: [prove, proof, guarantee, confirm, establish, validat, verif, independent,
+                 доказ, гарантир, подтвержд, установлен, валидир, верифиц, независим]
+                                           # a statement with one of these (at a word start) is a claim of proof;
+                                           # only proof words: scope words (always, every, therefore …) are left to
+                                           # strong_enough, which can only lower a status (R-d)
   ledger_prompt: |
     You build an evidence ledger for the items the user's last message lists. Judge each item only on the
     evidence recorded here: the conversation (the material given), the tool results and the draft answer.
@@ -258,8 +258,9 @@ evidence:                                  # evidence ledger (D-032): verdicts s
       "against" is only evidence that the statement is false: that something is not shown, or that the
       evidence falls short, is a gap, never evidence against. A calculation done right on a wrong input is
       evidence against the statement that rests on it: name the right input and what it gives.
-    - assumptions: what the statement needs that nothing here shows; gaps: the missing material that would
-      settle it.
+    - assumptions: what the statement needs that nothing here shows; gaps: material the request refers to but
+      does not include (an attached report, a certificate, a full paper, a dataset), only that, not evidence that
+      would be needed in general.
     - depends_on: ids of listed items this one builds on.
     - strong_enough: true only when the evidence for supports the statement at its full strength: every scope
       word (all, any, every, always, never), every guarantee and every causal link. A ratio, a correlation, a

@@ -11,6 +11,7 @@ from haisenberg.evidence import (
     CONTRADICTED, ESTABLISHED, HYPOTHESIS, UNVERIFIED, Entry, Evidence, Settled, key, listed_items, parse_ledger,
     settle,
 )
+from haisenberg.config import load_config
 from haisenberg.tools import Knowledge
 
 WORDS = ["guarantee", "independent", "гарантир", "независим"]
@@ -56,6 +57,8 @@ def test_listed_items_keep_the_ids_as_written():
     assert listed_items("а) первое\nб) второе") == [("а", "первое"), ("б", "второе")]
     assert listed_items("Claim A: x\nClaim 2. y\nMass m: 5 g") == [("Claim A", "x"), ("Claim 2", "y")]
     assert listed_items("C1. x\nC1: the same id again") == [("C1", "x")]
+    # a line that is only a placeholder is a form to fill in, not an item to judge
+    assert listed_items("C1. x\nC2. y\nFinish with:\nA1: <verdict for C1>\nA2: <число>.") == [("C1", "x"), ("C2", "y")]
 
 
 def test_bullets_count_only_without_ids():
@@ -110,8 +113,21 @@ def test_rb_claim_of_proof_with_evidence_that_cannot_give_it_is_contradicted():
     assert changed(entry(asserts="proof", strong_enough=True)) == []  # the evidence gives it all
 
 
+def test_scope_words_alone_never_make_a_claim_false():
+    # "every", "therefore", "поэтому" are not proof words in the shipped list: a plain claim the model can't fully
+    # support is only lowered (R-d), never contradicted by R-b
+    words = load_config().evidence.strong_words
+    for statement in ("Every sample was therefore tested at 25 °C", "Поэтому каждая партия годна"):
+        e = entry(status=ESTABLISHED, statement=statement)
+        assert settle([e], words) == [e] and (e.status, e.rule) == (UNVERIFIED, "R-d")
+
+
 def test_rb_claim_of_proof_without_the_material_is_unverified():
     e = entry(status=CONTRADICTED, support=(), asserts="proof", gaps=["the certificate is not attached"])
+    assert changed(e) == [("A", UNVERIFIED, "R-b")]
+    # the report only mentions the certificate: what it refers to is missing, so not shown, not false
+    e = entry(status=CONTRADICTED, asserts="proof", statement="The certificate confirms 99 % purity",
+              gaps=["the certificate"])
     assert changed(e) == [("A", UNVERIFIED, "R-b")]
     assert changed(entry(status=UNVERIFIED, support=(), asserts="proof")) == []  # no gaps: the other rules
     assert changed(entry(status=CONTRADICTED, support=(), asserts="proof")) == [("A", UNVERIFIED, "R-c")]

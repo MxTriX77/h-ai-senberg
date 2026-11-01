@@ -38,6 +38,7 @@ _ID = r"\d{1,2}|[^\W\d_]{1,2}\d{1,2}|[^\W\d_]"
 _LISTED = re.compile(rf"^[ \t>]*(?:[-*•][ \t]+)?[*_]*(?:\((?P<p>{_ID})\)|(?:(?P<word>[^\W\d_]+)[ \t]+)?"
                      rf"(?P<id>{_ID})[*_]*[.):：])[*_]*[ \t]+(?P<text>\S.*)$", re.M)
 _BULLET = re.compile(r"^[ \t>]*[-*•][ \t]+(?P<text>\S.*)$", re.M)
+_TEMPLATE = re.compile(r"<[^<>]*>[.,;]?")  # a line that is only a placeholder to fill in
 _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic for Latin in ids
 
 
@@ -49,6 +50,8 @@ def listed_items(text: str) -> list[tuple[str, str]]:
     for m in _LISTED.finditer(text):
         iid = m["p"] or m["id"]
         if m["word"] and not (re.search(r"\d", iid) or (len(iid) == 1 and iid.isupper())):
+            continue
+        if _TEMPLATE.fullmatch(m["text"].strip()):  # `A1: <your verdict>`: a form to fill in, not an item to judge
             continue
         found.append((f"{m['word']} {iid}" if m["word"] else iid, m["text"].strip()))
     if not found:
@@ -154,9 +157,9 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     """Settle each status from the recorded evidence, first rule that applies (R-a … R-d), then R-e to a fixed
     point; return the entries whose status changed. No rule makes anything established.
     - R-a: evidence against from the given material, a source or a computation → contradicted.
-    - R-b: a claim of proof (`asserts: proof`, or a strong word in the statement) without evidence for its full
-      strength: with evidence for it that cannot give what it claims → contradicted; with nothing for it and
-      gaps saying material is missing → unverified.
+    - R-b: a claim of proof (`asserts: proof`, or a proof word in the statement) without evidence for its full
+      strength: when the material it refers to is not here (gaps) → unverified; else, with evidence for it that
+      cannot give what it claims → contradicted.
     - R-c: contradicted with nothing against it → unverified (not shown is not false).
     - R-d: established with nothing for it → unverified; resting only on assumptions → hypothesis; without
       evidence for its full strength → unverified.
@@ -166,10 +169,10 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
         proof = (e.asserts == PROOF or strong_word(e.statement, strong_words)) and not e.strong_enough
         if hard:
             _set(e, CONTRADICTED, "R-a", f"evidence against it from {_FROM[hard]}")
+        elif proof and e.gaps:
+            _set(e, UNVERIFIED, "R-b", "claim of proof; the material it refers to is not here")
         elif proof and e.support:
             _set(e, CONTRADICTED, "R-b", "claim of proof the evidence can't give")
-        elif proof and e.gaps:
-            _set(e, UNVERIFIED, "R-b", "claim of proof; the material that would settle it is missing")
         elif e.status == CONTRADICTED and not e.against:
             _set(e, UNVERIFIED, "R-c", "nothing against it: not shown is not false")
         elif e.status == ESTABLISHED and not e.support:
