@@ -290,6 +290,8 @@ uv run python -m evals.review merge data/evals/review-01
 
 ```yaml
 - blind_id: R001
+  confident_falsehoods: 1        # the primary count: false, invented or invalidly inferred statements asserted as fact
+  falsehoods: [{tag: F12, central: true, what: "..."}]   # one per counted falsehood (count = list length)
   score: 6                       # 0-10
   defects_found: [D1]            # ids from the key
   defects_missed: []
@@ -303,4 +305,4 @@ uv run python -m evals.review merge data/evals/review-01
   reveals: "one line"
 ```
 
-`merge` checks the file (every blind id reviewed once, score 0-10, counts whole numbers, defect and verdict ids from the key) and lists every problem it finds. It then writes `reviews.json` into each run folder and adds the review metrics to its `summary.json`: mean score, share of planted defects found, verdicts right, omissions, unsupported additions, unsupported statements presented as verified, final-vs-analysis contradictions, must-not violations and new errors by tag.
+`merge` checks the file (every blind id reviewed once, score 0-10, counts whole numbers, defect and verdict ids from the key, each falsehood tagged and counted) and lists every problem it finds. It then writes `reviews.json` into each run folder and adds the review metrics to its `summary.json`: confident falsehoods per answer and by tag (reviews that carry the count), mean score, share of planted defects found, verdicts right, omissions, unsupported additions, unsupported statements presented as verified, final-vs-analysis contradictions, must-not violations and new errors by tag.

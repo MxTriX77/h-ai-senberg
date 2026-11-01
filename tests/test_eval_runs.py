@@ -515,8 +515,34 @@ def test_merge_writes_reviews_and_metrics(two_runs, tmp_path):
     reviews = json.loads((two_runs[1] / "reviews.json").read_text(encoding="utf-8"))
     assert set(reviews) == {"b1-s3-01", "b1-s6-01"} and reviews["b1-s3-01"]["score"] == 8
     text = report(two_runs, two_runs[0])
-    assert "| 20261023-1200-B | all | B | 2 | 7.5 | 100 % | 100 % | 1 | 1 | 0 | 0 | 0 | – |" in text
-    assert text.rstrip().endswith("| +0 | +2 |")  # paired review score: (8 - 4 + 7 - 7) / 2
+    assert "| 20261023-1200-B | all | B | 2 | – | 7.5 | 100 % | 100 % | 1 | 1 | 0 | 0 | 0 | – |" in text
+    assert text.rstrip().endswith("| +0 | – | +2 |")  # no falsehood counts; paired score: (8 - 4 + 7 - 7) / 2
+
+
+def test_merge_counts_confident_falsehoods(two_runs, tmp_path):
+    pack(two_runs, tmp_path / "pack", seed=1)
+    answers = json.loads((tmp_path / "pack" / "mapping.json").read_text(encoding="utf-8"))["answers"]
+    lie = {"tag": "F12", "central": True, "what": "one batch called proof"}
+    blocks = [review(blind, confident_falsehoods=0 if a["run"].endswith("B") else 2,
+                     falsehoods=[] if a["run"].endswith("B") else [lie, {**lie, "tag": "F3"}])
+              for blind, a in answers.items()]
+    (tmp_path / "pack" / "reviews.yaml").write_text(yaml.safe_dump(blocks), encoding="utf-8")
+    merge(tmp_path / "pack")
+    a, b = (json.loads((r / "summary.json").read_text(encoding="utf-8"))["review"]["all"] for r in two_runs)
+    assert (a["falsehoods_per_answer"], a["confident_falsehoods"], a["falsehood_tags"]) == (2.0, 4, {"F12": 2, "F3": 2})
+    assert (b["falsehoods_per_answer"], b["falsehood_tags"]) == (0.0, {})
+    text = report(two_runs, two_runs[0])
+    assert "| 20261023-1200-A | all | A | 2 | 2 |" in text and "| 4 → 0 (2) |" in text  # the paired column
+
+
+def test_falsehood_count_must_match_its_list(two_runs, tmp_path):
+    pack(two_runs, tmp_path / "pack", seed=1)
+    blind = next(iter(json.loads((tmp_path / "pack" / "mapping.json").read_text(encoding="utf-8"))["answers"]))
+    keys = {blind: {}}
+    assert check_reviews([review(blind, confident_falsehoods=2, falsehoods=[{"tag": "F3"}])], keys) == [
+        f"{blind}: confident_falsehoods (2) must equal the number of falsehoods listed (1)"]
+    assert check_reviews([review(blind, confident_falsehoods=1, falsehoods=[{"what": "no tag"}])], keys) == [
+        f"{blind}: each falsehoods entry needs a tag, e.g. {{tag: F12, central: true, what: ...}}"]
 
 
 def test_merge_rejects_bad_reviews_clearly(two_runs, tmp_path):
