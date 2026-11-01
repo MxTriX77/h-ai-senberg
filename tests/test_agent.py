@@ -269,6 +269,18 @@ def test_calculator_rounds_use_no_lookup_rounds(client, fake, cfg):
     assert sum(m["role"] == "tool" for m in fake.bodies[-1]["messages"]) == 3  # both lookups ran after the calculation
 
 
+def test_cut_off_tool_arguments_do_not_break_the_next_call(client, fake):
+    """A call cut off at the token limit (recorded: c03-s3-08, c03-s3-01) has arguments that are not JSON; llama-server
+    rejects any later request that carries them ("Failed to parse tool call arguments as JSON"), so the history
+    keeps the call with empty arguments and the tool's error, and the answer goes on."""
+    cut = '{"expressions": ["0.1000 * 0.01640 / 0.02000 * 10 /'
+    fake.scripts = [[tool_call("calculate", cut, call_id="k1"), finish("length")], [content("done")]]
+    assert answer(chat(client)) == "done"
+    call, result = fake.bodies[1]["messages"][-2:]
+    assert json.loads(call["tool_calls"][0]["function"]["arguments"]) == {}
+    assert result["role"] == "tool" and "not valid JSON" in result["content"]
+
+
 def test_lookups_used_up_leave_the_calculator(client, fake, cfg):
     cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 2
     fake.scripts = [lookup_round(), calc_round(call_id="k1"), calc_round(call_id="k2"), [content("done")]]
