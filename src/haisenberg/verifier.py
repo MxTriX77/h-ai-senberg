@@ -368,9 +368,11 @@ _GAP = "[ \xa0  ]"  # a space that may group digits in threes (20 000)
 
 
 def _number_spans(text: str, number: str) -> list[tuple[int, int]]:
-    """Spans where the text writes `number` exactly so, not as part of another number (1350, 350.5, 1 350, 3,65)."""
+    """Spans where the text writes `number` exactly so, not as part of another number (1350, 350.5, 1 350, 3,65) or
+    of a clock time (17:00, 9:17)."""
     return [m.span() for m in re.finditer(
-        rf"(?<![\w.,])(?<!\d{_GAP})(?<!\\,){re.escape(number)}(?!\w|[.,]\d|{_GAP}\d{{3}}(?!\d)|\\,\d)", text)]
+        rf"(?<![\w.,])(?<!\d{_GAP})(?<!\\,)(?<!\d[:：]){re.escape(number)}(?!\w|[.,]\d|{_GAP}\d{{3}}(?!\d)|\\,\d|[:：]\d)",
+        text)]
 
 
 def _unit_at(text: str, end: int) -> str:
