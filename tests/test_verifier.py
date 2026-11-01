@@ -1036,6 +1036,10 @@ def test_clock_times_left_alone(draft):
     r"$Q = 1{,}20 \times 4{,}19 \times 75 = 377{,}1$ кДж.",  # LaTeX decimal comma
     "A1: да (3 марта + 14 недель = 3 марта + 98 дней = 9 июня)",  # a date
     "giving 2(1)(1) + 1 = 3 peaks",  # an implied product
+    # probes of right statements the check had "fixed" (to 0.5 km, 32.0 h, 51.0 m, -14 min, 1, -2, -10, -4):
+    "2 km + 500 m = 2.5 km", "2 h + 30 min = 2.5 h", "1 m + 50 cm = 1.5 m", "1 h - 15 min = 45 min",  # mixed units
+    "1 TB / 1 GB = 1000", "1 GB / 1 MB = 1024",  # one unit, different prefixes
+    "pages 10-12 = 3 pages", "years 2010-2020 = 11 years", "items 3–7 = 5 items",  # ranges
 ])
 def test_misread_expressions_left_alone(draft):
     fixed, fixes, _ = fix_arithmetic(draft, 0.005)
@@ -1050,6 +1054,8 @@ def test_misread_expressions_left_alone(draft):
      "E = 1932 Вт × 4,333 мин / 60 = 0.1395 кВт·ч = 500 кДж"),
     ("- Total: 162 + 240 + 36 + 12 = 350 kcal per 100 g", "- Total: 162 + 240 + 36 + 12 = 450 kcal per 100 g"),
     ("n = (5.00 × 10⁻³) / (4.005 × 10⁻²⁵) = 1.248 × 10²³ m⁻³", "n = (5.00 × 10⁻³) / (4.005 × 10⁻²⁵) = 1.248 × 10^22 m⁻³"),
+    ("12-10 = 3", "12-10 = 2"),  # a tight subtraction with the larger number first is no range
+    ("100 W × 2 h = 300 Wh", "100 W × 2 h = 200 Wh"),  # units that multiply are no mix
 ])
 def test_hours_and_labelled_lines_still_checked(draft, expected):
     assert fix_arithmetic(draft, 0.005)[0] == expected

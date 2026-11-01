@@ -135,6 +135,24 @@ _DATE = re.compile(  # a day and a month ("3 марта + 98 дней = 9 июн
     r"\d[ \t]*(?:(?i:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?"
     r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![A-Za-z])|(?i:январ|феврал|март|апрел|июн|июл|август|сентябр"
     r"|октябр|ноябр|декабр)\w*|(?i:ма[йяю])(?![А-Яа-яЁё]))")
+_RANGE = re.compile(r"(?<![\d.,])(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?![\d.,])")  # "10-12", "3–7" (normalized): a range
+_OPERAND_UNIT = re.compile(rf"\d\s?([{_UNIT_CHARS}][{_UNIT_CHARS}/·*²³]*)")
+_SI_PREFIX = "kMGTPmµμnc"
+
+
+def _mixed_units(expression: str) -> bool:
+    """Operands in different units that the check would add unconverted (`2 h + 30 min`, `1 m + 50 cm`), or in
+    one unit with different prefixes (`1 TB / 1 GB`): without conversions in code the value is not the result."""
+    units = {u.rstrip("*") for u in _OPERAND_UNIT.findall(re.sub(r"(?<=\d)[eE][-+]?\d+", "", expression))}
+    if len(units) < 2:
+        return False
+    core = re.sub(r"(?<=\d)[eE][-+]?\d+", "", expression).lstrip("+-( ")
+    if re.search(r"[+\-]\s*[\d(]", core):
+        return True
+    bases = [u[1:] if len(u) > 1 and u[0] in _SI_PREFIX else u for u in units]
+    return len(set(bases)) < len(bases)
+
+
 _NUMBER_IN_UNITS = re.compile(rf"({_NUM}|\))(?:{_UNIT})")
 _LIST_MARKER = re.compile(r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d+[.)])[ \t]+)?")  # "- ", "  * ", "> 1. ": not a sign
 
@@ -194,7 +212,8 @@ def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True)
         if re.search(r"\d[:：]$", lhs[: m.start()]) and lhs[m.start()].isdigit():  # "10:50 - 1 hour": minutes of a
             continue  # clock time, not a number ("A2: (1000 − 800) / 800" is still checked)
         expression = m.group().strip()
-        if _DATE.search(expression):
+        if _DATE.search(expression) or _mixed_units(expression) or \
+                any(float(a) < float(b) for a, b in _RANGE.findall(expression)):  # a range "10-12" is no subtraction
             continue
         if strict:
             before = lhs[: m.start()]
