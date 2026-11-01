@@ -26,6 +26,7 @@ _CYRILLIC = re.compile("[А-Яа-яЁё]")
 _DASH = re.compile(r"(?<=\d)-(?=\d)|(?<=\d)([ \t]*)[–—](?=[ \t]*\d)")
 _GAP = re.compile(r"-|[ \t]*[–—][ \t]*|[ \t]+(?:to|до)[ \t]+")
 _UNIT = re.compile(r"[ \t\xa0]*(%|°[ \t]?[CF]|℃|[^\W\d_]+(?:\^?-?\d)?(?:[ \t]*[/·⋅∙*][ \t]*\(?[^\W\d_]+(?:\^?-?\d)?\)?)*)")
+_OPERAND = re.compile(r"\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")  # a number of a normalised expression (calc.normalize)
 _LATEX_UNIT = re.compile(r"\\(?:text|mathrm|rm)\s*\{[^{}]*\}")
 _EXPONENT = re.compile(r"\^[{(]?$")  # right before a number: its base's exponent (10^{12}, e^(-2))
 _EQUALS = re.compile(r"[ \t*_$]*(?:[^\W\d_][^\s\d=≈]*[ \t*_$]*)?[=≈][ \t*_$]*")  # `=` after a number, maybe a unit
@@ -62,8 +63,9 @@ def _tokens(text: str) -> list[_Token]:
             else nums[i : i + 1]
         i += len(group)
         start, end = group[0].start, group[-1].end
-        if any(a < end and start < b for a, b in dates) or _EXPONENT.search(text, max(0, start - 2), start):
-            continue
+        if any(a < end and start < b for a, b in dates) or _EXPONENT.search(text, max(0, start - 2), start) \
+                or re.match(r"\d[,.]", text[max(0, start - 2) : start]):
+            continue  # a date, an exponent, or the tail of a number not read as one (/43,200 → 200)
         m = _UNIT.match(text, end)
         unit = m[1] if m and read_unit(m[1])[0] is not None else ""
         end = m.end() if unit else end
@@ -98,13 +100,16 @@ def unsourced(answer: str, conversation: list[str], tool_results: list[str]) -> 
     task = "\n".join(conversation)
     stated = [n for text in [*conversation, *tool_results] for t in _tokens(text) for n in t.numbers]
     comma = bool(_CYRILLIC.search(answer))
-    # `≈` before a result as `=`, LaTeX units (\text{g/mol}) as blanks: the same length, so positions stay valid
-    equations = _LATEX_UNIT.sub(lambda m: " " * len(m[0]), answer).replace("≈", "=")
-    for strict in (True, False):  # operands and the stated result of every `a op b = c`, read both ways
+    # `≈` before a result as `=`, LaTeX units (\text{g/mol}) and Markdown bold (= **43.2**) as blanks: the same length,
+    # so positions stay valid
+    equations = _LATEX_UNIT.sub(lambda m: " " * len(m[0]), answer).replace("≈", "=").replace("**", "  ")
+    own = []  # operands (one by one: `× 100` is an operand, not × 10^0) and the stated result of every `a op b = c`,
+    for strict in (True, False):  # read both ways
         for a in find_arithmetic(equations, comma, strict):
-            stated += read_numbers(a.expression)
+            own += [n for x in _OPERAND.findall(a.expression) for n in read_numbers(x)]
             result = read_numbers(_decimal_points(answer[a.result_at : a.result_at + 80], comma))
-            stated += result[:1] if result and result[0].start == 0 else []
+            own += result[:1] if result and result[0].start == 0 else []
+    stated += [n for n in own if not (_integer(n) and abs(n.value) <= 10)]  # as in sources: not the 2 of 2 × 1.008
     computed = computations(equations, comma)
     mask = quoted(answer, task) if task else []
 

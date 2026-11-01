@@ -32,7 +32,11 @@ def test_the_answers_own_computation_not_flagged():
     answer = "Yield = 23.4 / 23.75 = 98.5 %, so a 98.5 % yield is implausibly high; (1100 − 800) / 1100 ≈ 27.3 %."
     assert flagged(answer) == []
     assert flagged("ΔT = 96 °C − (−18 °C), so the gap is 114 °C.", ["96 °C and −18 °C"]) == []  # a computed value
-    latex = "$$M = 2.016 \\, \\text{g/mol} + 31.998 \\, \\text{g/mol}$$\n$$M = 34.014 \\, \\text{g/mol}$$"
+    assert flagged("Minutes: 30 × 24 × 60 = 43,200. Allowed: 0.1% × 43,200 = **43.2 min**.") == []  # bold result
+    assert flagged("Growth = (12,100 - 10,000) / 10,000 × 100% = 21%, by the rule (new − old) / old × 100%.",
+                   ["from 10,000 to 12,100"]) == []  # × 100 is an operand
+    assert flagged("Availability = (43,200−45)/43,200 = 99.896%.", ["43,200 min, 45 min"]) == []  # not ",200"
+    latex ="$$M = 2.016 \\, \\text{g/mol} + 31.998 \\, \\text{g/mol}$$\n$$M = 34.014 \\, \\text{g/mol}$$"
     assert flagged(latex) == ["2.016", "31.998"]  # the sum is computed; its operands have no `= c` and no source
 
 
