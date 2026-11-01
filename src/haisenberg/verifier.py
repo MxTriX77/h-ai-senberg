@@ -855,7 +855,7 @@ class Verifier:
                     f"- {c['text']!r} → {c['fixed']!r} ({c['note']})\n" if c["fixed"] is not None
                     else f"- {c['text']!r}: {c['note']}\n" for c in found))
         derived = self.cfg.skip_derived_claims
-        claims = split_claims(draft, skip_labelled=derived)
+        claims = split_claims(draft, skip_labelled=derived and self.cfg.skip_labelled_claims)
         yield _say(f"\n\nVerification: {len(claims)} claims\n")
         pending = []
         given, computed = [n.value for n in read_numbers(question)], results(draft)

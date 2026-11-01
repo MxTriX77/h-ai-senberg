@@ -227,7 +227,11 @@ verifier:                                  # claim checks on the draft; on/off: 
   skip_derived_claims: true                # computations (an equation or operation with numbers, or a sentence restating
                                            # the answer's results) and labelled answer/verdict lines (A1: …, Claim C: …)
                                            # are never judged, corrected or removed by the claim checks
-  keep_uncorrected: true                   # a judge "contradicts" without a correction marks the claim unverified;
+  skip_labelled_claims: true               # ... the labelled-line part of skip_derived_claims; false: a labelled line is
+                                           # judged like any sentence (computations still skipped). A format-bound guard
+                                           # (D-042): prose verdicts are protected by keep_uncorrected and the judge's
+                                           # minimal-edit rule only
+  keep_uncorrected: true                  # a judge "contradicts" without a correction marks the claim unverified;
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
                                            # row, ids aside) is ignored: the claim counts as uncorrected (see above)

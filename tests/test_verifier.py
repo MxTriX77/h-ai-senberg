@@ -780,6 +780,16 @@ def test_derived_claims_judged_when_switched_off(cfg, fake, knowledge):
     assert "C1: P = 1000 × 9.81" in user and "A1: 2354 W" in user
 
 
+def test_labelled_lines_judged_when_their_switch_is_off(cfg, fake, knowledge):
+    cfg.verifier.skip_labelled_claims = False  # computations still skipped, labelled lines judged like prose
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [SEARCH_ETHANOL, [content(LOOP_DRAFT)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        chat(c, [{"role": "user", "content": PUMP_TASK}])
+    user = fake.bodies[2]["messages"][1]["content"]
+    assert "Claim B: Incorrect, the motor is too small" in user and "P = 1000 × 9.81" not in user
+
+
 @pytest.mark.parametrize("keep, expected", [(True, "Ethanol is a liquid. It is blue."), (False, "Ethanol is a liquid.")])
 def test_contradiction_without_a_correction(cfg, fake, knowledge, keep, expected):
     cfg.verifier.keep_uncorrected = keep
