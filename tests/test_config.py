@@ -424,6 +424,14 @@ def test_conservative_check_settings(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_carry_fixes_forward_setting(tmp_path):
+    assert load_config(write(tmp_path)).verifier.carry_fixes_forward is False  # shipped off until the A/B
+    data = base()
+    del data["verifier"]["carry_fixes_forward"]
+    with pytest.raises(ConfigError, match="verifier.carry_fixes_forward"):
+        load_config(write(tmp_path, data))
+
+
 def test_conservative_review_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_verdicts is v.keep_quotes is True

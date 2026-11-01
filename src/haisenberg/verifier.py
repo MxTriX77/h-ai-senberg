@@ -374,6 +374,69 @@ def fix_answer_lines(draft: str, fixes: list[dict[str, str]]) -> tuple[str, list
     return "".join(out), done
 
 
+_GAP = "[ \xa0  ]"  # a space that may group digits in threes (20 000)
+
+
+def _number_spans(text: str, number: str) -> list[tuple[int, int]]:
+    """Spans where the text writes `number` exactly so, not as part of another number (1350, 350.5, 1 350, 3,65)."""
+    return [m.span() for m in re.finditer(
+        rf"(?<![\w.,])(?<!\d{_GAP})(?<!\\,){re.escape(number)}(?!\w|[.,]\d|{_GAP}\d{{3}}(?!\d)|\\,\d)", text)]
+
+
+def _unit_at(text: str, end: int) -> str:
+    """The % sign or the unit word right after a number that ends at `end`; '' for none (a stopword is none)."""
+    m = _UNIT.match(text.translate(_NORM), end)
+    return m[1] if m and m[1].lower() not in STOPWORDS else ""
+
+
+def carry_forward(draft: str, fixes: list[dict[str, str]], request: str, task: str = "",
+                  strict: bool = True) -> tuple[str, list[str]]:
+    """(the draft with the old value of each applied arithmetic fix replaced by the fixed one wherever the draft
+    writes it again after the fixed computation, the trace lines). An occurrence is replaced when it is the same
+    written number (see _number_spans), a % sign is after both or neither, a unit word written after both is the
+    same (a bare number matches: later computations write their inputs bare), it is not the stated result of a
+    computation (that follows from its own left side) and, with the `task`, it is not quoted from it (see quoted).
+    Nothing is carried for a fix whose old value the request writes (it may be given data) or an old value fixed
+    to two values. Sets `carried` (the number of occurrences replaced) on every fix."""
+    found = list(find_arithmetic(draft, bool(re.search("[А-Яа-яЁё]", draft)), strict))
+    results, mask = {a.result_at for a in found}, quoted(draft, task) if task else []
+    ways: dict[str, set[str]] = {}
+    for f in fixes:
+        ways.setdefault(f["stated"], set()).add(f["fixed"])
+    spans: dict[tuple[int, int], str] = {}
+    trace = []
+    for f in fixes:
+        old, new, f["carried"] = f["stated"], f["fixed"], 0
+        after = f"(after the fix of {f['expression']} = {old})"
+        if _number_spans(request, old):
+            trace.append(f"> not carried: {old} is in the request, maybe given data {after}")
+            continue
+        if len(ways[old]) > 1:
+            trace.append(f"> not carried: {old} was fixed to {len(ways[old])} different values {after}")
+            continue
+        at = next((a.result_at + len(new) for a in found
+                   if a.expression == f["expression"] and draft.startswith(new, a.result_at)), None)
+        if at is None:
+            continue
+        unit = _unit_at(draft, at)
+        for s, e in _number_spans(draft, old):
+            other = _unit_at(draft, e)
+            if (s >= at and s not in results and (s, e) not in spans and not (mask and all(mask[s:e]))
+                    and (unit == "%") == (other == "%")
+                    and (not unit or unit == other or (not other and "=" in draft[e : _line_end(draft, e)]))):
+                spans[s, e] = new
+                f["carried"] += 1
+                trace.append(f"> carried: {old} → {new} {after}")
+    for (s, e), new in sorted(spans.items(), reverse=True):
+        draft = draft[:s] + new + draft[e:]
+    return draft, trace
+
+
+def _line_end(text: str, at: int) -> int:
+    end = text.find("\n", at)
+    return end if end >= 0 else len(text)
+
+
 def _decimal_points(text: str, decimal_comma: bool) -> str:
     """Commas between digits as decimal points (same length: spans stay valid): every one with
     `decimal_comma` (Russian text), otherwise not before exactly three digits (1,900)."""
@@ -755,21 +818,29 @@ class Verifier:
 
     async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
         """Yield reasoning deltas while checking, then the Verification."""
-        arithmetic, checked, lines = [], 0, []
+        arithmetic, checked, lines, carried = [], 0, [], []
+        task = question if self.cfg.keep_quotes else ""
+        args = (self.cfg.arithmetic_rel_tol, self.cfg.arithmetic_prefixes, task, self.cfg.arithmetic_strict_parse,
+                self.cfg.arithmetic_max_change)
         if self.cfg.arithmetic_check:
-            draft, arithmetic, checked = fix_arithmetic(draft, self.cfg.arithmetic_rel_tol,
-                                                        self.cfg.arithmetic_prefixes,
-                                                        question if self.cfg.keep_quotes else "",
-                                                        self.cfg.arithmetic_strict_parse,
-                                                        self.cfg.arithmetic_max_change)
+            draft, arithmetic, checked = fix_arithmetic(draft, *args)
         kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
         arithmetic = [a for a in arithmetic if "note" not in a]
+        first = len(arithmetic)
+        if self.cfg.carry_fixes_forward and arithmetic:
+            draft, carried = carry_forward(draft, arithmetic, question, task, self.cfg.arithmetic_strict_parse)
+            if any(a["carried"] for a in arithmetic):  # once more: a later computation may have used an old value
+                draft, again, _ = fix_arithmetic(draft, *args)
+                arithmetic += [a for a in again if "note" not in a]
+                kept += [a for a in again if "note" in a and a not in kept]
         if self.cfg.arithmetic_answer_lines and arithmetic:
             draft, lines = fix_answer_lines(draft, arithmetic)
         if checked:
             yield _say(f"\n\nArithmetic: {checked} calculation{'s' if checked != 1 else ''} recomputed,"
                        f" {len(arithmetic)} fixed\n"
-                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic)
+                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic[:first])
+                       + "".join(f"{line}\n" for line in carried)
+                       + "".join(f"- {a['expression']} = {a['stated']} → {a['fixed']}\n" for a in arithmetic[first:])
                        + "".join(f"- {a['expression']} = {a['stated']}: {a['note']} (would be {a['fixed']})\n"
                                  for a in kept)
                        + "".join(f"- answer line: {a['stated']} → {a['fixed']} (as {a['expression']})\n"

@@ -212,6 +212,10 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # SI prefix (2452 W = 2.45 kW, 250 mg × 6 = 1.5 g); false: c as written only
   arithmetic_answer_lines: true            # ... and a labelled answer line (A1: …) that states exactly the old wrong c,
                                            # once, gets the fixed value too; false: answer lines keep their values
+  carry_fixes_forward: false              # ... and the old wrong c, written again later as the same number (no other
+                                           # unit or % sign, not a computation's result, not quoted from the task), gets
+                                           # the fixed value, unless the request writes it; then the check runs once more
+                                           # (a later computation that used it is fixed); false: as before
   arithmetic_strict_parse: true            # read only a whole left side: a × 10ⁿ is one number (6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32),
                                            # a currency sign before a number is dropped, an expression with math right before
                                            # it (an operator, "(", ½, π, "half of", "million") or a scale suffix (1.3B, 20k)

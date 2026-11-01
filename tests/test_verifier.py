@@ -16,6 +16,7 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
+    carry_forward,
     code_check,
     echoes,
     fix_answer_lines,
@@ -1029,6 +1030,71 @@ def test_answer_line_follows_the_arithmetic_fix(cfg, fake, knowledge, on):
         r = chat(c)
     assert answer(r).endswith("A1: 2.80 g" if on else "A1: 3.80 g")
     assert ("answer line: 3.80 → 2.80" in reasoning_text(r)) is on
+
+
+# c10d: a fix carried forward to the later uses of the stale value (c7 cluster P), in free-form answers.
+def carried(draft, request="", task=""):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005, task=task)
+    applied = [f for f in fixes if "note" not in f]
+    out, trace = carry_forward(fixed, applied, request, task)
+    return out, trace, applied
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("The label says 350 kcal. 3 × 150 = 350 kcal, so 350 kcal in all.",  # not before the fix
+     "The label says 350 kcal. 3 × 150 = 450 kcal, so 450 kcal in all."),
+    ("E = 3 × 150 = 350 kcal. Then 350 kcal and 350 g, not 1350 kcal or 350.5 kcal.",  # units must match
+     "E = 3 × 150 = 450 kcal. Then 450 kcal and 350 g, not 1350 kcal or 350.5 kcal."),
+    ("share = 7 / 20 × 100 = 30 %. So 30 % of 30 bars.", "share = 7 / 20 × 100 = 35 %. So 35 % of 30 bars."),
+    ("n = 3 × 10 = 35. Then 35 % and 35 more.", "n = 3 × 10 = 30. Then 35 % and 30 more."),  # % vs plain
+    ("m = 0,5 × 7 = 3,6 г. Итого 3,6 г, а не 13,6 г или 3,65 г.",  # Russian decimal comma
+     "m = 0,5 × 7 = 3.5 г. Итого 3.5 г, а не 13,6 г или 3,65 г."),
+    ("E = 3 × 150 = 350 kcal. Left: 350 − 200 = 150 kcal.",  # a bare input of a later computation
+     "E = 3 × 150 = 450 kcal. Left: 450 − 200 = 150 kcal."),
+])
+def test_fix_carried_to_later_uses(draft, expected):
+    out, trace, fixes = carried(draft)
+    assert out == expected and fixes[0]["carried"] == len(trace) >= 1
+    old, new, expression = fixes[0]["stated"], fixes[0]["fixed"], fixes[0]["expression"]
+    assert trace[0] == f"> carried: {old} → {new} (after the fix of {expression} = {old})"
+
+
+@pytest.mark.parametrize("draft, asked, task, why", [
+    ("3 × 150 = 350 kcal. The label's 350 kcal is right.", "The label says 350 kcal per bar.", "",
+     "> not carried: 350 is in the request, maybe given data"),
+    ("3 × 150 = 350 kcal. The label says: one bar gives 350 kcal of energy per serving.", "",
+     "The label says: one bar gives 350 kcal of energy per serving. Check it.", ""),  # quoted from the task
+    ("3 × 150 = 350 kcal; 700 / 2 = 350 kcal.", "", "", ""),  # another computation's own result
+    ("3 × 150 = 350 kcal. Group sizes: 350, 120.", "", "", ""),  # a bare number in prose: maybe another quantity
+    ("a = 2 × 3 = 7, b = 2 × 4 = 7. So 7 in all.", "", "", "> not carried: 7 was fixed to 2 different values"),
+])
+def test_fix_not_carried(draft, asked, task, why):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005, task=task)
+    out, trace, applied = carried(draft, asked, task)
+    assert out == fixed and all(f["carried"] == 0 for f in applied)
+    assert all(t.startswith(why) for t in trace) and bool(trace) is bool(why)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("on", [True, False])
+async def test_carried_fix_recomputes_later_steps(cfg, fake, knowledge, on):
+    cfg.verifier.carry_fixes_forward = on
+    fake.chunks = [content("C1: not_said")]
+    question = "A bar has three portions of 150 kcal each, and a walk burns 200 kcal. How much energy is left?"
+    draft = ("Energy: 3 × 150 = 350 kcal.\nThe bar gives 350 kcal, so after the walk 350 − 200 = 150 kcal are left."
+             " So 150 kcal remain.")
+    items = [i async for i in Verifier(cfg, fake.client(cfg.model_backend), knowledge).verify(question, draft, Sources())]
+    result, steps = items[-1], "".join(i.get("reasoning_content", "") for i in items[:-1])
+    if on:  # one extra pass recomputes 450 − 200; its own fix is not carried again
+        assert result.answer == ("Energy: 3 × 150 = 450 kcal.\nThe bar gives 450 kcal, so after the walk"
+                                 " 450 − 200 = 250 kcal are left. So 150 kcal remain.")
+        assert steps.count("> carried: 350 → 450 (after the fix of 3 * 150 = 350)") == 2
+        assert [a.get("carried") for a in result.arithmetic] == [2, None] and result.arithmetic[1]["fixed"] == "250"
+    else:  # as before
+        assert result.answer == ("Energy: 3 × 150 = 450 kcal.\nThe bar gives 350 kcal, so after the walk"
+                                 " 350 − 200 = 150 kcal are left. So 150 kcal remain.")
+        assert "carried" not in steps and result.arithmetic == [
+            {"expression": "3 * 150", "stated": "350", "fixed": "450"}]
 # c4: false corrections from a misread left side.
 @pytest.mark.parametrize("draft", [
     "growth = ($52.10 − $48.00) / $48.00 × 100 = 8.5 %",
