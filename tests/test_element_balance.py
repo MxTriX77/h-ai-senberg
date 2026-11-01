@@ -52,6 +52,15 @@ def test_unbalanced_equations_rebalanced(draft, expected):
     "Fe3+ + 3OH- → Fe(OH)3",  # ions: not handled
     "ferulic acid → vanillin + acetic acid",  # names: not handled
     "2 + 3 = 5", "C = 12, H = 1, O = 16", "H2O = 18 g/mol", "pH = 7",
+    # recorded drafts that main rewrote (to 2Cl, 3S4 → 2S6, 2(CH₃)₂C=3CHCH₃):
+    "½ Cl₂(g) → Cl(g)",  # a fraction coefficient
+    "½ H2 + ½ Cl2 → HCl",
+    "Критический путь — работы с нулевым резервом: S1 → S2 → S4 → S6 → S8",  # a chain, not one reaction
+    "Removal gives 2-methyl-2-butene [(CH₃)₂C=CHCH₃], a trisubstituted alkene",  # a double bond
+    "CO2 is O=C=O",
+    "The Haber-Bosch synthesis (N₂ + 3H₂ ⇌ 2NH₃, ΔH° = -92.28 kJ/mol)",  # read from 3H₂ only: not the equation
+    "- He*(2³S₁) + Ne → He + Ne*(5s²) + ΔE",
+    "- Одна молекула альдегида восстанавливается (C=O → CH-OH)",
 ])
 def test_left_alone(draft):
     assert check(draft) == []

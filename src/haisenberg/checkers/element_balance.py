@@ -27,12 +27,14 @@ _SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")  # s
 _GROUP = r"(?:[A-Z][a-z]?\d*|\((?:[A-Z][a-z]?\d*)+\)\d*|\[(?:[A-Z][a-z]?\d*)+\]\d*)"
 _FORMULA = rf"{_GROUP}+(?:[·•∙*]\d*{_GROUP}+)*"
 _STATE = r"(?:\s?\((?:s|l|g|aq)\))?"
-_COEF = r"(?:\d+(?:\.\d+)?|\d+/\d+)"
+_VULGAR = {"½": "1/2", "⅓": "1/3", "⅔": "2/3", "¼": "1/4", "¾": "3/4"}  # ½ Cl₂ → Cl
+_COEF = rf"(?:\d+(?:\.\d+)?|\d+/\d+|[{''.join(_VULGAR)}])"
 _SPECIES_RE = re.compile(rf"(?:(?P<coef>{_COEF})(?P<gap>\s?))?(?P<formula>{_FORMULA})(?P<state>{_STATE})")
 _SPECIES = rf"(?:{_COEF}\s?)?{_FORMULA}{_STATE}"
 _SIDE = rf"{_SPECIES}(?:\s+\+\s+{_SPECIES})*"
-_ARROW = r"\s*(?:→|⟶|->|=>|⇌|⇄|↔|⇒|=)\s*"
-_EQUATION = re.compile(rf"(?<![\w(+\-−^])({_SIDE})({_ARROW})({_SIDE})(?![\w(^⁺⁻])")
+_ARROWS = r"→|⟶|->|=>|⇌|⇄|↔|⇒"
+_ARROW = rf"\s*(?:{_ARROWS}|=)\s*"
+_EQUATION = re.compile(rf"(?<![\w(+\-−^=])({_SIDE})({_ARROW})({_SIDE})(?![\w(^⁺⁻=\-])")  # not "C=O → CH-OH"
 _CHARGE = re.compile(r"[⁺⁻^]|[\w)][+−-](?=\s|$|[,.;)])|\be-")  # ions and electrons are not handled
 _LOSS = (r"loses|lose|losing|loss of|eliminat(?:es|ing|ion of)|releas(?:es|ing|e of)|splits? off|gives? off"
          r"|теря\w*|потер\w*|отщепл\w*|отщеп\w*")
@@ -179,9 +181,15 @@ def find_equations(text: str, labels: frozenset[str] = frozenset()) -> list[Equa
     used as labels (`find_labels`), which make an equation doubtful."""
     norm, out = text.translate(_SUBSCRIPTS), []
     for m in _EQUATION.finditer(norm):
-        end = norm.find("\n", m.end())
-        if _CHARGE.search(norm[norm.rfind("\n", 0, m.start()) + 1 : end if end >= 0 else len(norm)]):
+        start, end = norm.rfind("\n", 0, m.start()) + 1, norm.find("\n", m.end())
+        if _CHARGE.search(norm[start : end if end >= 0 else len(norm)]):
             continue
+        if m.group(2) == "=":  # "(CH₃)₂C=CHCH₃", "O=C=O": a double bond in a structural formula
+            continue
+        if re.search(rf"(?:{_ARROWS})\s*$", norm[start : m.start()]) or re.match(rf"\s*(?:{_ARROWS})", norm[m.end() :]):
+            continue  # one step of a chain "S1 → S2 → S4" (a path, a sequence): not one reaction
+        if re.search(r"\+\s*$", norm[start : m.start()]):
+            continue  # "(N₂ + 3H₂ ⇌ 2NH₃", "He*(2³S₁) + Ne → …": the left side starts before what was read
         sides = [_species(text, norm, m.start(1), m.end(1)), _species(text, norm, m.start(3), m.end(3))]
         if None in sides or (m.group(2).strip() == "=" and not _chemical(sides)):
             continue
@@ -221,7 +229,7 @@ def _species(text: str, norm: str, start: int, end: int) -> list[Species] | None
         if counts is None:
             return None
         formula = text[pos + m.start("formula") : pos + m.end("formula")]  # as written (subscripts kept)
-        coef = Fraction(m.group("coef")) if m.group("coef") else Fraction(1)
+        coef = Fraction(_VULGAR.get(m.group("coef"), m.group("coef"))) if m.group("coef") else Fraction(1)
         out.append(Species(coef, formula, counts, m.group("state"), m.group("gap") if m.group("coef") else None))
         pos += len(part)
     return out
