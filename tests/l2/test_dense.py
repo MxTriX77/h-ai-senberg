@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import zlib
 
+import faiss
 import numpy as np
 import pytest
 
@@ -166,6 +167,11 @@ def test_index_finds_a_passage_from_its_own_vector(l2_store, store, tmp_path, fa
     hits = index.search(vector, rerank=5)
     assert hits[0][0] == 7 and hits[0][1] == pytest.approx(1, abs=1e-3)
     assert [s for _, s in hits] == sorted((s for _, s in hits), reverse=True)
+
+
+def test_open_searches_on_one_thread(dense_dir, store):
+    DenseIndex(dense_dir, MODEL["model_id"], store, 1)
+    assert faiss.omp_get_max_threads() == 1  # spinning OpenMP threads would starve the embedding server
 
 
 # --- opening ---
