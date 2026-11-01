@@ -398,8 +398,8 @@ def carry_forward(draft: str, fixes: list[dict[str, str]], request: str, task: s
     written number (see _number_spans), a % sign is after both or neither, a unit word written after both is the
     same (a bare number matches: later computations write their inputs bare), it is not the stated result of a
     computation (that follows from its own left side) and, with the `task`, it is not quoted from it (see quoted).
-    Nothing is carried for a fix whose old value the request writes (it may be given data) or an old value fixed
-    to two values. Sets `carried` (the number of occurrences replaced) on every fix."""
+    Nothing is carried for a fix whose old value the request writes (it may be given data), an old value fixed
+    to two values, or one that another computation of the draft states as its result. Sets `carried` (the number of occurrences replaced) on every fix."""
     found = list(find_arithmetic(draft, bool(re.search("[А-Яа-яЁё]", draft)), strict))
     results, mask = {a.result_at for a in found}, quoted(draft, task) if task else []
     ways: dict[str, set[str]] = {}
@@ -415,6 +415,10 @@ def carry_forward(draft: str, fixes: list[dict[str, str]], request: str, task: s
             continue
         if len(ways[old]) > 1:
             trace.append(f"> not carried: {old} was fixed to {len(ways[old])} different values {after}")
+            continue
+        also = next((a for a in found if a.result_at in {s for s, _ in _number_spans(draft, old)}), None)
+        if also:  # the same number is the (right) result of another computation: a later use may mean that one
+            trace.append(f"> not carried: {old} is also the result of {also.expression} {after}")
             continue
         at = next((a.result_at + len(new) for a in found
                    if a.expression == f["expression"] and draft.startswith(new, a.result_at)), None)

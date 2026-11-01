@@ -1121,10 +1121,14 @@ def test_fix_carried_to_later_uses(draft, expected):
      "> not carried: 350 is in the request, maybe given data"),
     ("3 × 150 = 350 kcal. The label says: one bar gives 350 kcal of energy per serving.", "",
      "The label says: one bar gives 350 kcal of energy per serving. Check it.", ""),  # quoted from the task
-    ("3 × 150 = 350 kcal; 700 / 2 = 350 kcal.", "", "", ""),  # another computation's own result
+    ("3 × 150 = 350 kcal; 700 / 2 = 350 kcal.", "", "", "> not carried: 350 is also the result of 700 / 2"),
     ("3 × 150 = 350 kcal. Group sizes: 350, 120.", "", "", ""),  # a bare number in prose: maybe another quantity
     ("a = 2 × 3 = 7, b = 2 × 4 = 7. So 7 in all.", "", "", "> not carried: 7 was fixed to 2 different values"),
     ("Cost: 4 × 4 = 17. Meet at 17:00, or at 9:17.", "", "", ""),  # a clock time's hour or minutes: not the value
+    ("- Path 2: S1 → S3 → S4 → S6 → S8 = 3 + 2 + 6 + 3 + 1 = 14 days\n"  # recorded c02-s5-04: 14 is also path 3's
+     "- Path 3: S1 → S3 → S5 → S6 → S8 = 3 + 2 + 5 + 3 + 1 = 14 days\n"  # right total, so a later 14 may mean that
+     "S5 is on path 3 with duration 14 days.", "", "",
+     "> not carried: 14 is also the result of 3 + 2 + 5 + 3 + 1"),
 ])
 def test_fix_not_carried(draft, asked, task, why):
     fixed, fixes, _ = fix_arithmetic(draft, 0.005, task=task)
