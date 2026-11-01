@@ -242,10 +242,14 @@ class EvidenceConfig(_Section):
     ledger_prompt: str
     repair_prompt: str  # {missing}: the listed ids without an entry
     writer_prompt: str
+    independent: bool  # also one judgment per listed item in its own call, without the draft or the ledger
+    independent_max_items: PositiveInt  # at most this many items get one
+    item_prompt: str  # {id}, {text}: the item to judge
     ledger_request: dict[str, Any] = {}  # fields merged into the ledger and repair calls
     writer_request: dict[str, Any] = {}  # fields merged into the writer call
+    item_request: dict[str, Any] = {}  # fields merged into each independent judgment call
 
-    @field_validator("ledger_prompt", "repair_prompt", "writer_prompt")
+    @field_validator("ledger_prompt", "repair_prompt", "writer_prompt", "item_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():
@@ -257,6 +261,13 @@ class EvidenceConfig(_Section):
     def _names_missing(cls, v: str) -> str:
         if "{missing}" not in v:
             raise ValueError("must contain {missing}")
+        return v
+
+    @field_validator("item_prompt")
+    @classmethod
+    def _names_the_item(cls, v: str) -> str:
+        if "{id}" not in v or "{text}" not in v:
+            raise ValueError("must contain {id} and {text}")
         return v
 
 

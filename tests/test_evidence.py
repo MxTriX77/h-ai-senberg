@@ -1,15 +1,16 @@
 """Evidence ledger (evidence-protocol spec): listed items, ledger parsing, the status rules R-a … R-e (with the c7
-shapes), coverage repair, the writer, the fallbacks, and the unchanged path when it is off or not triggered."""
+shapes), coverage repair, the writer, the fallbacks, the unchanged path when it is off or not triggered, and the
+independent judgment per item (R-f)."""
 
 import json
 
 import pytest
 
-from conftest import CONNECT_ERROR, content
+from conftest import CONNECT_ERROR, content, reasoning
 from haisenberg.agent import DRAFT_MARK, Agent, _tool_results
 from haisenberg.evidence import (
-    CONTRADICTED, ESTABLISHED, HYPOTHESIS, UNVERIFIED, Entry, Evidence, Settled, key, listed_items, parse_ledger,
-    settle,
+    CONTRADICTED, ESTABLISHED, HYPOTHESIS, UNVERIFIED, Entry, Evidence, Settled, compare, key, listed_items,
+    parse_entry, parse_ledger, settle,
 )
 from haisenberg.config import load_config
 from haisenberg.tools import Knowledge
@@ -339,3 +340,172 @@ def test_tool_results_text():
                 {"role": "tool", "tool_call_id": "call_0", "content": "2*3 = 6"}]
     assert _tool_results(messages) == '> calculate(expressions=["2*3"])\n2*3 = 6'
     assert _tool_results(messages[:1]) == ""
+
+
+# --- independent judgment (R-f) -------------------------------------------------------------------
+
+
+def judged(i, status, asserts="fact", support=(), against=(), strong=True, **kw):
+    """An independent reply: thinking, a few words, then the entry as fenced JSON."""
+    return [reasoning(f"Let me work {i} out {{step by step}}."),
+            content(f"About {i}: see below.\n```json\n"
+                    + json.dumps(item(i, status, asserts, support, against, strong, **kw)) + "\n```")]
+
+
+AGREE = [judged("C1", "established", support=("given",)),
+         judged("C2", "contradicted", "proof", support=("given",), strong=False),
+         judged("C3", "contradicted", "computed", against=("computation",))]
+
+
+async def run_independent(cfg, fake, text=TASK):
+    cfg.evidence.independent = True
+    return await run(cfg, fake, text)
+
+
+@pytest.mark.anyio
+async def test_independent_agreement_changes_nothing_and_writes_nothing(cfg, fake):
+    fake.scripts = [[content(DRAFT)], [content(SETTLED)], *AGREE]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == DRAFT and len(fake.requests) == 5  # draft, ledger, one call per item, no writer
+    assert "Independent judgment: 3 items, one call each" in trace and "3 judged independently, 0 disagree" in trace
+    led = report["ledger"]
+    assert led["disagreements"] == 0 and led["independent_calls"] == 3 and led["written"] is False
+    assert led["items"][1] == {"id": "C2", "asserts": "proof", "claimed": "contradicted", "status": "contradicted",
+                               "rule": "", "independent": {"status": "contradicted", "claimed": "contradicted",
+                                                           "rule": ""}}
+
+
+@pytest.mark.anyio
+async def test_independent_disagreement_makes_the_item_unverified_and_the_writer_runs(cfg, fake):
+    written = "C1 cannot be confirmed. C2 is false. C3 is false: 2 × 3 = 6."
+    fake.scripts = [[content(DRAFT)], [content(SETTLED)], judged("C1", "unverified"), *AGREE[1:], [content(written)]]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == written and len(fake.requests) == 6
+    assert "Evidence: C1 unverified (independent judgment disagrees: unverified; model said established)" in trace
+    assert ("C1: statement C1\n  status: unverified (settled by the rules: independent judgment disagrees: unverified;"
+            " the ledger first said established)") in fake.bodies[5]["messages"][1]["content"]
+    led = report["ledger"]
+    assert led["items"][0] == {"id": "C1", "asserts": "fact", "claimed": "established", "status": "unverified",
+                               "rule": "R-f", "independent": {"status": "unverified", "claimed": "unverified",
+                                                              "rule": ""}}
+    assert led["disagreements"] == 1 and led["written"] is True
+
+
+def test_compare_rf_then_re():
+    a, b = entry("A", strong_enough=True), entry("B", depends_on=["A"], strong_enough=True)
+    c = entry("C", status=UNVERIFIED, support=())
+    own = {"a": entry("A", status=UNVERIFIED, support=()), "b": entry("B", strong_enough=True),
+           "c": entry("C", status=CONTRADICTED, against=("given",)), "d": entry("D", status=HYPOTHESIS)}
+    entries = [a, b, c]
+    disagree, added = compare(entries, own)
+    assert (disagree, [e.id for e in added]) == (2, ["D"]) and entries[-1] is own["d"]
+    assert [(e.id, e.status, e.rule) for e in (a, b, c)] == [
+        ("A", UNVERIFIED, "R-f"), ("B", UNVERIFIED, "R-e"), ("C", UNVERIFIED, "")]  # C was already not settled
+    assert a.why == "independent judgment disagrees: unverified"
+
+
+@pytest.mark.anyio
+async def test_a_missing_ledger_item_takes_its_independent_entry(cfg, fake):
+    first = ledger(item("C1", "established", support=("given",)),
+                   item("C2", "contradicted", "proof", support=("given",), strong=False))
+    fake.scripts = [[content(DRAFT)], [content(first)], [content("sorry")], *AGREE, [content("written")]]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == "written" and len(fake.requests) == 7  # draft, ledger, repair, 3 items, writer
+    assert "still no entry for C3 (not yet judged)" in trace and "C3 judged independently only" in trace
+    told = fake.bodies[6]["messages"][1]["content"]
+    assert "C3: statement C3\n  status: contradicted\n  against (computation): e\n" in told
+    assert "Not yet judged" not in told and report["ledger"]["missing"] == []
+    assert report["ledger"]["items"][2] == {"id": "C3", "asserts": "computed", "claimed": "contradicted",
+                                            "status": "contradicted", "rule": "", "independent": {
+                                                "status": "contradicted", "claimed": "contradicted", "rule": ""}}
+
+
+@pytest.mark.anyio
+async def test_independent_calls_never_see_the_draft_or_the_ledger(cfg, fake):
+    fake.scripts = [[content(SETTLED)], *AGREE]
+    cfg.evidence.independent = True
+    tools = "> calculate(expressions=[\"2*3\"])\n2*3 = 6"
+    settled, _ = await settle_run(evidence(cfg, fake), tools=tools)
+    assert settled.answer == DRAFT and len(fake.requests) == 4
+    for n, (iid, text) in enumerate(listed_items(TASK), 1):
+        body = fake.bodies[n]
+        system, user = (m["content"] for m in body["messages"])
+        assert system == cfg.evidence.item_prompt.replace("{id}", iid).replace("{text}", text)
+        assert user == f"Conversation:\nuser: {TASK}\n\nTool results:\n{tools}"
+        assert DRAFT not in system + user and SETTLED not in system + user and "Draft answer" not in user
+        assert "response_format" not in body and "chat_template_kwargs" not in body  # thinking on, no JSON mode
+        assert body["temperature"] == cfg.model_backend.temperature  # the model's default request
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_or_failed_independent_reply_is_ignored(cfg, fake):
+    fake.scripts = [[content(DRAFT)], [content(SETTLED)], [content("C1 looks fine to me.")], CONNECT_ERROR,
+                    judged("C3", "maybe")]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == DRAFT and len(fake.requests) == 5
+    assert "C1: no readable independent judgment (no JSON object with a status); ignored" in trace
+    assert "C2: no readable independent judgment (failed: backend unreachable" in trace
+    led = report["ledger"]
+    assert [i["independent"] for i in led["items"]] == [None, None, None] and led["disagreements"] == 0
+    assert led["independent_calls"] == 3
+
+
+@pytest.mark.anyio
+async def test_independent_cap_and_skipped_items(cfg, fake):
+    cfg.evidence.independent_max_items = 1
+    first = ledger(item("C1", "established", support=("given",)),
+                   item("C3", "contradicted", "computed", against=("computation",)), skipped=[{"id": "C2"}])
+    fake.scripts = [[content(DRAFT)], [content(first)], AGREE[0]]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == DRAFT and len(fake.requests) == 3  # C2 is skipped, C3 is over the limit
+    assert "Independent judgment: 1 items, one call each\n- C3: over the limit of 1; the ledger's judgment stays" in trace
+    assert [i["independent"] is None for i in report["ledger"]["items"]] == [False, True]
+
+
+@pytest.mark.anyio
+async def test_independent_off_is_the_ledger_alone(cfg, fake):
+    fake.scripts = [[content(DRAFT)], [content(V2)], [content("written")]]
+    off_answer, off_trace, off_report, _ = await run(cfg, fake)
+    off_bodies = fake.bodies
+    fake.requests.clear()
+    fake.scripts = [[content(DRAFT)], [content(V2)], *AGREE, [content("written")]]
+    on_answer, on_trace, _, _ = await run_independent(cfg, fake)
+    assert len(off_bodies) == 3 and fake.bodies[:2] == off_bodies[:2] and off_answer == on_answer == "written"
+    assert "independent_calls" not in off_report["ledger"] and "independent" not in off_report["ledger"]["items"][0]
+    section = on_trace[on_trace.index("Independent judgment"):on_trace.index("Evidence: C2")]
+    assert "Independent judgment" not in off_trace and on_trace.replace(section, "") == off_trace
+
+
+@pytest.mark.anyio
+async def test_independent_ids_in_russian(cfg, fake):
+    task = "Оцените утверждения:\nУ1) Партия весила 5 кг.\nУ2) Одна партия гарантирует выход 85 %.\nУ3) 2 × 3 = 7."
+    draft = "У1 верно. У2 верно. У3 неверно."
+    first = ledger(item("У1", "established", support=("given",)), item("У2", "established", support=("given",)),
+                   item("У3", "contradicted", "computed", against=("computation",)))
+    # У2's own judgment: a proof stem and evidence that can't give it → contradicted by R-b; the ledger said
+    # established: the two differ, so У2 is not settled. The ids in the replies are misspelt: the item's id wins.
+    fake.scripts = [[content(draft)], [content(first)], judged("Y1", "established", support=("given",)),
+                    judged("y2", "established", statement="Одна партия гарантирует выход 85 %.", support=("given",),
+                           strong=False),
+                    judged("У3", "contradicted", "computed", against=("computation",)), [content("переписано")]]
+    answer, trace, report, _ = await run_independent(cfg, fake, task)
+    assert answer == "переписано" and fake.bodies[3]["messages"][0]["content"].startswith(
+        "Judge one item of the user's last message, У2: Одна партия гарантирует выход 85 %.\n")
+    assert "Evidence: У2 unverified (independent judgment disagrees: contradicted; model said established)" in trace
+    led = report["ledger"]
+    assert [i["id"] for i in led["items"]] == ["У1", "У2", "У3"] and led["disagreements"] == 1
+    assert led["items"][1]["independent"] == {"status": "contradicted", "claimed": "established", "rule": "R-b"}
+
+
+def test_parse_entry():
+    listed = [("C1", "x"), ("C2", "the batch guarantees it")]
+    reply = "Work: {a} and \\frac{1}{2}.\n```json\n" + json.dumps(
+        {"id": "nonsense", "status": "Established", "for": [{"evidence": "e", "from": "given"}],
+         "depends_on": ["c1"], "strong_enough": True}) + "\n```\nDone."
+    e = parse_entry(reply, ("C2", "the batch guarantees it"), listed)
+    assert (e.id, e.statement, e.status, e.claimed, e.depends_on, e.strong_enough) == (
+        "C2", "the batch guarantees it", ESTABLISHED, ESTABLISHED, ["C1"], True)
+    one = parse_entry(ledger(item("C9", "contradicted", against=("given",))), ("C1", "x"), listed)
+    assert (one.id, one.status, one.statement) == ("C1", CONTRADICTED, "statement C9")  # a one-item ledger
+    for bad in ("no json", '{"status": "maybe"}', '{"items": []}', '{"id": "C1"}', '{"status": "est'):
+        assert parse_entry(bad, ("C1", "x"), listed) is None

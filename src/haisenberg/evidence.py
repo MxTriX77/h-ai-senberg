@@ -5,8 +5,10 @@ what it asserts, the evidence for and against it (with where each piece comes fr
 dependencies and a status. Rules in code then settle each status from that record, whatever the model said
 (`settle`). When the rules change nothing and every listed item has an entry, the draft stays the answer;
 otherwise one writer call writes the answer from the settled ledger and the draft. Without a readable ledger,
-on an upstream error or an empty writer reply the draft stays, unchanged. Nothing here names a subject or holds
-language data: prompts and trigger words live in config (`evidence`)."""
+on an upstream error or an empty writer reply the draft stays, unchanged. With `evidence.independent`, each
+listed item is also judged in its own call (thinking on, without the draft or the ledger) and settled by the same
+rules; where the two settled statuses differ, the item is not settled: unverified (R-f). Nothing here names a
+subject or holds language data: prompts and trigger words live in config (`evidence`)."""
 
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ PROOF = "proof"
 ASSERTS = ("fact", "cause", "forecast", "computed", PROOF)
 HARD = ("given", "source", "computation")  # where evidence can settle an item from
 PROVENANCE = (*HARD, "knowledge", "assumption")
+TOO_LONG = "too long for the context"
 
 # A listed item: a line that starts with an id (`1.`, `(2)`, `a)`, `C1.`, `У3)`, `S4:`, also after a bullet,
 # Markdown emphasis or one word: `Claim A:`), or a bulleted line without one (`- …`, `* …`, `• …`).
@@ -181,6 +184,12 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
             _set(e, HYPOTHESIS, "R-d", "it rests only on assumptions")
         elif e.status == ESTABLISHED and not e.strong_enough:
             _set(e, UNVERIFIED, "R-d", "the evidence falls short of the statement's full strength")
+    propagate(entries)
+    return [e for e in entries if e.status != e.claimed]
+
+
+def propagate(entries: list[Entry]) -> None:
+    """R-e to a fixed point: an established entry built on an entry that is not established → unverified."""
     by_key = {key(e.id): e for e in entries}
     changed = True
     while changed:  # only lowers established, so it ends
@@ -192,7 +201,47 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
                 d = by_key[key(weak[0])]
                 _set(e, UNVERIFIED, "R-e", f"it depends on {d.id}, which is {d.status}")
                 changed = True
-    return [e for e in entries if e.status != e.claimed]
+
+
+def parse_entry(text: str, item: tuple[str, str], listed: list[tuple[str, str]]) -> Entry | None:
+    """The entry for one item from a reply that ends with a JSON object (text or code fences around it allowed;
+    also a one-item ledger `{"items": [...]}`); None without an object or a known status. The id is the item's,
+    whatever the object says; without a statement, the item's text."""
+    raw = _last_object(text)
+    if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+        raw = next((r for r in raw["items"] if isinstance(r, dict)), None)
+    if not isinstance(raw, dict) or str(raw.get("status") or "").strip().lower() not in STATUSES:
+        return None
+    iid, statement = item
+    return _entry({**raw, "id": iid, "statement": raw.get("statement") or statement}, {key(i): i for i, _ in listed})
+
+
+def _last_object(text: str) -> Any:
+    """The last top-level JSON object in the text, or None."""
+    decoder, found, at = json.JSONDecoder(), None, text.find("{")
+    while at >= 0:
+        try:
+            found, end = decoder.raw_decode(text, at)
+        except json.JSONDecodeError:
+            end = at + 1
+        at = text.find("{", end)
+    return found
+
+
+def compare(entries: list[Entry], own: dict[str, Entry]) -> tuple[int, list[Entry]]:
+    """R-f: an item whose independent settled status differs from the ledger's is not settled → unverified; an
+    item without a ledger entry takes its independent one. Then R-e again. (disagreements, entries added)."""
+    by_key = {key(e.id): e for e in entries}
+    disagree, added = 0, []
+    for k, o in own.items():
+        if (e := by_key.get(k)) is None:
+            entries.append(o)
+            added.append(o)
+        elif o.status != e.status:
+            disagree += 1
+            _set(e, UNVERIFIED, "R-f", f"independent judgment disagrees: {o.status}")
+    propagate(entries)
+    return disagree, added
 
 
 _FROM = {"given": "the given material", "source": "a source", "computation": "a computation"}
@@ -237,10 +286,24 @@ class Settled:
     report: dict[str, Any]  # verification.ledger
 
 
-def _report(entries: list[Entry], skipped: list[str], gone: list[str], written: bool, fallback: str = "") -> dict:
-    return {"items": [{"id": e.id, "asserts": e.asserts, "claimed": e.claimed, "status": e.status, "rule": e.rule}
-                      for e in entries],
-            "skipped": skipped, "missing": gone, "written": written, "fallback": fallback}
+@dataclass
+class _Independent:
+    own: dict[str, Entry] = field(default_factory=dict)  # settled independent entries by key
+    calls: int = 0
+    disagreements: int = 0
+
+
+def _report(entries: list[Entry], skipped: list[str], gone: list[str], written: bool, fallback: str = "",
+            ind: _Independent | None = None) -> dict:
+    items = [{"id": e.id, "asserts": e.asserts, "claimed": e.claimed, "status": e.status, "rule": e.rule}
+             for e in entries]
+    report = {"items": items, "skipped": skipped, "missing": gone, "written": written, "fallback": fallback}
+    if ind is not None:
+        for e, item in zip(entries, items):
+            o = ind.own.get(key(e.id))
+            item["independent"] = {"status": o.status, "claimed": o.claimed, "rule": o.rule} if o else None
+        report |= {"disagreements": ind.disagreements, "independent_calls": ind.calls}
+    return report
 
 
 def text_of(content: Any) -> str:
@@ -271,7 +334,7 @@ class Evidence:
     async def _ask(self, messages: list[dict[str, Any]], request: dict[str, Any]) -> tuple[str | None, str]:
         """(reply, problem): the reply text, or None and why there is none."""
         if not self._fits(messages, request):
-            return None, "too long for the context"
+            return None, TOO_LONG
         try:
             return await complete(self.llm, messages, request), ""
         except (UpstreamError, httpx.HTTPError) as e:
@@ -311,11 +374,21 @@ class Evidence:
                 skipped += [s for s in extra[1] if key(s) in wanted]
             if gone := missing(entries, skipped, items):
                 yield _say(f"- still no entry for {', '.join(gone)} (not yet judged)\n")
-        if changed := settle(entries, self.cfg.strong_words):
+        changed, ind, added = settle(entries, self.cfg.strong_words), None, []
+        if self.cfg.independent:
+            ind = _Independent()
+            async for line in self._independent(conversation, items, skipped, tools, ind):
+                yield line
+            ind.disagreements, added = compare(entries, ind.own)
+            gone = [i for i in gone if key(i) not in ind.own]
+            changed = [e for e in entries if e.status != e.claimed]
+            yield _say(f"- {len(ind.own)} judged independently, {ind.disagreements} disagree with the ledger"
+                       + (f"; {', '.join(e.id for e in added)} judged independently only" if added else "") + "\n")
+        if changed:
             yield _say("".join(f"Evidence: {e.id} {e.status} ({e.why}; model said {e.claimed})\n" for e in changed))
-        elif not gone:
+        elif not gone and not added:
             yield _say(f"- {len(entries)} items, no status changed: the answer stays as drafted\n")
-            yield Settled(draft, _report(entries, skipped, gone, False))
+            yield Settled(draft, _report(entries, skipped, gone, False, ind=ind))
             return
 
         messages = [{"role": "system", "content": self.cfg.writer_prompt},
@@ -326,7 +399,7 @@ class Evidence:
         if not answer:
             why = f"no answer written ({problem or 'empty reply'})"
             yield _say(f"- {why}; the answer stays as drafted\n")
-            yield Settled(draft, _report(entries, skipped, gone, False, why))
+            yield Settled(draft, _report(entries, skipped, gone, False, why, ind))
             return
         yield _say("- answer written from the settled ledger\n")
         if self.checks:
@@ -341,4 +414,34 @@ class Evidence:
             lines += [f"- {c['checker']}: {c['text']!r} → {c['fixed']!r}\n" for c in found if c["fixed"] is not None]
             if lines:
                 yield _say("".join(lines))
-        yield Settled(answer, _report(entries, skipped, gone, True))
+        yield Settled(answer, _report(entries, skipped, gone, True, ind=ind))
+
+    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str], tools: str,
+                           ind: _Independent) -> AsyncIterator[dict]:
+        """Judge each listed item the ledger did not skip (up to `independent_max_items`) in its own call, from
+        the conversation and the tool results only (never the draft or the ledger); settle the entries by the
+        same rules into `ind.own`. An unreadable or failed reply leaves that item out."""
+        done, cap = {key(s) for s in skipped}, self.cfg.independent_max_items
+        todo = [i for i in items if key(i[0]) not in done]
+        yield _say(f"Independent judgment: {len(todo[:cap])} items, one call each\n")
+        if rest := todo[cap:]:
+            yield _say(f"- {', '.join(i for i, _ in rest)}: over the limit of {cap}; the ledger's judgment stays\n")
+        material = f"Conversation:\n{conversation}"
+        full, dropped = material + (f"\n\nTool results:\n{tools}" if tools else ""), False
+        for item in todo[:cap]:
+            prompt = self.cfg.item_prompt.replace("{id}", item[0]).replace("{text}", item[1])
+            messages = [{"role": "system", "content": prompt}, {"role": "user", "content": full}]
+            if tools and not self._fits(messages, self.cfg.item_request):
+                messages[1]["content"] = material
+                if not dropped:
+                    dropped = True
+                    yield _say("- tool results left out (context budget)\n")
+            reply, problem = await self._ask(messages, self.cfg.item_request)
+            if problem != TOO_LONG:
+                ind.calls += 1
+            if (e := parse_entry(reply, item, items) if reply is not None else None) is None:
+                yield _say(f"- {item[0]}: no readable independent judgment ({problem or 'no JSON object with a status'})"
+                           "; ignored\n")
+            else:
+                ind.own[key(e.id)] = e
+        settle(list(ind.own.values()), self.cfg.strong_words)

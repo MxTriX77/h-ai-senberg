@@ -296,7 +296,44 @@ evidence:                                  # evidence ledger (D-032): verdicts s
     - Add no evidence, numbers or sources that are not in the ledger or the draft.
     Write only the answer, in the language of the request, without the ledger, its field names, rule names or
     remarks about this rewrite.
-  ledger_request:                          # fields merged into the ledger and repair calls (per-model quirks, D-013)
+  independent: false                       # also judge each listed item in its own call, without the draft or the
+                                           # ledger; a different settled status makes the item unverified (R-f).
+                                           # Needs enabled; the arm profile qwen3.5-9b-evidence-independent turns it on
+  independent_max_items: 10                # items past this many keep the ledger's judgment
+  item_prompt: |
+    Judge one item of the user's last message, {id}: {text}
+    Judge only this item, as the message states it; the other items are context. Use the data the request gives,
+    the tool results (if any) and your own calculations, worked out step by step. General knowledge counts only as
+    "knowledge", never as given material or a source.
+    Work out:
+    - asserts: what the item claims: fact (something is or was so), cause (something causes, explains or results
+      in something), forecast (what will happen), computed (a value worked out from data), or proof (the evidence
+      proves, guarantees, confirms, establishes or validates something, or makes it independent, universal or
+      true in every case).
+    - for / against: the evidence that the item is true / that it is false, each {"evidence", "from"}, from one
+      of: given (stated in the material), source (a tool result), computation (a calculation from the given data
+      or a tool result), knowledge (general knowledge, not checked here), assumption (assumed, not shown).
+      "against" is only evidence that the item is false: that something is not shown, or that the evidence falls
+      short, is a gap, never evidence against. A calculation done right on a wrong input is evidence against the
+      item that rests on it: name the right input and what it gives.
+    - assumptions: what the item needs that nothing here shows; gaps: material the request refers to but does not
+      include (an attached report, a certificate, a full paper, a dataset), only that, not evidence that would be
+      needed in general.
+    - depends_on: ids of other listed items this one builds on.
+    - strong_enough: true only when the evidence for supports the item at its full strength: every scope word
+      (all, any, every, always, never), every guarantee and every causal link. A ratio, a correlation, a timing,
+      one example or one batch never supports a cause, a forecast or a general rule at full strength. That the
+      material says something shows that it says so, not that it is true; a check of something by itself is not
+      independent.
+    - status: established (the evidence for settles it at full strength and nothing is against it), contradicted
+      (the material, a source or a computation shows it false, or it claims a proof the evidence cannot give),
+      unverified (the evidence here does not settle it either way), or hypothesis (a possible explanation that
+      nothing here shows).
+    - reason: one sentence: why this status.
+    Write the text fields in the language of the message. End the reply with one JSON object, nothing after it:
+    {"id": "{id}", "statement": "", "asserts": "fact", "for": [{"evidence": "", "from": "given"}], "against": [],
+    "assumptions": [], "gaps": [], "depends_on": [], "strong_enough": false, "status": "unverified", "reason": ""}
+  ledger_request:                        # fields merged into the ledger and repair calls (per-model quirks, D-013)
     temperature: 0.0
     max_tokens: 3072
     response_format: {type: json_object}   # OpenAI JSON mode; llama-server turns it into a JSON grammar
@@ -305,6 +342,8 @@ evidence:                                  # evidence ledger (D-032): verdicts s
     temperature: 0.2
     max_tokens: 4096                       # the whole answer again
     chat_template_kwargs: {enable_thinking: false}
+  item_request: {}                         # fields merged into each independent judgment call: the model's default
+                                           # request, thinking on (its own reasoning-budget per item), no JSON mode
 
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend
