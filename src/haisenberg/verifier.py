@@ -395,11 +395,13 @@ def carry_forward(draft: str, fixes: list[dict[str, str]], request: str, task: s
                   strict: bool = True) -> tuple[str, list[str]]:
     """(the draft with the old value of each applied arithmetic fix replaced by the fixed one wherever the draft
     writes it again after the fixed computation, the trace lines). An occurrence is replaced when it is the same
-    written number (see _number_spans), a % sign is after both or neither, a unit word written after both is the
-    same (a bare number matches: later computations write their inputs bare), it is not the stated result of a
-    computation (that follows from its own left side) and, with the `task`, it is not quoted from it (see quoted).
-    Nothing is carried for a fix whose old value the request writes (it may be given data), an old value fixed
-    to two values, or one that another computation of the draft also gives (within rounding). Sets `carried` (the number of occurrences replaced) on every fix."""
+    written number (see _number_spans), a % sign is after both or neither, it has the fixed result's unit word (a
+    unit there, the same word here) or is a bare input of a written computation (`=` after it on its line: later
+    computations write their inputs bare), it is not the stated result of a computation (that follows from its own
+    left side) and, with the `task`, it is not quoted from it (see quoted). A bare number in prose or one with
+    another unit (`7 days`, `Table 4`) may be another quantity: never carried. Nothing is carried for a fix whose
+    old value the request writes (it may be given data), an old value fixed to two values, or one that another
+    computation of the draft also gives (within rounding). Sets `carried` (the occurrences replaced) on every fix."""
     comma = bool(re.search("[А-Яа-яЁё]", draft))
     found = list(find_arithmetic(draft, comma, strict))
     results, mask = {a.result_at for a in found}, quoted(draft, task) if task else []
@@ -432,7 +434,7 @@ def carry_forward(draft: str, fixes: list[dict[str, str]], request: str, task: s
             other = _unit_at(draft, e)
             if (s >= at and s not in results and (s, e) not in spans and not (mask and all(mask[s:e]))
                     and (unit == "%") == (other == "%")
-                    and (not unit or unit == other or (not other and "=" in draft[e : _line_end(draft, e)]))):
+                    and ((unit and unit == other) or (not other and "=" in draft[e : _line_end(draft, e)]))):
                 spans[s, e] = new
                 f["carried"] += 1
                 trace.append(f"> carried: {old} → {new} {after}")

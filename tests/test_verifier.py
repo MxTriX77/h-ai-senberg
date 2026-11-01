@@ -1103,7 +1103,7 @@ def carried(draft, request="", task=""):
     ("E = 3 × 150 = 350 kcal. Then 350 kcal and 350 g, not 1350 kcal or 350.5 kcal.",  # units must match
      "E = 3 × 150 = 450 kcal. Then 450 kcal and 350 g, not 1350 kcal or 350.5 kcal."),
     ("share = 7 / 20 × 100 = 30 %. So 30 % of 30 bars.", "share = 7 / 20 × 100 = 35 %. So 35 % of 30 bars."),
-    ("n = 3 × 10 = 35. Then 35 % and 35 more.", "n = 3 × 10 = 30. Then 35 % and 30 more."),  # % vs plain
+    ("n = 3 × 10 = 35. Then 35 % and 35 + 5 = 40.", "n = 3 × 10 = 30. Then 35 % and 30 + 5 = 40."),  # % vs plain
     ("m = 0,5 × 7 = 3,6 г. Итого 3,6 г, а не 13,6 г или 3,65 г.",  # Russian decimal comma
      "m = 0,5 × 7 = 3.5 г. Итого 3.5 г, а не 13,6 г или 3,65 г."),
     ("E = 3 × 150 = 350 kcal. Left: 350 − 200 = 150 kcal.",  # a bare input of a later computation
@@ -1125,6 +1125,9 @@ def test_fix_carried_to_later_uses(draft, expected):
     ("3 × 150 = 350 kcal. Group sizes: 350, 120.", "", "", ""),  # a bare number in prose: maybe another quantity
     ("a = 2 × 3 = 7, b = 2 × 4 = 7. So 7 in all.", "", "", "> not carried: 7 was fixed to 2 different values"),
     ("Cost: 4 × 4 = 17. Meet at 17:00, or at 9:17.", "", "", ""),  # a clock time's hour or minutes: not the value
+    ("Boxes: 2 × 3 = 7. A week has 7 days, so we ship on day 7.", "", "", ""),  # a bare result: other quantities
+    ("Score: 12 / 4 = 4. Table 4 lists 4 teams; step 4 is the last.", "", "", ""),  # and labels keep their numbers
+    ("x = 2 × 6 = 13\n\n## 13. Next section", "", "", ""),
     ("- Path 2: S1 → S3 → S4 → S6 → S8 = 3 + 2 + 6 + 3 + 1 = 14 days\n"  # recorded c02-s5-04: 14 is also path 3's
      "- Path 3: S1 → S3 → S5 → S6 → S8 = 3 + 2 + 5 + 3 + 1 = 14 days\n"  # right total, so a later 14 may mean that
      "S5 is on path 3 with duration 14 days.", "", "",
