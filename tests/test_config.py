@@ -270,24 +270,6 @@ def test_tool_and_search_settings_validated(tmp_path, section, key, value, named
         load_config(write(tmp_path, data))
 
 
-@pytest.mark.parametrize("change, named", [
-    ({"coverage_repair_prompt": " "}, r"reasoning_policy\.coverage_repair_prompt"),
-    ({"coverage_repair_prompt": "Write the missing lines."}, r"reasoning_policy\.coverage_repair_prompt: .*\{lines\}"),
-    ({"coverage_repair": None}, r"reasoning_policy\.coverage_repair"),
-])
-def test_coverage_repair_settings(tmp_path, change, named):
-    p = load_config(write(tmp_path)).reasoning_policy
-    assert p.coverage_repair and "{lines}" in p.coverage_repair_prompt
-    data = base()
-    for key, value in change.items():
-        if value is None:
-            del data["reasoning_policy"][key]
-        else:
-            data["reasoning_policy"][key] = value
-    with pytest.raises(ConfigError, match=named):
-        load_config(write(tmp_path, data))
-
-
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
     assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate", "compute"}

@@ -311,6 +311,94 @@ async def test_reasoning_problem_end_to_end(cfg, fake, built_store, tmp_path):
     assert score_parts("A1: 2.61\nA2: true", problem) == [True, True]
 
 
+# --- verdict parts read from the answer body ---------------------------------------------------------
+
+
+AUDIT = {"lang": "en", "question": (
+    "Check each claim.\nC1. The sum is 12.\nC2. The sample weighs 4 g.\nC3. The yield is 90 %.\n\n"
+    "Finish with exactly these lines:\nA1: <total mass in g>\nA2: <verdict for C1>\nA3: <verdict for C2>\n"
+    "A4: <verdict for C3>\nA5: <mass of the sample in C2, in g>\n"),
+    "parts": [{"label": "A1", "number": 4, "abs_tol": 0.01}, {"label": "A2", "verdict": ["incorrect"]},
+              {"label": "A3", "verdict": ["correct"]}, {"label": "A4", "verdict": ["unverified"]},
+              {"label": "A5", "number": 4, "abs_tol": 0.01}]}
+OFFSET = "A1: 4 g\nA2: Correct\nA3: Unverified\nA4: Incorrect\nA5: 5 g"  # each verdict line one item off
+
+
+@pytest.mark.parametrize("body", [
+    "**C1.** The sum is 12.\nIt is 11.\nVerdict: Incorrect — it is 11.\n\n**C2.** 4 g.\n**Verdict:** Correct\n\n"
+    "### C3 — the yield\nVerdict: Unverified, no data.\n\n---\n",
+    "**C1:** Incorrect — 11, not 12.\n**C2:** Correct — 4 g as stated.\n- C3: Unverified (no mass given).\n",
+    "| Claim | Verdict | Why |\n|---|---|---|\n| C1 | Incorrect | 11 |\n| C2 | Correct | 4 g |\n| C3 | Unverified | – |\n",
+])
+def test_offset_lines_with_right_sections_score_from_the_body(body):
+    s = score(body + "\n" + OFFSET, AUDIT)
+    assert s["parts"] == {"A1": True, "A2": True, "A3": True, "A4": True, "A5": False}  # A5: a number, its line
+    assert s["line_parts"] == {"A1": True, "A2": False, "A3": False, "A4": False, "A5": False}
+    assert s["sources"] == {"A1": "line", "A2": "body", "A3": "body", "A4": "body", "A5": "line"}
+    assert s["verdicts"] == {"A2": True, "A3": True, "A4": True}
+
+
+@pytest.mark.parametrize("body", [
+    "**C1:** Incorrect — 11.\n**C2:** Correct.\n**C3:** Unverified.\n\nSummary\n- C1: Correct\n",  # two sections
+    "| C1 | Correct | Incorrect: 11 |\n| C2 | Correct | – |\n| C3 | Unverified | – |\n",  # two verdicts in a row
+    "**C1:** The sum is 12, so it looks fine at first.\n**C2:** Correct.\n**C3:** Unverified.\n",  # no verdict
+])
+def test_unclear_section_falls_back_to_the_line(body):
+    s = score(body + "\n" + OFFSET, AUDIT)
+    assert s["sources"]["A2"] == "line" and s["parts"]["A2"] is False
+    assert s["sources"]["A3"] == s["sources"]["A4"] == "body"
+
+
+def test_no_item_placeholders_scores_as_before():
+    problem = {"lang": "en", "question": "C1. A claim.\nFinish with:\nA1: <verdict>\nA2: <mass in g>",
+               "parts": [{"label": "A1", "verdict": ["false"]}, {"label": "A2", "number": 2.61, "rel_tol": 0.01}]}
+    s = score("**C1:** False — wrong mass.\n\nA1: true\nA2: 2.61 g", problem)
+    assert s["parts"] == s["line_parts"] == {"A1": False, "A2": True}
+    assert set(s["sources"].values()) == {"line"}
+
+
+def test_russian_sections_with_verdict_labels():
+    item = {"lang": "ru", "question": "Проверь утверждения.\nУ1) Масса 4 г.\nУ2) Объём 2 л.\nЗакончи ответ строками:\n"
+                                      "A1: <вердикт для У1>\nA2: <вердикт для У2>\n",
+            "parts": [{"label": "A1", "verdict": ["верно"]}, {"label": "A2", "verdict": ["неверно"]}]}
+    answer = ("**У1)** Масса 4 г.\nРасчёт: 4,0 г.\n**Вердикт:** верно\n\n**У2)** Объём 2 л.\n**Вывод:** неверно — 3 л.\n\n"
+              "A1: неверно\nA2: верно")
+    s = score(answer, item)
+    assert s["parts"] == {"A1": True, "A2": True} and s["line_parts"] == {"A1": False, "A2": False}
+
+
+def test_label_that_is_an_item_reads_its_section():
+    item = {"lang": "en", "question": "C1. The sum is 12.\nC2. The sample weighs 4 g.\n\nFinish with these lines, in "
+                                      "claim order:\nC1: <Correct / Incorrect / Unverified>\nC2: <Correct / Incorrect "
+                                      "/ Unverified>\n",
+            "parts": [{"label": "C1", "verdict": ["incorrect"]}, {"label": "C2", "verdict": ["correct"]}]}
+    body = "### C1 — the sum\nVerdict: Incorrect — it is 11.\n\n### C2 — the mass\nVerdict: Correct\n\n"
+    s = score(body + "C1: Correct\nC2: Correct", item)  # the closing lines are no section of their item
+    assert s["parts"] == {"C1": True, "C2": True} and s["line_parts"] == {"C1": False, "C2": True}
+    assert s["sources"] == {"C1": "body", "C2": "body"}
+    lines_only = score("C1: Correct — 11.\n\nC2: Correct", item)  # nothing but the closing lines: read there
+    assert lines_only["parts"] == {"C1": False, "C2": True} and set(lines_only["sources"].values()) == {"line"}
+
+
+def test_quoted_claim_after_the_id_is_no_verdict():
+    item = {"lang": "en", "question": 'S1. NaOH + HCl: "neutralisation".\nS2. Fe2O3 + 3 CO → 2 Fe + 3 CO2: "carbon '
+                                      'monoxide is the oxidising agent".\nFinish with:\nA1: <the reducing agent in S2>\n',
+            "parts": [{"label": "A1", "verdict": ["CO", "carbon monoxide"]}]}
+    answer = ('**S2:** "carbon monoxide is the oxidising agent" is **wrong**. CO is the **reducing agent**.\n\n'
+              "A1: Fe2O3")
+    s = score(answer, item)
+    assert s["parts"] == {"A1": False} and s["sources"] == {"A1": "line"}
+    after = score('**S2:** "Fe2O3 is the reducing agent" — carbon monoxide, not Fe2O3.\n\nA1: Fe2O3', item)
+    assert after["parts"] == {"A1": True} and after["sources"] == {"A1": "body"}  # the text after the quote counts
+
+
+def test_summary_counts_body_reads_and_line_only_parts():
+    s = score("**C1:** Incorrect.\n**C2:** Correct.\n**C3:** Unverified.\n\n" + OFFSET, AUDIT)
+    old = {"correct": True, "parts": {"A1": True}, "missing": [], "verdicts": {}}  # scored before body reading
+    summary = summarize([log(set="S3", scores={"final": s, "draft": s}), log(scores={"final": old, "draft": old})])
+    assert (summary["parts_right"], summary["line_parts_right"], summary["body_verdict_parts"]) == (5, 2, 3)
+
+
 def test_consistency_fixes_counted():
     r = log(verification={"counts": {}, "consistency": [{"old": "a", "new": "b", "why": ""}]})
     assert summarize([r])["consistency_fixes"] == 1
