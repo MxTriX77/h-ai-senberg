@@ -551,6 +551,14 @@ def test_conclusion_fixed(reviewing, fake, cfg):
     assert "'85 % (consistent)' → '98.6 % (implausibly high)' (the calculation above gives 98.6 %)" in reasoning_text(r)
 
 
+def test_only_reasoner_calls_carry_the_thinking_budget(reviewing, fake):
+    fake.chunks = [content("C1: not_said\nC2: not_said")]
+    fake.scripts = [[content(DRAFT)], [content("C1: not_said\nC2: not_said")], [content(REVIEW)]]
+    chat(reviewing, [{"role": "user", "content": "Check the report."}])
+    sent =["thinking_budget_tokens" in b for b in fake.bodies]
+    assert len(sent) >= 3 and sent[0] and not any(sent[1:])  # the draft; the judge and review calls do not think
+
+
 @pytest.mark.parametrize("old, why", [("98.6", "found 2 times"), ("90 % yield", "not in the answer")])
 def test_ambiguous_or_invented_quote_skipped(reviewing, fake, old, why):
     fake.chunks = [content("C1: not_said\nC2: not_said")]

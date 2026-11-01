@@ -16,7 +16,8 @@ model_backend:
   model_id: "${MODEL_ID:-qwen3.5-9b}"      # sent as `model`; also llama-server's --alias
   temperature: 0.6
   seed: "${EVAL_SEED:-}"                   # for eval A/Bs (same draws in both arms); empty = no seed; production chat leaves it unset
-  max_tokens: 4096                         # per call: thinking (llama_server reasoning-budget) + answer
+  max_tokens: 4096                         # per call without a thinking budget (thinking up to the server cap + answer); a
+                                           # reasoner call with one: its budget + reasoning_policy.thinking_budget.answer_tokens
   timeout_s: null                          # read limit in s; null = wait as long as the backend needs (queue, slow prompt)
   wait_s: 300                              # retry a backend that refuses connections or answers 503 (loading, restarting)
   context_tokens: null                     # backend context in tokens; null = llama_server.ctx_size
@@ -84,6 +85,22 @@ reasoning_policy:
     question asks for.
   answer_retry_request:                    # fields merged into that call
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: answer at once, no thinking
+  thinking_budget:                         # thinking tokens per reasoner call: min_tokens + (max_tokens - min_tokens) × share
+                                           # of the question, the same for every round of one answer, which also sets those
+                                           # calls' max_tokens (budget + answer_tokens) and so their prompt room; the retry,
+                                           # the judge and review calls (no thinking) get none
+    field: "thinking_budget_tokens"        # request field the backend reads (llama-server b11782+); "" = send none: only
+                                           # llama_server reasoning-budget caps thinking, max_tokens as model_backend, as before
+    min_tokens: 1024                       # share 0: a short question (the old server cap; 1024 + 3072 = the old max_tokens)
+    max_tokens: "${REASONING_BUDGET:-4096}"   # share 1; same variable as the server cap
+    answer_tokens: 3072                    # room for the answer after the thinking; max_tokens + this must be < the context
+    # share = sum of weight × level, at most 1; a signal's level is 0 up to `start`, 1 from `full`, linear in between
+    chars: {start: 200, full: 2000, weight: 0.4}   # characters of the question (the last user message)
+    numbers: {start: 2, full: 20, weight: 0.3}     # numbers written in it, read as the checks read them
+    items: {start: 1, full: 6, weight: 0.3}        # its enumerated parts and requested answer lines (item_pattern)
+    item_pattern: '(?m)^[ \t]*(?:[-*•]|\(?(?:\d{1,2}|[^\W\d_]\d{0,2})[.):])[ \t]|(?<!\w)\((?:\d{1,2}|[^\W\d_])\)(?=\s)|(?<!\w)[^\W\d_]\d{1,2}:'
+                                           # one match per part: a list line (- x, 1. x, 2) x, b) x, (c) x, A1: x),
+                                           # an inline (a) or (1) before a space, or an inline answer label A1:
 
 retrieval:                                 # used from the Layer 1 step on
   raw_dir: "${DATA_DIR:-data}/raw"         # downloads listed in config/sources.yaml
@@ -257,7 +274,8 @@ llama_server:                              # local reasoner, started by `uv run 
     jinja: true                            # use the GGUF's own chat template (tool calls later)
     reasoning: "on"
     reasoning-format: deepseek             # thinking arrives as reasoning_content
-    reasoning-budget: "${REASONING_BUDGET:-1024}"                 # thinking-token cap: Qwen3.5 otherwise thinks ~4k tokens (~6 min at 11 t/s)
+    reasoning-budget: "${REASONING_BUDGET:-4096}"                 # hard cap on thinking (Qwen3.5 otherwise thinks ~4k tokens, ~6 min
+                                                                  # at 11 t/s); per call: reasoning_policy.thinking_budget
     parallel: 1
     n-predict: 8192
     gpu-layers: "${GPU_LAYERS:-99}"                         # all layers on the GPU: 9B Q4_K_M just fits in 6 GB
