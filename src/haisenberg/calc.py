@@ -182,6 +182,8 @@ def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True)
         m = _EXPR.search(lhs)
         if not m or re.search(r"\d\s+$", lhs[: m.start()]):  # "6.626 070 15 × 2", "2 (3 + 4)": not one reading
             continue
+        if re.search(r"\d[:：]$", lhs[: m.start()]) and lhs[m.start()].isdigit():  # "10:50 - 1 hour": minutes of a
+            continue  # clock time, not a number ("A2: (1000 − 800) / 800" is still checked)
         expression = m.group().strip()
         if strict:
             if _PART_BEFORE.search(_EMPHASIS.sub("", lhs[: m.start()])) or _SCALED.search(expression):
@@ -194,6 +196,8 @@ def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True)
         if not re.match(r"[-−]?\d", text[at : at + 2]):
             continue
         number_end = re.match(r"[-−]?[\d.,\s]*\d", text[at:]).end()
+        if re.match(r"[:：]\d", text[at + number_end :]):  # "= 01:00": a clock time, not a number
+            continue
         if _NEXT_OP.match(text, at + number_end) and not re.match(r"\s*[×x·]\s*10", text[at + number_end :]):
             continue  # "= 2 × 3": the right side is an expression, not a result
         as_percent = bool(_AS_PERCENT.search(expression))
