@@ -1,0 +1,11 @@
+# Test arm only (branch cf-test, not for main): the qwen3.5-9b profile with arithmetic fixes carried forward
+# (PR #67), for the seeded A/B on one commit. Use: MODEL_PROFILE=qwen3.5-9b-carry
+
+model_backend:
+  model_id: "${MODEL_ID:-qwen3.5-9b}"
+
+llama_server:
+  model_path: "${MODEL_PATH:-models/Qwen3.5-9B-Q4_K_M.gguf}"
+
+verifier:
+  carry_fixes_forward: true
