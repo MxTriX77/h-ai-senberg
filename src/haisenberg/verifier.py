@@ -412,13 +412,19 @@ def carry_forward(draft: str, fixes: list[dict[str, str]], request: str, task: s
         for s, e in _number_spans(draft, old):
             other = _unit_at(draft, e)
             if (s >= at and s not in results and (s, e) not in spans and not (mask and all(mask[s:e]))
-                    and (unit == "%") == (other == "%") and (not unit or not other or unit == other)):
+                    and (unit == "%") == (other == "%")
+                    and (not unit or unit == other or (not other and "=" in draft[e : _line_end(draft, e)]))):
                 spans[s, e] = new
                 f["carried"] += 1
                 trace.append(f"> carried: {old} → {new} {after}")
     for (s, e), new in sorted(spans.items(), reverse=True):
         draft = draft[:s] + new + draft[e:]
     return draft, trace
+
+
+def _line_end(text: str, at: int) -> int:
+    end = text.find("\n", at)
+    return end if end >= 0 else len(text)
 
 
 def _decimal_points(text: str, decimal_comma: bool) -> str:

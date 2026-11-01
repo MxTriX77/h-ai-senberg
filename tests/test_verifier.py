@@ -975,6 +975,8 @@ def carried(draft, request="", task=""):
     ("n = 3 × 10 = 35. Then 35 % and 35 more.", "n = 3 × 10 = 30. Then 35 % and 30 more."),  # % vs plain
     ("m = 0,5 × 7 = 3,6 г. Итого 3,6 г, а не 13,6 г или 3,65 г.",  # Russian decimal comma
      "m = 0,5 × 7 = 3.5 г. Итого 3.5 г, а не 13,6 г или 3,65 г."),
+    ("E = 3 × 150 = 350 kcal. Left: 350 − 200 = 150 kcal.",  # a bare input of a later computation
+     "E = 3 × 150 = 450 kcal. Left: 450 − 200 = 150 kcal."),
 ])
 def test_fix_carried_to_later_uses(draft, expected):
     out, trace, fixes = carried(draft)
@@ -989,6 +991,7 @@ def test_fix_carried_to_later_uses(draft, expected):
     ("3 × 150 = 350 kcal. The label says: one bar gives 350 kcal of energy per serving.", "",
      "The label says: one bar gives 350 kcal of energy per serving. Check it.", ""),  # quoted from the task
     ("3 × 150 = 350 kcal; 700 / 2 = 350 kcal.", "", "", ""),  # another computation's own result
+    ("3 × 150 = 350 kcal. Group sizes: 350, 120.", "", "", ""),  # a bare number in prose: maybe another quantity
     ("a = 2 × 3 = 7, b = 2 × 4 = 7. So 7 in all.", "", "", "> not carried: 7 was fixed to 2 different values"),
 ])
 def test_fix_not_carried(draft, asked, task, why):
