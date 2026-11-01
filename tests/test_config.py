@@ -252,29 +252,16 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
         assert load_config(path).model_backend.model_id
 
 
-def test_evidence_settings_and_arm_profile(tmp_path, monkeypatch):
-    path = write(tmp_path)
-    ev = load_config(path).evidence
-    assert ev.enabled is False and ev.min_items == 3 and {"guarantee", "гарантир"} <= set(ev.strong_words)
+def test_evidence_settings(tmp_path):
+    ev = load_config(write(tmp_path)).evidence  # shipped on (release 2026-11-01)
+    assert ev.enabled is True and ev.min_items == 3 and {"guarantee", "гарантир"} <= set(ev.strong_words)
     assert ev.ledger_request["response_format"] == {"type": "json_object"} and "{missing}" in ev.repair_prompt
-    arm = REPO / "config" / "qwen3.5-9b-evidence.yaml"
-    write_profile(tmp_path, arm.stem, yaml.safe_load(arm.read_text(encoding="utf-8")))
-    monkeypatch.setenv(PROFILE_ENV, arm.stem)
-    cfg = load_config(path)
-    assert cfg.evidence.enabled is True and cfg.evidence.writer_prompt == ev.writer_prompt
-    assert cfg.evidence.independent is False
 
 
-def test_independent_settings_and_arm_profile(tmp_path, monkeypatch):
-    path = write(tmp_path)
-    ev = load_config(path).evidence
-    assert ev.independent is False and ev.independent_max_items == 10
+def test_independent_settings(tmp_path):
+    ev = load_config(write(tmp_path)).evidence
+    assert ev.independent is True and ev.independent_max_items == 10
     assert "{id}" in ev.item_prompt and "{text}" in ev.item_prompt and "response_format" not in ev.item_request
-    arm = REPO / "config" / "qwen3.5-9b-evidence-independent.yaml"
-    write_profile(tmp_path, arm.stem, yaml.safe_load(arm.read_text(encoding="utf-8")))
-    monkeypatch.setenv(PROFILE_ENV, arm.stem)
-    cfg = load_config(path)
-    assert cfg.evidence.enabled is True and cfg.evidence.independent is True and cfg.evidence.item_prompt == ev.item_prompt
 
 
 def test_evidence_repair_prompt_names_the_missing_ids(tmp_path):
@@ -412,7 +399,7 @@ def test_conservative_check_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.arithmetic_prefixes is v.skip_derived_claims is v.keep_uncorrected is v.arithmetic_strict_parse is True
     assert v.arithmetic_max_change == 100
-    assert v.unit_checks is v.arithmetic_answer_lines is True
+    assert v.unit_checks is True and v.arithmetic_answer_lines is False  # carry_fixes_forward replaces it (D-042)
     for key in ("keep_uncorrected", "unit_checks", "arithmetic_answer_lines", "arithmetic_strict_parse", "arithmetic_max_change"):
         data = base()
         del data["verifier"][key]
@@ -425,7 +412,8 @@ def test_conservative_check_settings(tmp_path):
 
 
 def test_carry_fixes_forward_setting(tmp_path):
-    assert load_config(write(tmp_path)).verifier.carry_fixes_forward is False  # shipped off until the A/B
+    v = load_config(write(tmp_path)).verifier  # shipped on, answer lines and the labelled-line skip off (D-042)
+    assert v.carry_fixes_forward is True and v.arithmetic_answer_lines is False and v.skip_labelled_claims is False
     data = base()
     del data["verifier"]["carry_fixes_forward"]
     with pytest.raises(ConfigError, match="verifier.carry_fixes_forward"):

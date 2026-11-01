@@ -221,11 +221,13 @@ verifier:                                  # claim checks on the draft; on/off: 
   arithmetic_rel_tol: 0.005                # ... when c is off by more than its rounding and this share
   arithmetic_prefixes: true                # ... and also off when scaled by 10^±3/6/9 where a unit of the chain has an
                                            # SI prefix (2452 W = 2.45 kW, 250 mg × 6 = 1.5 g); false: c as written only
-  arithmetic_answer_lines: true            # ... and a labelled answer line (A1: …) that states exactly the old wrong c,
-                                           # once, gets the fixed value too; false: answer lines keep their values
-  carry_fixes_forward: false              # ... and the old wrong c, written again later as the same number (no other
-                                           # unit or % sign, not a computation's result, not quoted from the task), gets
-                                           # the fixed value, unless the request writes it; then the check runs once more
+  arithmetic_answer_lines: false           # true: a labelled answer line (A1: …) that states exactly the old wrong c,
+                                           # once, gets the fixed value too; off: carry_fixes_forward does it in any
+                                           # format (D-042)
+  carry_fixes_forward: true               # ... and the old wrong c, written again later as the same number with its unit
+                                           # (or bare as an input of a computation; not a computation's result, not quoted
+                                           # from the task, not a clock time), gets the fixed value, unless the request
+                                           # writes it or another computation gives it; then the check runs once more
                                            # (a later computation that used it is fixed); false: as before
   arithmetic_strict_parse: true            # read only a whole left side: a × 10ⁿ is one number (6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32),
                                            # a currency sign before a number is dropped, an expression with math right before
@@ -238,7 +240,7 @@ verifier:                                  # claim checks on the draft; on/off: 
   skip_derived_claims: true                # computations (an equation or operation with numbers, or a sentence restating
                                            # the answer's results) and labelled answer/verdict lines (A1: …, Claim C: …)
                                            # are never judged, corrected or removed by the claim checks
-  skip_labelled_claims: true               # ... the labelled-line part of skip_derived_claims; false: a labelled line is
+  skip_labelled_claims: false              # ... the labelled-line part of skip_derived_claims; false: a labelled line is
                                            # judged like any sentence (computations still skipped). A format-bound guard
                                            # (D-042): prose verdicts are protected by keep_uncorrected and the judge's
                                            # minimal-edit rule only
@@ -318,7 +320,7 @@ verifier:                                  # claim checks on the draft; on/off: 
     chat_template_kwargs: {enable_thinking: false}   # llama.cpp + Qwen templates: no thinking for the judge
 
 evidence:                                  # evidence ledger (D-032): verdicts settled by rules from the recorded evidence
-  enabled: false                           # off until the A/B; the arm profile config/qwen3.5-9b-evidence.yaml turns it on
+  enabled: true                            # on; false: no ledger (the answer is the checked draft, as before)
   min_items: 3                             # runs when the last user message lists this many items (lines starting with
                                            # an id: 1. / a) / C1. / У3) / Claim A:, or bulleted lines); else no change
   strong_words: [prove, proof, guarantee, confirm, establish, validat, verif, independent,
@@ -379,9 +381,9 @@ evidence:                                  # evidence ledger (D-032): verdicts s
     - Add no evidence, numbers or sources that are not in the ledger or the draft.
     Write only the answer, in the language of the request, without the ledger, its field names, rule names or
     remarks about this rewrite.
-  independent: false                       # also judge each listed item in its own call, without the draft or the
+  independent: true                        # also judge each listed item in its own call, without the draft or the
                                            # ledger; a different settled status makes the item unverified (R-f).
-                                           # Needs enabled; the arm profile qwen3.5-9b-evidence-independent turns it on
+                                           # Needs enabled; up to independent_max_items more thinking calls per request
   independent_max_items: 10                # items past this many keep the ledger's judgment
   item_prompt: |
     Judge one item of the user's last message, {id}: {text}
