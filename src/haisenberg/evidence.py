@@ -153,6 +153,30 @@ def strong_word(text: str, words: list[str]) -> str | None:
     return next((w for w in words if re.search(rf"(?<!\w){re.escape(w.lower())}", low)), None)
 
 
+def wrong_computations(entries: list[Entry], rel_tol: float, prefixes: bool = True, strict: bool = True,
+                       max_change: float = 0.0, task: str = "") -> list[str]:
+    """Drop every evidence item from a computation whose written arithmetic is all wrong, read as the draft's
+    arithmetic check reads it (`162 + 240 + 36 + 12 = 350`): a slip neither establishes (R-g) nor contradicts
+    (R-a) an item. An item that also writes a right computation (`the report's 3 × 150 = 350, but 3 × 150 = 450`)
+    or quotes the `task`'s is kept. Returns the trace lines."""
+    lines = []
+    for e in entries:
+        for side in ("support", "against"):
+            kept = []
+            for ev in getattr(e, side):
+                text = ev.get("evidence", "") if ev.get("from") == "computation" else ""
+                _, found, checked = fix_arithmetic(text, rel_tol, prefixes, task, strict, max_change) if text else ("", [], 0)
+                fixes = [f for f in found if "note" not in f]
+                if fixes and len(fixes) == checked:
+                    f = fixes[0]
+                    lines.append(f"- {e.id}: computation {'for' if side == 'support' else 'against'} it dropped, it is"
+                                 f" wrong ({f['expression']} = {f['stated']}, would be {f['fixed']})\n")
+                else:
+                    kept.append(ev)
+            setattr(e, side, kept)
+    return lines
+
+
 def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     """Settle each status from the recorded evidence, first rule that applies (R-a … R-d), then R-e to a fixed
     point; return the entries whose status changed. Only R-g makes anything established.
@@ -317,6 +341,10 @@ class Evidence:
                 skipped += [s for s in extra[1] if key(s) in wanted]
             if gone := missing(entries, skipped, items):
                 yield _say(f"- still no entry for {', '.join(gone)} (not yet judged)\n")
+        if (v := self.verifier).arithmetic_check and (dropped := wrong_computations(
+                entries, v.arithmetic_rel_tol, v.arithmetic_prefixes, v.arithmetic_strict_parse, v.arithmetic_max_change,
+                question if v.keep_quotes else "")):
+            yield _say("".join(dropped))
         if changed := settle(entries, self.cfg.strong_words):
             yield _say("".join(f"Evidence: {e.id} {e.status} ({e.why}; model said {e.claimed})\n" for e in changed))
         elif not gone:

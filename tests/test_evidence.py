@@ -9,7 +9,7 @@ from conftest import CONNECT_ERROR, content
 from haisenberg.agent import DRAFT_MARK, Agent, _tool_results
 from haisenberg.evidence import (
     CONTRADICTED, ESTABLISHED, HYPOTHESIS, UNVERIFIED, Entry, Evidence, Settled, key, listed_items, parse_ledger,
-    settle,
+    settle, wrong_computations,
 )
 from haisenberg.config import load_config
 from haisenberg.tools import Knowledge
@@ -166,6 +166,27 @@ def test_rg_own_computation_settles_a_plain_claim():
     assert changed(entry(status=UNVERIFIED, support=("computation",))) == []  # not at full strength
     assert changed(entry(status=CONTRADICTED, support=("computation",), strong_enough=True,
                          against=("knowledge",))) == []
+
+
+def test_wrong_computation_is_no_evidence():
+    # c10a baseline kind 2, a slip in a formal step that flips the answer: the ledger cites the draft's own sum
+    slip = entry(status=UNVERIFIED, asserts="computed", strong_enough=True)
+    slip.support = [{"evidence": "162 + 240 + 36 + 12 = 350 kcal", "from": "computation"}]
+    right = entry("B", status=UNVERIFIED, asserts="computed", strong_enough=True)
+    right.support = [{"evidence": "162 + 240 + 36 + 12 = 450 kcal", "from": "computation"}]
+    against = entry("C", status=CONTRADICTED, against=())
+    against.against = [{"evidence": "2 × 3 = 7", "from": "computation"}]
+    refuted = entry("D", status=CONTRADICTED, against=())  # quotes the claim's wrong sum next to the right one
+    refuted.against = [{"evidence": "the report's 3 × 150 = 350 is wrong: 3 × 150 = 450", "from": "computation"}]
+    quoted = entry("E", status=CONTRADICTED, against=())  # quotes the task's wrong computation
+    quoted.against = [{"evidence": "the label's 3 × 150 = 350 kcal per bar", "from": "computation"}]
+    task = "The label says: 3 × 150 = 350 kcal per bar. Check it."
+    lines = wrong_computations([slip, right, against, refuted, quoted], 0.005, task=task)
+    assert slip.support == [] and len(right.support) == 1 and against.against == []
+    assert len(refuted.against) == 1 and len(quoted.against) == 1
+    assert lines[0] == "- A: computation for it dropped, it is wrong (162 + 240 + 36 + 12 = 350, would be 450)\n"
+    assert changed(slip, right, against, refuted, quoted) == [
+        ("B", ESTABLISHED, "R-g"), ("C", UNVERIFIED, "R-c")]
 
 
 def test_no_promotion():
