@@ -49,12 +49,18 @@ class ModelBackendConfig(_Section):
     api_key: str
     model_id: str
     temperature: float
+    seed: NonNegativeInt | None = None  # sent as `seed` when set; None (empty EVAL_SEED) = no seed
     max_tokens: int
     timeout_s: PositiveFloat | None  # read limit; None = wait as long as the backend needs
     wait_s: NonNegativeFloat  # retry a backend that refuses connections or answers 503 this long
     context_tokens: PositiveInt | None = None  # None = llama_server.ctx_size
     chars_per_token: PositiveFloat  # token estimate for the context budget
     extra_body: dict[str, Any] = {}
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _empty_seed(cls, v: Any) -> Any:
+        return None if v == "" else v
 
 
 class ToolCallMarkup(_Section):
@@ -83,6 +89,7 @@ class ReasoningPolicyConfig(_Section):
     text_tool_calls: bool  # a tool call written as text is run (rounds left) or removed and the answer asked again
     tool_call_markup: ToolCallMarkup
     empty_answer_retry: bool  # an empty final answer is asked again once
+    run_written_calculations: bool  # a written calculate call that cannot run as a round is run before asking again
     answer_retry_prompt: str  # the user turn that asks again for the final answer
     answer_retry_request: dict[str, Any] = {}  # fields merged into that call (e.g. thinking off)
 
@@ -205,14 +212,19 @@ class ToolText(_Section):
 class VerifierConfig(_Section):
     judge_prompt: str
     rel_tol: NonNegativeFloat
+    unit_checks: bool  # code checks compare a number with a record value only as the same quantity (unit, property)
     arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
     checkers: list[str] = []  # domain checker plug-ins run on every draft (haisenberg.checkers), e.g. element_balance
     checkers_clear_only: bool  # a checker's fix that the checker doubts (maybe not its subject) is only reported
     arithmetic_rel_tol: NonNegativeFloat  # "a × b = c" in the draft is fixed when c is off by more
     arithmetic_prefixes: bool  # c may also be scaled by an SI prefix of its chain (2452 W = 2.45 kW)
+    arithmetic_answer_lines: bool  # an answer line stating exactly a fixed wrong c gets the fixed value too
+    arithmetic_strict_parse: bool  # a × 10ⁿ is one number, only whole left sides, unit conversions skipped
+    arithmetic_max_change: NonNegativeFloat  # a fix changing c by this factor or more, or its sign, is only reported
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
+    judge_minimal_edits: bool  # a judge correction is applied only as a minimal edit the cited passages state
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call

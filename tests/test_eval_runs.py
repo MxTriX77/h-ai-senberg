@@ -17,6 +17,7 @@ from pydantic import ValidationError
 import evals.run as run
 from conftest import CONNECT_ERROR, content
 from evals.report import report
+from evals.rescore import main as rescore_main
 from evals.review import check_reviews, merge, pack
 from evals.run import (
     QUESTIONS,
@@ -162,8 +163,9 @@ async def test_draft_scores_and_corrections(cfg, fake, built_store, tmp_path):
     assert (r["draft"], r["answer"], r["mode"], r["model_calls"], r["error"]) == ("A1: 6\nA2: false", "A1: 7\nA2: true",
                                                                                   "D", 2, None)
     assert r["scores"]["draft"]["parts"] == {"A1": True, "A2": False, "A3": False}
-    assert r["scores"]["final"] == {"correct": False, "parts": {"A1": False, "A2": True, "A3": False},
-                                    "missing": ["A3"], "verdicts": {"A2": True}}
+    parts = {"A1": False, "A2": True, "A3": False}
+    assert r["scores"]["final"] == {"correct": False, "parts": parts, "line_parts": parts,
+                                    "sources": dict.fromkeys(parts, "line"), "missing": ["A3"], "verdicts": {"A2": True}}
     assert set(r["timings"]) == {"first_reasoning_s", "first_answer_s", "total_s"}
     assert r["chars"] == {"reasoning": len(r["reasoning"]), "draft": len(r["draft"]), "answer": len(r["answer"])}
     assert len(r["verification"]["consistency"]) == 2
@@ -291,6 +293,9 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     assert man["eval_files"] == [{"path": "evals/questions.yaml", "sha256": file_sha256(QUESTIONS)}]
     assert man["context_tokens"] == cfg.context_tokens and man["sampling"]["temperature"] == cfg.model_backend.temperature
     assert set(man["sampling"]) >= {"max_tokens", *cfg.model_backend.extra_body} and "git" in man and man["date"]
+    assert man["sampling"]["seed"] is None  # EVAL_SEED unset
+    cfg.model_backend.seed = 7
+    assert manifest(cfg, "r1", "A", [], [], cache)["sampling"]["seed"] == 7
     entry = json.loads(cache.read_text(encoding="utf-8"))[str(model.resolve())]
     assert entry["sha256"] == man["model_file"]["sha256"]
     # cached by path, size and mtime: a stored digest is reused, a changed file is hashed again
@@ -427,6 +432,32 @@ def test_report_shows_strict_and_loose_fact_scores(tmp_path):
     text = report([write_run(tmp_path / "run-f", "D", logs)])
     for name in ("S1", "all"):
         assert f"| run-f | {name} | D | 3 | 0 | 0 | 2/3 (66.7 %) | 2 / 3 of 3 |" in text
+
+
+def test_rescore_reads_the_body_and_keeps_the_first_scores(tmp_path, capsys):
+    prompt = "C1. The sum is 12.\nC2. The mass is 4 g.\nFinish with:\nA1: <verdict for C1>\nA2: <verdict for C2>\n"
+    key = {"parts": [{"label": "A1", "verdict": ["incorrect"]}, {"label": "A2", "verdict": ["correct"]}]}
+    items = tmp_path / "items.yaml"
+    items.write_text(yaml.safe_dump({"items": [{"id": i, "set": "S3", "split": "dev", "prompt": prompt, "key": key}
+                                               for i in ("b1-s3-01", "b1-s3-02")]}), encoding="utf-8")
+    answer = "**C1:** Incorrect — 11.\n**C2:** Correct.\n\nA1: Correct\nA2: Incorrect"
+    logs = [item_log("b1-s3-01", {"A1": False, "A2": False}, answer=answer,
+                     messages=[{"role": "user", "content": prompt}]),
+            item_log("b1-s3-02", {"A1": True}, answer=answer)]  # answered another prompt: left as it is
+    folder = write_run(tmp_path / "run-r", "D", logs, items)
+    assert rescore_main([str(folder), "--dry-run"]) == 0
+    assert capsys.readouterr().out.startswith("run-r: parts 0 → 2 of 2 (line-only 0), 2 verdict parts read from"
+                                              " the body, 1 items, 1 skipped")
+    assert read_logs(folder)[0]["scores"]["final"]["parts"] == {"A1": False, "A2": False}  # nothing written
+    assert rescore_main([str(folder)]) == 0 and rescore_main([str(folder)]) == 0
+    r, kept = read_logs(folder)
+    assert r["scores"]["final"]["parts"] == {"A1": True, "A2": True} and r["correct"]
+    assert r["scores"]["final"]["sources"] == {"A1": "body", "A2": "body"}
+    assert r["scores_before_rescore"]["final"]["parts"] == {"A1": False, "A2": False}  # the first scores, kept
+    assert "scores_before_rescore" not in kept and kept["scores"]["final"]["parts"] == {"A1": True}
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["all"]
+    assert (summary["parts_right"], summary["line_parts_right"], summary["body_verdict_parts"]) == (3, 1, 2)
+    assert "| run-r | all | D | 2 | 0 | 0 | 2/2 (100 %) | – | 3/3 (100 %) | 1/3 | 2/2 | 2 |" in report([folder])
 
 
 @pytest.fixture

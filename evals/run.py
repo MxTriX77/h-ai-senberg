@@ -58,6 +58,17 @@ NVIDIA_SMI = ["nvidia-smi", "--query-gpu=name,power.limit,power.draw,memory.tota
 _LOOKALIKE = "АВСЕНКМОРТХавсенкмортх"  # Cyrillic letters a model may write in a label instead of the Latin ones
 _LATIN = str.maketrans(_LOOKALIKE, "ABCEHKMOPTXabcehkmoptx")
 _LINE = re.compile(rf"^[\s>*_`#+-]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*(.*)$", re.M)
+_NEXT = re.compile(rf"(?<=\s)[*_`]*([A-Za-z{_LOOKALIKE}]\d+)[\s*_`]*[:：][\s*_`]*")  # a further label on that line
+# Items a task lists (`C1.`, `У3)`, `S4:` at a line start, with the rest of the line: a line whose rest is a
+# `<placeholder>` is a closing answer line, not an item), an item id in a placeholder, an answer line that begins
+# with an item id after markdown markers (`**C1:**`, `### C1 —`, `| C1 |`), with the rest of the line, and quoted
+# text (a claim restated, never read as a verdict).
+_LISTED = re.compile(r"^[\s>*_`#•-]*([A-ZА-ЯЁ]{1,2}\d+)[*_`]*[.):：][ \t*_`]*(.*)$", re.M)
+_ID = re.compile(r"(?<!\w)([A-ZА-ЯЁ]{1,2}\d+)(?!\w)")
+_START = re.compile(r"^[\s>*_`#|+-]*([A-ZА-ЯЁ]{1,2}\d+)(?!\w)(.*)$")
+_VERDICT_LINE = re.compile(r"^[\s>*_`#|+-]*(?:verdict|status|conclusion|вердикт|статус|вывод)[\s*_`]*[:：](.*)$", re.I)
+_RULE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|«[^»\n]*»|„[^“”\n]*[“”]')
 # Protocol artefacts: text the pipeline writes for itself that must not reach the final answer. The patterns follow
 # the code that writes it: [S#] ids (verifier._CITES), the draft marker (agent.DRAFT_MARK), the trace headings of
 # Verifier.verify and Verifier._consistency, the summary line and outcome labels of verifier.render and the
@@ -190,6 +201,25 @@ def answer_text(answer: str) -> str:
     return re.sub(r"\[S\d+(?:\s*[,;]\s*S?\d+)*\]", "", text)
 
 
+# Small counts written as words, read as digits so a text key matches either way ("two up" = "2 up"). Language
+# data (English, Russian with the gender and genitive forms a count takes), not a subject list.
+_COUNTS = {w: str(n) for n, words in enumerate((
+    "zero ноль нуль", "one один одна одно одного одной", "two два две двух", "three три трёх трех",
+    "four четыре четырёх четырех", "five пять пяти", "six шесть шести", "seven семь семи", "eight восемь восьми",
+    "nine девять девяти", "ten десять десяти")) for w in words.split()}
+_COUNT = re.compile(rf"(?<!\w)(?:{'|'.join(_COUNTS)})(?!\w)", re.I)
+
+
+def _digits(text: str) -> str:
+    return _COUNT.sub(lambda m: _COUNTS[m.group().lower()], text)
+
+
+def text_match(keys: list[str], text: str) -> bool:
+    """An accepted word or phrase occurs in the text as a whole word, ignoring case; counts as digits or words."""
+    text = _digits(text)
+    return any(re.search(rf"(?<!\w){re.escape(_digits(w))}(?!\w)", text, re.I) for w in keys)
+
+
 def is_correct(answer: str, gold: dict[str, Any]) -> bool:
     text = answer_text(answer)
     if "number" in gold:
@@ -199,13 +229,22 @@ def is_correct(answer: str, gold: dict[str, Any]) -> bool:
     if "formula" in gold:
         want = to_hill(gold["formula"])
         return any(hill == want for hill, _, _ in read_formulas(text, need_digit=False))
-    return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text, re.I) for w in gold["text"])
+    return text_match(gold["text"], text)
 
 
 def answer_lines(answer: str) -> dict[str, str]:
     """Label (A1, A2, ...) -> the text of the last line that starts with that label and a colon (a Cyrillic
-    look-alike letter in the label, such as А, reads as the Latin one)."""
-    return {m.group(1).translate(_LATIN).upper(): m.group(2).strip() for m in _LINE.finditer(answer_text(answer))}
+    look-alike letter in the label, such as А, reads as the Latin one). A line holding further labels of its
+    letter after a space (`A1: 22.0 g A2: 16.8 L`) is split there: each label gets the text up to the next."""
+    lines: dict[str, str] = {}
+    for m in _LINE.finditer(answer_text(answer)):
+        label, text, start = m.group(1).translate(_LATIN).upper(), m.group(2), 0
+        for n in _NEXT.finditer(text):
+            if (nxt := n.group(1).translate(_LATIN).upper())[0] == label[0]:
+                lines[label] = text[start:n.start()].strip()
+                label, start = nxt, n.end()
+        lines[label] = text[start:].strip()
+    return lines
 
 
 def _figures(n: Number) -> int:
@@ -230,7 +269,7 @@ def part_correct(part: dict[str, Any], line: str | None, lang: str = "en") -> bo
         # figures (0.0237 written as 0.024; 2.61 written as 3 stays wrong).
         return abs(n.value - value) <= tol + eps or (_figures(n) >= 2 and abs(n.value - value) <= n.half + eps)
     if "text" in part:
-        return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", line, re.I) for w in part["text"])
+        return text_match(part["text"], line)
     if "verdict" in part:
         start = re.sub(r"^(?:the|a|an)\s+", "", re.sub(r"^\W+", "", line.lower()))
         return any(re.match(rf"{re.escape(str(w).lower())}(?!\w)", start) for w in part["verdict"])
@@ -242,6 +281,66 @@ def score_parts(answer: str, problem: dict[str, Any]) -> list[bool]:
     return [part_correct(p, lines.get(p["label"].upper()), problem["lang"]) for p in problem["parts"]]
 
 
+def _item_id(text: str) -> str:
+    return text.translate(_LATIN).upper()
+
+
+def _sections(answer: str, ids: set[str], labels: set[str]) -> dict[str, list[tuple[bool, list[str]]]]:
+    """Item id -> its sections in the answer, each (table row?, lines): the start line's text after the id, then
+    the lines up to the next item start, a `---` line, a heading or a closing answer line. A row is one line. The
+    answer lines at the end (blank lines between) are never part of a section, even when a label is an item id."""
+    found: dict[str, list[tuple[bool, list[str]]]] = {}
+    section: list[str] | None = None
+    lines = answer_text(answer).splitlines()
+    end = len(lines)
+    while end and (not lines[end - 1].strip() or
+                   ((m := _LINE.match(lines[end - 1])) is not None and _item_id(m.group(1)) in labels)):
+        end -= 1
+    for line in lines[:end]:
+        start = _START.match(line)
+        if start and (iid := _item_id(start.group(1))) in ids:
+            row, section = line.lstrip().startswith("|"), [start.group(2)]
+            found.setdefault(iid, []).append((row, section))
+            section = None if row else section
+        elif _RULE.match(line) or line.lstrip().startswith("#") or \
+                ((m := _LINE.match(line)) is not None and _item_id(m.group(1)) in labels):
+            section = None
+        elif section is not None:
+            section.append(line)
+    return found
+
+
+def _readings(row: bool, lines: list[str], parts: list[dict[str, Any]], lang: str) -> set[tuple[bool, ...]]:
+    """The verdicts a section gives, each as its score on every verdict part: its first labelled verdict line
+    (`Verdict: X`), else the text right after the id (each cell of a table row) without its quoted text (the
+    claim restated). Text that starts with none of the verdict words gives none."""
+    labelled = [m.group(1) for line in lines if (m := _VERDICT_LINE.match(line))]
+    texts = labelled[:1] or [_QUOTED.sub("", t) for t in (lines[0].split("|") if row else lines[:1])]
+    return {right for t in texts if any(right := tuple(part_correct(p, t, lang) for p in parts))}
+
+
+def body_verdicts(answer: str, item: dict[str, Any]) -> dict[str, bool]:
+    """Verdict part label -> right, read from the answer body, for each verdict part anchored to exactly one of
+    the items the task lists (its label is that item, `C1: <Correct / Incorrect>`, and/or its placeholder names
+    it, `A4: <verdict for C1>`), when that item's sections give one verdict (none, or two different ones: left
+    to the answer line)."""
+    prompt, verdict_parts = item.get("question") or "", [p for p in item["parts"] if "verdict" in p]
+    labels = {_item_id(p["label"]) for p in item["parts"]}
+    listed = {_item_id(m.group(1)) for m in _LISTED.finditer(prompt) if not m.group(2).startswith("<")}
+    placeholders, sections = answer_lines(prompt), _sections(answer, listed, labels)
+    found: dict[str, bool] = {}
+    for n, p in enumerate(verdict_parts):
+        label = _item_id(p["label"])
+        named = {i for m in _ID.finditer(placeholders.get(label, "")) if (i := _item_id(m.group(1))) in listed}
+        named |= {label} & listed
+        if len(named) == 1:
+            readings = {r for row, lines in sections.get(named.pop(), [])
+                        for r in _readings(row, lines, verdict_parts, item["lang"])}
+            if len(readings) == 1:
+                found[p["label"]] = readings.pop()[n]
+    return found
+
+
 def fact_correct(line: str | None, gold: dict[str, Any]) -> bool:
     """A fact answer scored strictly on its answer line (None: no line, wrong): a number or text as a reasoning
     part, a formula as is_correct does."""
@@ -250,8 +349,10 @@ def fact_correct(line: str | None, gold: dict[str, Any]) -> bool:
 
 def score(answer: str, item: dict[str, Any]) -> dict[str, Any] | None:
     """Code score of an answer: part label -> right, the labels without an answer line, the verdict parts.
-    A fact question is one part, `answer`, scored on its answer line, and also has `loose_correct` (any match in
-    the answer). None when the item has no code key (graded by the reviewer only)."""
+    A verdict part anchored to one listed item is read from that item's section in the answer body when it gives
+    one verdict (body_verdicts); `line_parts` keeps every part scored on its line and `sources` says where each
+    part was read (body or line). A fact question is one part, `answer`, scored on its answer line, and also has
+    `loose_correct` (any match in the answer). None when the item has no code key (graded by the reviewer only)."""
     if "answer" in item:
         line, gold = answer_lines(answer).get(FACT_LABEL), item["answer"]
         right = fact_correct(line, gold)
@@ -259,12 +360,16 @@ def score(answer: str, item: dict[str, Any]) -> dict[str, Any] | None:
                 "verdicts": {}, "loose_correct": is_correct(answer, gold)}
     if item.get("parts"):
         lines = answer_lines(answer)
-        parts = {p["label"]: ok for p, ok in zip(item["parts"], score_parts(answer, item))}
+        line_parts = {p["label"]: ok for p, ok in zip(item["parts"], score_parts(answer, item))}
+        body = body_verdicts(answer, item)
+        parts = line_parts | body
         missing = [p["label"] for p in item["parts"] if p["label"].upper() not in lines]
         verdicts = {p["label"]: parts[p["label"]] for p in item["parts"] if "verdict" in p}
     else:
         return None
-    return {"correct": all(parts.values()), "parts": parts, "missing": missing, "verdicts": verdicts}
+    return {"correct": all(parts.values()), "parts": parts, "line_parts": line_parts,
+            "sources": {label: "body" if label in body else "line" for label in parts}, "missing": missing,
+            "verdicts": verdicts}
 
 
 def artefacts(text: str) -> list[str]:
@@ -437,7 +542,8 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
         "gpu": gpu_info(),
         "context_tokens": cfg.context_tokens,
-        "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, **backend.extra_body},
+        "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, "seed": backend.seed,
+                     **backend.extra_body},
         "args": args,
     }
 
@@ -505,6 +611,16 @@ def run_items(folder: Path) -> dict[str, dict[str, Any]]:
 # --- running and scoring -------------------------------------------------------------------------------
 
 
+def log_scores(answer: str, draft: str, q: dict[str, Any], error: str | None, report: dict[str, Any]) -> dict:
+    """The score fields of an item log: correct, scores (final and draft) and unmarked_contradiction (wrong
+    although every claim is labelled supported)."""
+    final, claims = score(answer, q), report.get("claims", [])
+    all_supported = bool(claims) and all(c["outcome"] == "supported" for c in claims)
+    return {"correct": final["correct"] if final else None,
+            "scores": {"final": final, "draft": score(draft, q)} if final else None,
+            "unmarked_contradiction": error is None and bool(final) and not final["correct"] and all_supported}
+
+
 async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict[str, Any]:
     messages = [*q.get("turns", []), {"role": "user", "content": q["question"]}]
     t0, calls = time.monotonic(), agent.llm.calls
@@ -526,9 +642,7 @@ async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict
     except (UpstreamError, httpx.HTTPError) as e:
         error = str(e)
     timings["total_s"] = round(time.monotonic() - t0, 2)
-    final, found = score(answer, q), artefacts(answer)
-    claims = report.get("claims", [])
-    all_supported = bool(claims) and all(c["outcome"] == "supported" for c in claims)
+    found = artefacts(answer)
     log = {
         "id": q["id"],
         "set": q["set"],
@@ -542,10 +656,8 @@ async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict
         "model_calls": agent.llm.calls - calls,
         "chars": {"reasoning": len(trace), "draft": len(draft), "answer": len(answer)},
         "error": error,
-        "correct": final["correct"] if final else None,
-        "scores": {"final": final, "draft": score(draft, q)} if final else None,
+        **log_scores(answer, draft, q, error, report),
         "artefacts": found,
-        "unmarked_contradiction": error is None and bool(final) and not final["correct"] and all_supported,
     }
     if conv := (q.get("key") or {}).get("conversation"):  # S6
         log["conversation"] = {"artefact_free": not found, "max_chars": len(answer) <= conv["max_chars"],
@@ -562,6 +674,8 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
     scored = [r["scores"] for r in logs if r["scores"]]
     parts = [v for s in scored for v in s["final"]["parts"].values()]
     verdicts = [v for s in scored for v in s["final"]["verdicts"].values()]
+    # logs scored before body-first reading have no line_parts or sources: every part was read from its line
+    line_parts = [v for s in scored for v in s["final"].get("line_parts", s["final"]["parts"]).values()]
     pairs = [(s["draft"]["parts"][k], v) for r in ok if (s := r["scores"]) for k, v in s["final"]["parts"].items()]
     latency = sorted(r["timings"]["total_s"] for r in ok)
     counts = {o: sum(r["verification"].get("counts", {}).get(o, 0) for r in logs) for o in OUTCOMES}
@@ -581,6 +695,8 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
         "parts_right": sum(parts),
         "parts_total": len(parts),
         "parts_pct": _pct(sum(parts), len(parts)),
+        "line_parts_right": sum(line_parts),
+        "body_verdict_parts": sum(src == "body" for s in scored for src in s["final"].get("sources", {}).values()),
         "verdict_parts_right": sum(verdicts),
         "verdict_parts_total": len(verdicts),
         "verdict_pct": _pct(sum(verdicts), len(verdicts)),

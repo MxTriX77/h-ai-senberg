@@ -250,6 +250,7 @@ async def test_draft_for_in_process_callers_only(cfg, fake, knowledge):
 # --- answer robustness: calculator rounds, tool calls written as text, empty answers -----------------
 
 XML_CALL = "<tool_call>\n<function=calculate>\n<parameter=expressions>\n0.48 * 1000\n</parameter>\n</function>\n</tool_call>"
+LOOKUP_CALL = "<tool_call>\n<function=lookup_compound>\n<parameter=query>\ncaffeine\n</parameter>\n</function>\n</tool_call>"
 
 
 def calc_round(expression="2 * 3", call_id="k1"):
@@ -280,13 +281,85 @@ def test_lookups_used_up_leave_the_calculator(client, fake, cfg):
 def test_tool_call_written_as_text_after_the_last_round(client, fake, cfg):
     policy = cfg.reasoning_policy
     policy.max_search_depth, policy.max_calc_rounds = 1, 0
-    fake.scripts = [lookup_round(), [content(XML_CALL)], [content("The mass is 480 g.")]]
+    fake.scripts = [lookup_round(), [content(LOOKUP_CALL)], [content("The mass is 480 g.")]]
     r = chat(client)
     assert answer(r) == "The mass is 480 g." and len(fake.requests) == 3
     retry = fake.bodies[2]
     assert retry["messages"] == [*fake.bodies[1]["messages"], {"role": "user", "content": policy.answer_retry_prompt}]
     assert retry["tool_choice"] == "none" and retry["chat_template_kwargs"] == {"enable_thinking": False}
     assert "tool call written as text: removed, final answer asked again" in reasoning_text(r)
+    assert "answer kept" not in reasoning_text(r)  # the retry is complete: used as it is
+
+
+CALC_MSG = {"role": "assistant", "content": None, "tool_calls": [{
+    "id": "call_0", "type": "function", "function": {"name": "calculate", "arguments": '{"expressions": "0.48 * 1000"}'}}]}
+CALC_RESULT = {"role": "tool", "tool_call_id": "call_0", "content": "0.48 * 1000 = 480"}
+
+
+def test_calculation_written_after_the_last_round_is_run(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [content(XML_CALL)], [content("The mass is 480 g.")]]
+    r = chat(client)
+    assert answer(r) == "The mass is 480 g." and len(fake.requests) == 3  # no extra call: the retry has the result
+    retry = fake.bodies[2]
+    ask = {"role": "user", "content": policy.answer_retry_prompt}
+    assert retry["messages"] == [*fake.bodies[1]["messages"], CALC_MSG, CALC_RESULT, ask]
+    assert retry["tool_choice"] == "none" and retry["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "tool call written as text: calculation run, final answer asked again" in reasoning_text(r)
+
+
+QUESTION = [{"role": "user", "content": "Give A1: the mass in g and A2: the energy in J."}]
+
+
+def test_calculation_written_in_the_retry_is_run_and_asked_once_more(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [reasoning("all in the thinking")],
+                    [content("A1: 480 g\nLet me verify the energy:\n" + XML_CALL)], [content("A1: 480 g\nA2: 12 J")]]
+    r = chat(client, QUESTION)
+    assert answer(r) == "A1: 480 g\nA2: 12 J" and len(fake.requests) == 4
+    last = fake.bodies[3]
+    ask = {"role": "user", "content": policy.answer_retry_prompt}
+    assert last["messages"] == [*fake.bodies[2]["messages"], {**CALC_MSG, "content": "A1: 480 g\nLet me verify the energy:"},
+                                CALC_RESULT, ask]
+    assert last["tool_choice"] == "none" and last["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "tool call written as text in the retry: calculation run, final answer asked once more" in reasoning_text(r)
+    assert "answer kept" not in reasoning_text(r)
+
+
+def test_one_more_call_at_most_and_the_most_complete_answer_kept(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [content("A1: 480 g\nLet me check:\n" + XML_CALL)],
+                    [content("A1: 480 g\nA2: 12 J\nLet me verify the energy:\n" + XML_CALL)],
+                    [content("Let me recompute everything once more, step by step, to be sure.\n" + XML_CALL)]]
+    fake.chunks = [content("never asked")]
+    r = chat(client, QUESTION)
+    assert len(fake.requests) == 4  # the lookup, the draft, the retry and one more call
+    assert answer(r) == "A1: 480 g\nA2: 12 J\nLet me verify the energy:"  # the retry: both requested lines
+    text = reasoning_text(r)
+    assert text.count("calculation run") == 2 and "tool call written as text in the retry: removed\n" in text
+    assert "answer kept: the retry (2 requested answer lines, ends at a removed tool call, " in text
+
+
+def test_lookup_written_in_the_retry_removed_and_the_best_answer_kept(client, fake, cfg):
+    cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 0
+    fake.scripts = [lookup_round(), [content("**A1:** 194.19 g/mol\nA2: C8H10N4O2\n" + LOOKUP_CALL)],
+                    [content("I should look the formula up again to be sure of every atom.\n" + LOOKUP_CALL)]]
+    r = chat(client, [{"role": "user", "content": "Give A1: the molar mass and A2: the formula of caffeine."}])
+    assert answer(r) == "**A1:** 194.19 g/mol\nA2: C8H10N4O2" and len(fake.requests) == 3
+    assert "tool call written as text in the retry: removed\n" in reasoning_text(r)
+    assert "answer kept: the draft (2 requested answer lines, ends at a removed tool call, " in reasoning_text(r)
+
+
+def test_complete_answer_kept_over_a_longer_fragment(client, fake):
+    unknown = "<function=browse>\n<parameter=url>\nx\n</parameter>\n</function>"
+    fake.scripts = [[content(unknown + "\nCaffeine is 194.19 g/mol.")],
+                    [content("I should look this up once more before I answer, to be precise.\n" + LOOKUP_CALL)]]
+    r = chat(client)
+    assert answer(r) == "Caffeine is 194.19 g/mol." and len(fake.requests) == 2
+    assert "answer kept: the draft (0 requested answer lines, complete, 25 characters)" in reasoning_text(r)
 
 
 def test_tool_call_written_as_text_is_run_when_rounds_are_left(client, fake):
@@ -309,7 +382,7 @@ def test_json_tool_call_written_as_text(client, fake):
 
 def test_unknown_tool_written_as_text_removed_and_no_answer_dropped(client, fake):
     unknown = "<function=browse>\n<parameter=url>\nx\n</parameter>\n</function>"
-    fake.scripts = [[content("Caffeine is 194.19 g/mol.\n" + unknown)], [content(XML_CALL)]]
+    fake.scripts = [[content("Caffeine is 194.19 g/mol.\n" + unknown)], [content(LOOKUP_CALL)]]
     r = chat(client)
     assert answer(r) == "Caffeine is 194.19 g/mol." and len(fake.requests) == 2  # the retry wrote only a call
     assert "removed, final answer asked again" in reasoning_text(r) and "no answer on the retry" in reasoning_text(r)
@@ -342,6 +415,19 @@ def test_safety_nets_switched_off(cfg, fake, knowledge):
         assert answer(chat(c)) == NO_ANSWER and len(fake.requests) == 2
 
 
+def test_written_calculations_switched_off(client, fake, cfg):
+    policy = cfg.reasoning_policy
+    policy.max_search_depth, policy.max_calc_rounds, policy.run_written_calculations = 1, 0, False
+    fake.scripts = [lookup_round(), [content(XML_CALL)], [content("It is 480 g.\n" + XML_CALL)]]
+    fake.chunks = [content("never asked")]
+    r = chat(client)
+    assert answer(r) == "It is 480 g." and len(fake.requests) == 3
+    assert fake.bodies[2]["messages"] == [*fake.bodies[1]["messages"], {"role": "user", "content": policy.answer_retry_prompt}]
+    text = reasoning_text(r)
+    assert "tool call written as text: removed, final answer asked again" in text and "calculation run" not in text
+    assert "tool call written as text in the retry: removed\n" in text
+
+
 def test_markup_read_also_when_cut_off(cfg):
     markup = _Markup(cfg.reasoning_policy.tool_call_markup)
     calls, rest = markup.split("Plan.\n<tool_call>\n<function=calculate>\n<parameter=expressions>\n2 * 3")
@@ -351,3 +437,5 @@ def test_markup_read_also_when_cut_off(cfg):
     assert rest == "x" and json.loads(calls[0]["function"]["arguments"]) == {"query": "a b", "domain": "physics"}
     assert [c["function"]["name"] for c in markup.split("<tool_call>not json</tool_call>")[0]] == [""]
     assert markup.split("no markup") == ([], "no markup")
+    assert markup.cut("Plan.\n" + XML_CALL + "\n ") and markup.cut("Plan.\n<function=calculate><parameter=expressions>2")
+    assert not markup.cut(XML_CALL + "\nIt is 480.") and not markup.cut("no markup")
