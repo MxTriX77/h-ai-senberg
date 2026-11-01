@@ -148,6 +148,8 @@ async def test_run_eval_with_fake_backend(cfg, fake, built_store, tmp_path):
     assert (s["items"], s["correct_pct"], s["unmarked_contradictions"]) == (3, 33.3, 1)
     assert (s["facts"], s["facts_correct"], s["loose_correct"]) == (3, 1, 1)
     assert (s["claims"], s["supported_claims"], s["unverified_claims"], s["supported_claims_pct"]) == (3, 2, 1, 66.7)
+    assert [by_id[q]["unsourced"] for q in ("q1", "q2", "q3")] == [0, 1, 1]  # 90 °C: the record gives 80.1 °C
+    assert s["unsourced_per_answer"] == 0.67
     assert json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8")) == summary
     assert set(summary["sets"]) == {"S1"}
 
@@ -402,6 +404,11 @@ def test_summary_counts_body_reads_and_line_only_parts():
 def test_consistency_fixes_counted():
     r = log(verification={"counts": {}, "consistency": [{"old": "a", "new": "b", "why": ""}]})
     assert summarize([r])["consistency_fixes"] == 1
+
+
+def test_unsourced_numbers_per_answer():
+    assert summarize([log(unsourced=2), log(unsourced=1), log()])["unsourced_per_answer"] == 1.5  # flag off: not counted
+    assert summarize([log(), log(unsourced=None)])["unsourced_per_answer"] is None
 
 
 def test_check_fixes_counted():

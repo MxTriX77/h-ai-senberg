@@ -215,6 +215,7 @@ class VerifierConfig(_Section):
     consistency_keep_answer_lines: bool  # the review never changes a labelled answer/verdict line
     keep_quotes: bool  # text the answer quotes from the task is never rewritten by checkers, judge or review
     reference_over_literature: bool  # a claim supported only by literature is not supported when a reference disagrees
+    unsourced_numbers: Literal["off", "flag"]  # flag: list the answer's numbers no source states (haisenberg.unsourced)
 
     @field_validator("checkers")
     @classmethod

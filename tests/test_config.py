@@ -377,6 +377,17 @@ def test_conservative_review_settings(tmp_path):
             load_config(write(tmp_path, data))
 
 
+def test_unsourced_numbers_setting(tmp_path):
+    assert load_config(write(tmp_path)).verifier.unsourced_numbers == "flag"
+    data = base()
+    data["verifier"]["unsourced_numbers"] = "soften"  # not built: flag only
+    with pytest.raises(ConfigError, match="verifier.unsourced_numbers"):
+        load_config(write(tmp_path, data))
+    del data["verifier"]["unsourced_numbers"]
+    with pytest.raises(ConfigError, match="verifier.unsourced_numbers"):
+        load_config(write(tmp_path, data))
+
+
 def test_relevance_threshold(tmp_path):
     assert load_config(write(tmp_path)).retrieval.min_term_share == 0.5
     data = base()

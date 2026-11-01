@@ -279,6 +279,8 @@ uv run python -m evals.report 20261023-1500-B --base 20261023-1400-A      # plus
 
 It prints markdown tables: code metrics per set and mode (with the fact questions' strict and loose scores, `strict / loose of n`, the parts right line-only next to the body-first parts, and the verdict parts read from the body; `–` for runs scored before body reading), review metrics when the run was reviewed, and with `--base` the change on the items both runs have (solved, parts right, items better and worse, artefacts, latency, review score).
 
+Unsourced numbers (`verifier.unsourced_numbers: flag`, flag only): after the checks, the final answer's numbers that no message, tool result or written computation of the answer states are listed in the verification report (`unsourced`, one reasoning line), counted per item log and as `unsourced_per_answer` in the summary and report; `uv run python -m evals.unsourced RUN [RUN ...] [--sample N]` recomputes them from recorded logs without a model (lookup passages are not logged, so these counts are an upper bound).
+
 ### Blind review
 
 ```bash
