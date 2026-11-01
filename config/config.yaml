@@ -15,6 +15,7 @@ model_backend:
   api_key: "${API_KEY:-}"                  # empty for local llama-server; set in .env for cloud backends
   model_id: "${MODEL_ID:-qwen3.5-9b}"      # sent as `model`; also llama-server's --alias
   temperature: 0.6
+  seed: "${EVAL_SEED:-}"                   # for eval A/Bs (same draws in both arms); empty = no seed; production chat leaves it unset
   max_tokens: 4096                         # per call: thinking (llama_server reasoning-budget) + answer
   timeout_s: null                          # read limit in s; null = wait as long as the backend needs (queue, slow prompt)
   wait_s: 300                              # retry a backend that refuses connections or answers 503 (loading, restarting)
@@ -66,7 +67,10 @@ reasoning_policy:
     function: '<function=([^>\s]+)>'       # Qwen3.5 XML: the tool name; a call without it is read as JSON {"name", "arguments"}
     parameter: '<parameter=([^>\s]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=|</function>)|$)'   # ... and each argument
   empty_answer_retry: true                 # an empty final answer (all of it left in the thinking) is asked for again (once)
-  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call)
+  run_written_calculations: true           # calculate calls written as text where they cannot run as a round (after the
+                                           # last round, or in the retry) are run anyway and their results given to
+                                           # the retry; a calculation written in the retry costs one more call (at most)
+  answer_retry_prompt: |                   # the user turn of that call (also after a removed tool call or a run calculation)
     Tools are no longer available. Write your complete final answer to the question above now, as plain
     text without any tool call: use the results you have, show the working and keep the format the
     question asks for.
@@ -155,10 +159,18 @@ verifier:                                  # claim checks on the draft; on/off: 
     C4: no_claim
     After supports or contradicts, give the ids of the passages that decide it.
   rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
+  unit_checks: true                        # a number is checked against a record value only as the same quantity: no
+                                           # other unit after it (J s = J Hz^-1, m/s = m per second; km/h, eV s differ)
+                                           # and no other property named nearest it ("boils at" is not a molar mass);
+                                           # it is corrected only with the record's unit, or with the property (or the
+                                           # constant) named; false: numbers alone (cited constants correct any number
+                                           # within a factor of ten)
   arithmetic_check: true                   # recompute every "a × b = c" in the draft and fix wrong results
   arithmetic_rel_tol: 0.005                # ... when c is off by more than its rounding and this share
   arithmetic_prefixes: true                # ... and also off when scaled by 10^±3/6/9 where a unit of the chain has an
                                            # SI prefix (2452 W = 2.45 kW, 250 mg × 6 = 1.5 g); false: c as written only
+  arithmetic_answer_lines: true            # ... and a labelled answer line (A1: …) that states exactly the old wrong c,
+                                           # once, gets the fixed value too; false: answer lines keep their values
   arithmetic_strict_parse: true            # read only a whole left side: a × 10ⁿ is one number (6.4 × 10⁷ ÷ 2.0 × 10⁶ = 32),
                                            # a currency sign before a number is dropped, an expression with math right before
                                            # it (an operator, "(", ½, π, "half of", "million") or a scale suffix (1.3B, 20k)
@@ -174,6 +186,13 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
                                            # row, ids aside) is ignored: the claim counts as uncorrected (see above)
+  judge_minimal_edits: true                # a judge correction is applied only as a minimal edit: it replaces 1-3 terms
+                                           # (numbers by value, words, formulas, unit symbols) by 1-3 terms, adds or
+                                           # drops none, changes no word to one that contains it (balanced →
+                                           # unbalanced), and every term it puts in is in the passages the judge cited
+                                           # (numbers within rounding); only those terms change in the claim. Anything
+                                           # else leaves the claim as written, unverified, with the reason in the
+                                           # reasoning; false: the correction replaces the whole claim
   keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
                                            # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
                                            # of the material under review: checkers and the arithmetic check (when the

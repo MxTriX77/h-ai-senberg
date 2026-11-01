@@ -66,6 +66,7 @@ class LLMClient:
             "stream": True,
             "temperature": cfg.temperature,
             "max_tokens": cfg.max_tokens,
+            **({"seed": cfg.seed} if cfg.seed is not None else {}),
             **cfg.extra_body,
             **fields,
         }
