@@ -153,6 +153,22 @@ def test_re_dependencies_to_a_fixed_point():
     assert b.why == "it depends on A, which is contradicted"
 
 
+def test_rg_own_computation_settles_a_plain_claim():
+    # c10a baseline: "410 > 407.42" yet "cannot be determined"; own 132,258 yet "roughly 132,000" rejected
+    assert changed(entry(status=UNVERIFIED, support=("computation",), strong_enough=True, asserts="computed")) == [
+        ("A", ESTABLISHED, "R-g")]
+    assert changed(entry(status=CONTRADICTED, support=("computation",), strong_enough=True)) == [
+        ("A", ESTABLISHED, "R-g")]
+    # never from the material alone, never for a cause, a forecast or a proof, never with doubt recorded
+    assert changed(entry(status=UNVERIFIED, support=("given",), strong_enough=True)) == []
+    assert changed(entry(status=UNVERIFIED, support=("computation",), strong_enough=True, asserts="cause")) == []
+    assert changed(entry(status=UNVERIFIED, support=("computation",), strong_enough=True, gaps=["x"])) == []
+    assert changed(entry(status=UNVERIFIED, support=("computation",), strong_enough=True, assumptions=["x"])) == []
+    assert changed(entry(status=UNVERIFIED, support=("computation",))) == []  # not at full strength
+    assert changed(entry(status=CONTRADICTED, support=("computation",), strong_enough=True,
+                         against=("knowledge",))) == []
+
+
 def test_no_promotion():
     assert changed(entry(status=HYPOTHESIS, support=("computation",), strong_enough=True)) == []
     assert changed(entry(status=UNVERIFIED, support=("given",), strong_enough=True)) == []

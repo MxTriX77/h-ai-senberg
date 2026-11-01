@@ -158,11 +158,14 @@ def strong_word(text: str, words: list[str]) -> str | None:
 
 def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     """Settle each status from the recorded evidence, first rule that applies (R-a … R-d), then R-e to a fixed
-    point; return the entries whose status changed. No rule makes anything established.
+    point; return the entries whose status changed. Only R-g makes anything established.
     - R-a: evidence against from the given material, a source or a computation → contradicted.
     - R-b: a claim of proof (`asserts: proof`, or a proof word in the statement) without evidence for its full
       strength: when the material it refers to is not here (gaps) → unverified; else, with evidence for it that
       cannot give what it claims → contradicted.
+    - R-g: an unverified or contradicted plain fact or computed value that a computation supports at full
+      strength, with nothing against it, no gaps and no assumptions → established (the verdict follows the
+      answer's own numbers; the given material alone never establishes, a hypothesis is never promoted).
     - R-c: contradicted with nothing against it → unverified (not shown is not false).
     - R-d: established with nothing for it → unverified; resting only on assumptions → hypothesis; without
       evidence for its full strength → unverified.
@@ -176,6 +179,9 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
             _set(e, UNVERIFIED, "R-b", "claim of proof; the material it refers to is not here")
         elif proof and e.support:
             _set(e, CONTRADICTED, "R-b", "claim of proof the evidence can't give")
+        elif (e.status in (UNVERIFIED, CONTRADICTED) and e.asserts in ("fact", "computed") and e.strong_enough
+              and not (e.against or e.gaps or e.assumptions) and any(s["from"] == "computation" for s in e.support)):
+            _set(e, ESTABLISHED, "R-g", "a computation settles it at full strength and nothing is against it")
         elif e.status == CONTRADICTED and not e.against:
             _set(e, UNVERIFIED, "R-c", "nothing against it: not shown is not false")
         elif e.status == ESTABLISHED and not e.support:
