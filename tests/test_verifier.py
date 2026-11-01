@@ -935,10 +935,36 @@ def test_clock_times_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+@pytest.mark.parametrize("draft", [  # recorded drafts that main "fixed" (to 0.120, 88, 0.7, 28, 101, 54, 40.0, ...)
+    "- H₂SO₄: 60.0 mL × 2.00 mol/L = 0.0600 L × 2.00 mol/L = 0.120 mol.",  # a step of a chain, after its unit
+    "Allowable force = (250/3.0) MPa × 113.1 mm² = 83.33 MPa × 113.1 mm² = 9,425 N",
+    "Remaining = 100% × (1 - 0.005)^25 = 100% × 0.995^25 = 100% × 0.881 ≈ 88.1%",  # ... after its %
+    "- Относительное снижение риска = (4% − 3%) / 4% = 1%/4% = 25%",
+    r"$$I = 2.0\,\text{A} \times \frac{6.0}{6.0 + 3.0} = 2.0 \times \frac{6.0}{9.0} = 1.333\,\text{A}$$",  # LaTeX
+    r"$E = 408 \cdot (1 - 0.14) = 408 \cdot 0.86 = 350.88 \text{ kWh}$",
+    r"\ln(10^{12}) = 12 \ln(10) = 12 \cdot 2.302585 = 27.631",  # a function after the result
+    "= 3.785411784 × 100 ÷ 56.32704 = 6.720416667 L/100 km",  # × 100 is no power of ten
+    r"$P_2 = P_1 \times (1 - 0.20) = 1.25 \times 0.80 = 1.00$",  # a times sign before "(", not italics
+    "C_исходная = C_аликвоты × (100.0 мл / 10.00 мл) = 0.0820 × 10 = 0.820 моль/л",
+    "**Sugars per bar:** 22.0 g per 100 g × 0.40 = 8.8 g",  # "per" belongs to the math
+    "| Правильная доля = 1 — 0.95^12 = 46% |",  # a dash written as a minus
+    r"$Q = 1{,}20 \times 4{,}19 \times 75 = 377{,}1$ кДж.",  # LaTeX decimal comma
+    "A1: да (3 марта + 14 недель = 3 марта + 98 дней = 9 июня)",  # a date
+    "giving 2(1)(1) + 1 = 3 peaks",  # an implied product
+])
+def test_misread_expressions_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
 @pytest.mark.parametrize("draft, expected", [
     ("Total: 2 h + 3 h = 6 h", "Total: 2 h + 3 h = 5 h"),
     ("A2: (1000 − 800) / 800 = 0.30", "A2: (1000 − 800) / 800 = 0.25"),  # a label's colon is no clock time
     ("**S7:** (4.2-3.8)/3.8 × 100 = 12.5%", "**S7:** (4.2-3.8)/3.8 × 100 = 10.5%"),
+    ("E = 1932 Вт × 4,333 мин / 60 = 0,1388 кВт·ч = 500 кДж",  # a unit with "·" is no operator
+     "E = 1932 Вт × 4,333 мин / 60 = 0.1395 кВт·ч = 500 кДж"),
+    ("- Total: 162 + 240 + 36 + 12 = 350 kcal per 100 g", "- Total: 162 + 240 + 36 + 12 = 450 kcal per 100 g"),
+    ("n = (5.00 × 10⁻³) / (4.005 × 10⁻²⁵) = 1.248 × 10²³ m⁻³", "n = (5.00 × 10⁻³) / (4.005 × 10⁻²⁵) = 1.248 × 10^22 m⁻³"),
 ])
 def test_hours_and_labelled_lines_still_checked(draft, expected):
     assert fix_arithmetic(draft, 0.005)[0] == expected
