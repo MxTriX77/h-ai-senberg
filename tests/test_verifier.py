@@ -785,6 +785,22 @@ def test_unconfirmed_reads_decimal_commas(new, why):
     assert result.startswith(why) and bool(result) == bool(why)
 
 
+UNITS = ("The yield is 23.4 / 27.5 × 100 = 85.1 %. C1: the 85 % yield is consistent. The reagent costs 98.6 € per kg. "
+         "The batch took 12 h. C2: the 12 % loss is plausible. Mass lost: 5.00 − 3.80 = 1.20 g. C3: a loss of 2.20 g.")
+
+
+@pytest.mark.parametrize("old, new, conflict, why", [
+    ("the 85 % yield", "the 85.1 % yield", "23.4 / 27.5 × 100 = 85.1 %", ""),
+    ("a loss of 2.20 g", "a loss of 1.20 g", "5.00 − 3.80 = 1.20 g", ""),
+    ("the 85 % yield", "the 98.6 % yield", "The reagent costs 98.6 € per kg.", "98.6 is not stated"),  # € ≠ %
+    ("a loss of 2.20 g", "a loss of 98.6 g", "The reagent costs 98.6 € per kg.", "98.6 is not stated"),
+    ("the 12 % loss", "the 12 h loss", "The batch took 12 h.", "12 measures something else"),  # % → h
+])
+def test_review_numbers_must_be_the_same_quantity(old, new, conflict, why):
+    result = unconfirmed(UNITS, {"old": old, "new": new, "conflict": conflict})
+    assert result.startswith(why) and bool(result) == bool(why)
+
+
 def test_annotated_no_claim_loses_its_citation(client, fake):
     fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a liquid [S1]. Let me know if you need more [S1].")],
                     [content("C1: supports S1\nC2: no_claim")]]
