@@ -18,10 +18,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config, ToolCallMarkup
-from .evidence import Evidence, Settled
+from .evidence import _LOOKALIKE, Evidence, Settled, listed_items
 from .llm import LLMClient, estimate_tokens
 from .tools import CALCULATE, Knowledge, Sources
-from .verifier import Verification, Verifier, answer_labels, strip_cites
+from .verifier import Verification, Verifier, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -242,12 +242,12 @@ class Agent:
             if not text:
                 yield {"reasoning_content": "\n\n> no answer on the retry\n"}
             if cut or not text:  # never a fragment that ends where a call was removed: the most complete answer
-                question = _question(history)
-                if ranked := [((_requested_lines(t[1], question), not t[2], len(t[1])), t) for t in tried if t[1]]:
-                    (labelled, complete, chars), (name, text, cut, reply) = max(ranked, key=lambda r: r[0])
+                items = listed_items(_question(history))
+                if ranked := [((_items_named(t[1], items), not t[2], len(t[1])), t) for t in tried if t[1]]:
+                    (named, complete, chars), (name, text, cut, reply) = max(ranked, key=lambda r: r[0])
                     state = "complete" if complete else "ends at a removed tool call"
-                    yield {"reasoning_content": f"\n\n> answer kept: {name} ({labelled} requested answer lines, {state},"
-                                                f" {chars} characters)\n"}
+                    listed = f"{named} of {len(items)} listed items, " if items else ""
+                    yield {"reasoning_content": f"\n\n> answer kept: {name} ({listed}{state}, {chars} characters)\n"}
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
@@ -319,9 +319,11 @@ def _tool_results(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(out)
 
 
-def _requested_lines(text: str, question: str) -> int:
-    """How many labelled answer lines of text (`A1: …`) carry a label the question names."""
-    return sum(bool(re.search(rf"(?<!\w){re.escape(label)}(?!\w)", question)) for label in answer_labels(text))
+def _items_named(text: str, items: list[tuple[str, str]]) -> int:
+    """How many of the request's listed items text names: each id as written, as a whole word, Cyrillic
+    look-alike letters read as Latin (`С1` names `C1`)."""
+    text = text.translate(_LOOKALIKE)
+    return sum(bool(re.search(rf"(?<!\w){re.escape(i.translate(_LOOKALIKE))}(?!\w)", text)) for i, _ in items)
 
 
 def _show_args(arguments: str) -> str:

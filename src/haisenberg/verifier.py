@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from .config import Config
+from .config import Config, VerdictWords
 from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
 from .l1.store import STOPWORDS, Value
@@ -590,17 +590,25 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[^\W\d_]+", text.casefold())
 
 
+def verdict_tokens(text: str, words: VerdictWords) -> list[str]:
+    """The verdict words of text in order, case ignored: each negator (a whole word) and each word that starts
+    with a verdict stem, as its longest such stem (`is not verified` -> not, verif; `неверно` -> неверн)."""
+    stems = sorted((s.casefold() for s in words.stems), key=len, reverse=True)
+    negators = {n.casefold() for n in words.negators}
+    found = []
+    for w in re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)*", text.replace("’", "'").casefold()):
+        if w in negators:
+            found.append(w)
+        elif stem := next((s for s in stems if w.startswith(s)), None):
+            found.append(stem)
+    return found
+
+
 def _answer_line(text: str, start: int, end: int) -> bool:
     """A line that text[start:end] touches is a labelled answer or verdict line (`A1: …`, as in split_claims)."""
     stop = text.find("\n", end)
     lines = text[text.rfind("\n", 0, start) + 1 : stop if stop >= 0 else len(text)].splitlines()
     return any(_LABELLED.match(line[_MARKERS.match(line).end() :]) for line in lines)
-
-
-def answer_labels(text: str) -> set[str]:
-    """The labels of the labelled answer or verdict lines in text (`**A1:** …` -> `A1`, as in split_claims)."""
-    found = (_LABELLED.match(line, _MARKERS.match(line).end()) for line in text.splitlines())
-    return {m.group(0).strip("*_`:： \t") for m in found if m}
 
 
 def unconfirmed(answer: str, fix: dict[str, str]) -> str:
@@ -845,9 +853,9 @@ class Verifier:
                 why = "not in the answer" if count == 0 else "unchanged" if count == 1 else f"found {count} times"
             elif self.cfg.keep_quotes and rewrites_quote(answer, question, f["old"], f["new"]):
                 why = "quoted from the task"
-            elif self.cfg.consistency_keep_answer_lines and _answer_line(
-                    answer, at := answer.find(f["old"]), at + len(f["old"])):
-                why = f"answer line kept; conflict: {f.get('conflict') or f['why'] or 'not named'!r}"
+            elif self.cfg.consistency_keep_verdicts and (verdict_tokens(f["old"], self.cfg.verdict_words)
+                                                         != verdict_tokens(f["new"], self.cfg.verdict_words)):
+                why = f"verdict kept; conflict: {f.get('conflict') or f['why'] or 'not named'!r}"
             else:
                 why = unconfirmed(answer, f) if self.cfg.consistency_quotes else ""
             if why:

@@ -189,6 +189,13 @@ class ToolText(_Section):
         return v
 
 
+class VerdictWords(_Section):
+    """What a verdict is made of, case ignored (verifier.consistency_keep_verdicts)."""
+
+    stems: list[str]  # a word starting with one is a verdict word (correct, неверн …)
+    negators: list[str]  # whole words that turn a verdict around (not, не …)
+
+
 class VerifierConfig(_Section):
     judge_prompt: str
     rel_tol: NonNegativeFloat
@@ -212,7 +219,8 @@ class VerifierConfig(_Section):
     consistency_check: bool  # one review call over the whole answer and the task (conclusions vs calculations...)
     consistency_prompt: str
     consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
-    consistency_keep_answer_lines: bool  # the review never changes a labelled answer/verdict line
+    consistency_keep_verdicts: bool  # the review never changes a verdict (its verdict_words), in any format
+    verdict_words: VerdictWords
     keep_quotes: bool  # text the answer quotes from the task is never rewritten by checkers, judge or review
     reference_over_literature: bool  # a claim supported only by literature is not supported when a reference disagrees
 

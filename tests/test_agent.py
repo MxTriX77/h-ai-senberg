@@ -7,7 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, reasoning, tool_call
-from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _Markup
+from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _items_named, _Markup
+from haisenberg.evidence import listed_items
 from haisenberg.llm import estimate_tokens
 from haisenberg.l1.store import L1Store
 from haisenberg.server import create_app
@@ -331,26 +332,36 @@ def test_calculation_written_in_the_retry_is_run_and_asked_once_more(client, fak
 def test_one_more_call_at_most_and_the_most_complete_answer_kept(client, fake, cfg):
     policy = cfg.reasoning_policy
     policy.max_search_depth, policy.max_calc_rounds = 1, 0
-    fake.scripts = [lookup_round(), [content("A1: 480 g\nLet me check:\n" + XML_CALL)],
-                    [content("A1: 480 g\nA2: 12 J\nLet me verify the energy:\n" + XML_CALL)],
-                    [content("Let me recompute everything once more, step by step, to be sure.\n" + XML_CALL)]]
+    fake.scripts = [lookup_round(), [content("C1 holds: 480 g.\nLet me check:\n" + XML_CALL)],
+                    [content("C1 holds: 480 g. C2 holds too: 12 J.\nLet me verify the energy:\n" + XML_CALL)],
+                    [content("Let me recompute everything once more, step by step, with every unit written out, "
+                             "to be sure.\n" + XML_CALL)]]
     fake.chunks = [content("never asked")]
-    r = chat(client, QUESTION)
+    r = chat(client, [{"role": "user", "content": "Check each:\nC1. The mass is 480 g.\nC2. The energy is 12 J."}])
     assert len(fake.requests) == 4  # the lookup, the draft, the retry and one more call
-    assert answer(r) == "A1: 480 g\nA2: 12 J\nLet me verify the energy:"  # the retry: both requested lines
+    assert answer(r) == "C1 holds: 480 g. C2 holds too: 12 J.\nLet me verify the energy:"  # both items, not the longest
     text = reasoning_text(r)
     assert text.count("calculation run") == 2 and "tool call written as text in the retry: removed\n" in text
-    assert "answer kept: the retry (2 requested answer lines, ends at a removed tool call, " in text
+    assert "answer kept: the retry (2 of 2 listed items, ends at a removed tool call, " in text
 
 
 def test_lookup_written_in_the_retry_removed_and_the_best_answer_kept(client, fake, cfg):
     cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 0
-    fake.scripts = [lookup_round(), [content("**A1:** 194.19 g/mol\nA2: C8H10N4O2\n" + LOOKUP_CALL)],
+    fake.scripts = [lookup_round(), [content("Q1 is 194.19 g/mol; for Q2, C8H10N4O2.\n" + LOOKUP_CALL)],
                     [content("I should look the formula up again to be sure of every atom.\n" + LOOKUP_CALL)]]
-    r = chat(client, [{"role": "user", "content": "Give A1: the molar mass and A2: the formula of caffeine."}])
-    assert answer(r) == "**A1:** 194.19 g/mol\nA2: C8H10N4O2" and len(fake.requests) == 3
+    r = chat(client, [{"role": "user", "content": "About caffeine:\nQ1. its molar mass\nQ2. its formula"}])
+    assert answer(r) == "Q1 is 194.19 g/mol; for Q2, C8H10N4O2." and len(fake.requests) == 3
     assert "tool call written as text in the retry: removed\n" in reasoning_text(r)
-    assert "answer kept: the draft (2 requested answer lines, ends at a removed tool call, " in reasoning_text(r)
+    assert "answer kept: the draft (2 of 2 listed items, ends at a removed tool call, " in reasoning_text(r)
+
+
+@pytest.mark.parametrize("text, named", [
+    ("C1 holds; С2 (Cyrillic С) too, C10 is not listed.", 2),  # look-alike letters, whole words
+    ("**C3:** fine. C1x, xC2", 1),
+    ("Nothing named.", 0),
+])
+def test_items_named(text, named):
+    assert _items_named(text, listed_items("C1. a\nC2. b\nC3. c")) == named
 
 
 def test_complete_answer_kept_over_a_longer_fragment(client, fake):
@@ -359,7 +370,7 @@ def test_complete_answer_kept_over_a_longer_fragment(client, fake):
                     [content("I should look this up once more before I answer, to be precise.\n" + LOOKUP_CALL)]]
     r = chat(client)
     assert answer(r) == "Caffeine is 194.19 g/mol." and len(fake.requests) == 2
-    assert "answer kept: the draft (0 requested answer lines, complete, 25 characters)" in reasoning_text(r)
+    assert "answer kept: the draft (complete, 25 characters)" in reasoning_text(r)  # no listed items: as before
 
 
 def test_tool_call_written_as_text_is_run_when_rounds_are_left(client, fake):
