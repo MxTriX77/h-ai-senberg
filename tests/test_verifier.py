@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, tool_call
 from haisenberg.agent import Agent
-from haisenberg.l1.store import ArticleRecord, Citation, L1Store
+from haisenberg.l1.store import ArticleRecord, Citation, CompoundRecord, L1Store
 from haisenberg.l2.store import PassageRecord
 from haisenberg.server import create_app
 from haisenberg.llm import estimate_tokens
@@ -252,6 +252,45 @@ def test_two_masses_of_one_compound(store):
     assert outcome == CORRECTED and fixed == "The monoisotopic mass of sodium chloride is 57.96 Da [S1]."
     outcome, _, fixed, _ = code_check(claim("The molar mass of sodium chloride is 57.96 g/mol [S1]."), s, 0.001)
     assert outcome == CORRECTED and fixed == "The molar mass of sodium chloride is 58.44 g/mol [S1]."
+
+
+def compound(title, formula, molar_mass, mono, synonyms=()):
+    return CompoundRecord(len(title), title, formula, molar_mass, None, mono, list(synonyms), "name", ["chemistry"],
+                          Citation("pubchem", "p", "1", "CC0", {}, f"https://pubchem/{title}"))
+
+
+WATER_C, ACID_C = compound("Water", "H2O", 18.015, 18.0106), compound("Sulfuric acid", "H2SO4", 98.08, 97.967)
+ETHANOL_C = compound("Ethanol", "C2H6O", 46.07, 46.042)
+
+
+@pytest.mark.parametrize("records, text", [  # a number of another substance than the cited record's
+    ((ACID_C,), "My calculation: Cu (63.546) + S (32.065) + 4×O (63.996) + 5×H₂O (90.075) = 249.682 g/mol [S1]."),
+    ((ACID_C,), "The molar mass of CuSO4·5H2O is 249.68 g/mol [S1]."),  # recorded m2 c03-s3-01: "fixed" to 98.08
+    ((WATER_C,), "Ethanol (46.07 g/mol) is heavier than water [S1]."),
+    ((WATER_C,), "Heavy water D2O has a molar mass of 20.03 g/mol [S1]."),
+    ((WATER_C,), "Water and ethanol have molar masses of 18.015 g/mol and 46.07 g/mol [S1]."),
+    ((WATER_C,), "The hydrate holds 5 waters, 5 × 18.015 = 90.08 g/mol [S1]."),  # a computed result
+    ((ACID_C, WATER_C), "Sulfuric acid (98.08 g/mol) is mixed with water (18.02 g/mol) [S1][S2]."),
+    ((ACID_C,), "H2SO4 + 2NaOH: the salt Na2SO4 has a molar mass of 142.04 g/mol [S1]."),
+    ((ETHANOL_C,), "Methanol (32.04 g/mol) is lighter than ethanol [S1]."),
+])
+def test_numbers_of_other_substances_not_corrected(records, text):
+    s = Sources()
+    for r in records:
+        s.add("x", r, r.passage("", 1500))
+    found = code_check(claim(text), s, 0.005)
+    assert found is None or found[0] != CORRECTED
+
+
+@pytest.mark.parametrize("text, fixed", [
+    ("Water has a molar mass of 19.5 g/mol [S1].", "Water has a molar mass of 18.0 g/mol [S1]."),
+    ("M(H2O) = 19.5 g/mol [S1].", "M(H2O) = 18.0 g/mol [S1]."),  # an assignment is no computation
+])
+def test_wrong_value_of_the_named_substance_still_corrected(text, fixed):
+    s = Sources()
+    s.add("x", WATER_C, WATER_C.passage("", 1500))
+    outcome, _, out, _ = code_check(claim(text), s, 0.005)
+    assert (outcome, out) == (CORRECTED, fixed)
 
 
 @pytest.mark.parametrize("text", [

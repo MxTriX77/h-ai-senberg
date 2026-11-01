@@ -421,6 +421,30 @@ def _property(norm: str, n: Number, v: Value) -> bool | None:
     return None if near is None else near["own"] is not None
 
 
+def _about(norm: str, n: Number, s: Source, sources: Sources) -> bool:
+    """Whether a number may contradict record s: for a compound record, the claim names a substance before the
+    number and the nearest such mention (a name or synonym of any source, or a formula) is s's own, and the number
+    is no computed result (`5 × 18.015 = 90.08`); `Ethanol (46.07 g/mol) … water`, `Heavy water D2O … 20.03`,
+    `CuSO4·5H2O … 249.68` citing H2SO4 are about another substance. Other records: always."""
+    hills = {to_hill(f) for f in s.record.formulas()}
+    head = norm[: n.start]
+    if not hills:
+        return True
+    if re.search(r"\d\s*[×*/÷·⋅+−-]\s*[\d(][^=\n]*=\s*$", head):
+        return False
+    low, mentions = head.lower(), []
+    for x in sources.items:
+        for name in x.record.names():
+            if len(name) >= 3:
+                mentions += [(m.end(), x.id) for m in re.finditer(rf"(?<!\w){re.escape(name.lower())}(?!\w)", low)]
+        for f in x.record.formulas():  # as written, also inside a bracket: M(H2O)
+            mentions += [(m.end(), x.id) for m in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(f)}(?![a-z0-9])", head)]
+    for hill, _, end in read_formulas(head):
+        owner = next((x.id for x in sources.items if hill in {to_hill(f) for f in x.record.formulas()}), None)
+        mentions.append((end, owner))
+    return bool(mentions) and max(mentions)[1] == s.id
+
+
 def _fits(n: Number, v: Value, norm: str, cited: bool, named: bool, units: bool) -> tuple[bool, bool]:
     """(a match of the number with value v supports the claim; a mismatch contradicts it, v's record being cited).
     With `units` both need the same quantity: no other unit after the number and no other property named nearest
@@ -453,10 +477,17 @@ def code_check(claim: Claim, sources: Sources, rel_tol: float,
 
     for s in cited:  # contradictions need a cited record and the same quantity
         fixes = []
-        for n in nums:
+        if units and any(_matches(n, v.number, rel_tol) and _fits(n, v, norm, True, named[s.id], units)[0]
+                         for n in nums for v in s.record.values()):
+            nums_s = []  # the claim states the record's value: its other numbers are about something else
+        else:
+            nums_s = nums
+        for n in nums_s:
             if any(_matches(n, v.number, rel_tol) and _fits(n, v, norm, True, named[c.id], units)[0]
                    for c in cited for v in c.record.values()):
                 continue  # the value of a cited record
+            if units and not _about(norm, n, s, sources):
+                continue  # a number of another substance, or a computed one
             for v in s.record.values():
                 if _fits(n, v, norm, True, named[s.id], units)[1]:
                     fixes.append((n.start, n.end, _format(v.number, n), f"{norm[n.start:n.end]} ≠ {v.number:g}"))
