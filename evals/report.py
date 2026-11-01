@@ -58,13 +58,15 @@ def review_table(runs: list[tuple[str, dict]]) -> list[str]:
     reviewed = [(run, summary["review"] | {"mode": summary["mode"]}) for run, summary in runs if "review" in summary]
     if not reviewed:
         return []
-    lines = ["| run | set | mode | reviewed | mean score | defects found | verdicts right | omissions"
-             " | unsupported additions | unsupported as verified | final vs analysis | must_not violated | new errors |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| run | set | mode | reviewed | confident falsehoods per answer | mean score | defects found"
+             " | verdicts right | omissions | unsupported additions | unsupported as verified | final vs analysis"
+             " | must_not violated | new errors |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for run, name, mode, s in _rows(reviewed):
         errors = ", ".join(f"{tag} {n}" for tag, n in sorted(s["new_errors"].items())) or "–"
         lines.append(
-            f"| {run} | {name} | {mode} | {s['reviewed']} | {_f(s['mean_score'])} | {_f(s['defects_found_pct'])} %"
+            f"| {run} | {name} | {mode} | {s['reviewed']} | {_f(s.get('falsehoods_per_answer'))}"
+            f" | {_f(s['mean_score'])} | {_f(s['defects_found_pct'])} %"
             f" | {_f(s['verdict_pct'])} % | {s['omissions']} | {s['unsupported_additions']}"
             f" | {s['unsupported_as_verified']} | {s['final_vs_analysis']} | {s['must_not_violations']} | {errors} |")
     return lines
@@ -80,13 +82,13 @@ def _median(values: list[float]) -> float | None:
 
 def delta_table(base: Path, runs: list[Path]) -> list[str]:
     """Per run and set, on the items both runs have: solved, parts, better/worse items, artefacts, latency,
-    and the mean review score when both runs were reviewed."""
+    and, when both runs were reviewed, the confident falsehoods base → run and the mean review score."""
     old = {r["id"]: r for r in read_logs(base)}
     old_reviews = _reviews(base)
     lines = [f"Paired against {base.name}:", "",
              "| run | set | paired | solved base → run | Δ parts right | items better / worse"
-             " | with artefacts base → run | Δ latency p50 s | Δ review score |",
-             "|---|---|---|---|---|---|---|---|---|"]
+             " | with artefacts base → run | Δ latency p50 s | confident falsehoods base → run | Δ review score |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     for folder in runs:
         logs, reviews = read_logs(folder), _reviews(folder)
         for name in sorted({r["set"] for r in logs}):
@@ -98,12 +100,17 @@ def delta_table(base: Path, runs: list[Path]) -> list[str]:
             scored = [(old_reviews[a["id"]]["score"], reviews[b["id"]]["score"]) for a, b in pairs
                       if a["id"] in old_reviews and b["id"] in reviews]
             score = round(statistics.mean(y - x for x, y in scored), 2) if scored else None
+            graded = [(old_reviews[a["id"]], reviews[b["id"]]) for a, b in pairs if a["id"] in old_reviews
+                      and b["id"] in reviews and "confident_falsehoods" in old_reviews[a["id"]]
+                      and "confident_falsehoods" in reviews[b["id"]]]
+            falsehoods = (f"{sum(x['confident_falsehoods'] for x, _ in graded)} →"
+                          f" {sum(y['confident_falsehoods'] for _, y in graded)} ({len(graded)})" if graded else "–")
             lines.append(
                 f"| {folder.name} | {name} | {len(pairs)} | {sum(bool(a['correct']) for a, _ in pairs)} →"
                 f" {sum(bool(b['correct']) for _, b in pairs)} | {sum(gain):+d} | {sum(g > 0 for g in gain)} /"
                 f" {sum(g < 0 for g in gain)} | {sum(bool(a['artefacts']) for a, _ in pairs)} →"
                 f" {sum(bool(b['artefacts']) for _, b in pairs)}"
-                f" | {_d(None if None in p50 else round(p50[1] - p50[0], 2))} | {_d(score)} |")
+                f" | {_d(None if None in p50 else round(p50[1] - p50[0], 2))} | {falsehoods} | {_d(score)} |")
     return lines
 
 

@@ -53,7 +53,7 @@ SETS = ("facts", "reasoning", "all")
 AUTHORED_SETS = ("S3", "S4", "S5", "S6", "U")
 SPLITS = ("dev", "holdout", "monitor")
 OUTCOMES = ("supported", "unverified", "corrected", "removed")
-REVIEW_COUNTS = ("unsupported_additions", "unsupported_as_verified", "final_vs_analysis")
+REVIEW_COUNTS = ("confident_falsehoods", "unsupported_additions", "unsupported_as_verified", "final_vs_analysis")
 NVIDIA_SMI = ["nvidia-smi", "--query-gpu=name,power.limit,power.draw,memory.total", "--format=csv,noheader"]
 _LOOKALIKE = "АВСЕНКМОРТХавсенкмортх"  # Cyrillic letters a model may write in a label instead of the Latin ones
 _LATIN = str.maketrans(_LOOKALIKE, "ABCEHKMOPTXabcehkmoptx")
@@ -729,8 +729,11 @@ def review_summary(rows: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[st
     expected = [(r.get("verdicts", {}).get(item), str(v["verdict"])) for r, k in rows
                 for item, v in (k.get("verdicts") or {}).items()]
     right = sum(str(got).strip().lower() == want.strip().lower() for got, want in expected if got is not None)
+    graded = [r for r, _ in rows if "confident_falsehoods" in r]  # reviews before 2026-11-01 have no such count
     return {
         "reviewed": len(rows),
+        "falsehoods_per_answer": round(sum(r["confident_falsehoods"] for r in graded) / len(graded), 2) if graded else None,
+        "falsehood_tags": dict(Counter(e["tag"] for r in graded for e in r.get("falsehoods", []))),
         "mean_score": round(statistics.mean(r["score"] for r, _ in rows), 2) if rows else None,
         "defects_found_pct": _pct(sum(len(r.get("defects_found", [])) for r, _ in rows), planted),
         "verdict_pct": _pct(right, len(expected)),
