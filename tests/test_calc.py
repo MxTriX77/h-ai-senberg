@@ -153,9 +153,9 @@ def test_computations(text, values):
     assert {round(v, 6) for v in computations(text, decimal_comma="0,5" in text)} == values
 
 
-def test_chain_checks_each_step():
+def test_chain_checks_its_last_step():  # "0.01448 mol × …" is a step of the chain, like "= 0.0600 L × 2.00 mol/L"
     text = "n = 2.00/138.12 = 0.01448 mol × 180.16 g/mol = 2.609 g"
-    assert [round(a.plain, 4) for a in find_arithmetic(text)] == [0.0145, 2.6087]
+    assert [round(a.plain, 4) for a in find_arithmetic(text)] == [2.6087]
 
 
 # c4: only a whole left side is read; a × 10ⁿ is one number.
