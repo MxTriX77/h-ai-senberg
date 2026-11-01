@@ -274,7 +274,7 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     os.utime(index / "a.bin", (1e9, 1e9))
     os.utime(index / "sub" / "b.bin", (2e9, 2e9))
     cfg.llama_server.model_path, cfg.retrieval.stores["encyclopedia"].path = model, store
-    cfg.retrieval.layer2_literature_index = index
+    cfg.retrieval.stores["literature_dense"].path = index
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
     monkeypatch.setenv("MODEL_PROFILE", "p1")
@@ -286,10 +286,10 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     assert (enc["kind"], enc["enabled"], enc["path"], enc["size"]) == ("encyclopedia", True, str(store), 5)
     assert enc["mtime"] and "raw_dir" not in stores
     assert (stores["literature"]["kind"], stores["literature"]["enabled"]) == ("literature", False)
-    assert stores["layer2_literature_index"] == {"path": str(index), "size": 5,
-                                                 "mtime": datetime.fromtimestamp(2e9).isoformat(timespec="seconds")}
-    cfg.retrieval.layer2_literature_index = tmp_path / "missing"
-    assert manifest(cfg, "r1", "A", [], [], cache)["stores"]["layer2_literature_index"]["size"] is None
+    assert stores["literature_dense"] == {"kind": "literature_dense", "enabled": False, "path": str(index), "size": 5,
+                                          "mtime": datetime.fromtimestamp(2e9).isoformat(timespec="seconds")}
+    cfg.retrieval.stores["literature_dense"].path = tmp_path / "missing"
+    assert manifest(cfg, "r1", "A", [], [], cache)["stores"]["literature_dense"]["size"] is None
     assert man["eval_files"] == [{"path": "evals/questions.yaml", "sha256": file_sha256(QUESTIONS)}]
     assert man["context_tokens"] == cfg.context_tokens and man["sampling"]["temperature"] == cfg.model_backend.temperature
     assert set(man["sampling"]) >= {"max_tokens", *cfg.model_backend.extra_body} and "git" in man and man["date"]

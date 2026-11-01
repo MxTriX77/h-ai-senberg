@@ -103,7 +103,8 @@ Nothing in the code is tied to this laptop or model. On another machine (for exa
 - `CTX_SIZE`, `GPU_LAYERS`, `LLAMA_THREADS`, `REASONING_BUDGET`: context size, layers on the GPU, CPU threads, thinking-token cap (server cap and top of the per-question budget)
 - `LLAMA_SERVER_ENABLED=false` with `API_BASE_URL`, `API_KEY`: use a model server that is already running, here or remote
 - `APP_HOST`, `APP_PORT`, `DATA_DIR`: address and data folder
-- `KNOWLEDGE`: which knowledge stores the tools read (`base`: the Layer 1 store; `extended`: also the Layer 2 literature store)
+- `KNOWLEDGE`: which knowledge stores the tools read (`base`: the Layer 1 store; `extended`: also the Layer 2 literature store; `hybrid`: the literature store ranked by keywords and embeddings together)
+- `EMBED_*`: the embedding server of the `hybrid` setting (port, threads, CPU or GPU)
 
 All variables and their defaults are in `.env.example`.
 
@@ -186,7 +187,7 @@ With the 2026 sources the store holds about 37,500 articles, 355 constants and 9
 A second store, `data/literature_fts.db`, holds cited passages for mechanisms, derivations and worked material: full Wikipedia articles (chemistry and physics topic sets, mathematics, astronomy, molecular and cell biology, climate, and the chemistry/physics articles of the top-1M set), LibreTexts textbooks (chemistry, physics, mathematics, engineering, biology), Stack Exchange answers voted 3 or more (chemistry, physics, matter modeling, astronomy, engineering, earth science), 60 Wikibooks science books and ChEBI definitions. Every page is cut into passages of about 1,200 characters along its headings (math kept as TeX; references, tables and navigation left out; a worked example kept with its solution), identical passages are stored once, and the passages are searched with SQLite FTS5 (BM25):
 
 ```bash
-uv run python -m ingest.download --layer 2     # about 27 GB of new files under data/raw/
+uv run python -m ingest.download --layer 2     # about 27 GB of new files under data/raw/, plus 1.4 GB of embedding models
 uv run python -m ingest.build_l2               # builds data/literature_fts.db next to the Layer 1 store
 uv run haisenberg-l2 search "coupled equilibria" --domain chemistry
 ```
@@ -195,8 +196,19 @@ Stores are declared in `config/config.yaml` under `retrieval.stores` (name, kind
 
 - `KNOWLEDGE=base` (default): the Layer 1 store only, exactly as before.
 - `KNOWLEDGE=extended`: `search_knowledge` returns the same Layer 1 records, then up to `retrieval.literature_k` (2) literature passages. Each result's title then says what it is (`retrieval.source_labels`: Layer 1 records are reference data, literature passages explanatory text whose numbers may differ by source or conditions), and the `search_knowledge` description adds `tools.search_knowledge.literature`: take property values and constants from the reference data, use literature for explanations and context, and give the reference value when they disagree. Switch: `retrieval.label_sources` (off: the same tools and texts as `base`). With `extended` and no literature store the app and `evals.run` stop with the rebuild command.
+- `KNOWLEDGE=hybrid`: as `extended`, but the literature passages are ranked by reciprocal rank fusion of the BM25 ranking and a dense (embedding) ranking (`retrieval.dense`), so a passage that explains the query in other words can win over a short one that only repeats them.
 
-Licences: Wikipedia, Wikibooks and Stack Exchange CC BY-SA; LibreTexts mostly CC BY-NC-SA (local, non-commercial use); ChEBI CC BY 4.0.
+### Dense index (`KNOWLEDGE=hybrid`)
+
+`data/literature_dense/` holds one embedding per literature passage (`vectors.f16.npy`), a FAISS index over them (`index.faiss`) and `meta.json` (model, the literature store build it belongs to). The embeddings come from the `embedding` section of the config: an OpenAI-compatible `/v1/embeddings` backend, by default its own llama-server (`--embedding`) with BGE-M3 (`data/raw/models/`, pinned in `config/sources.yaml`). BGE-M3 is multilingual: a Russian query finds English passages, which BM25 cannot. The app and `evals.run` start it when `hybrid` is selected, on the CPU only (`--device none`, CUDA hidden), so it never takes GPU memory from the reasoner. It holds about 1.5 GB of RAM, and a search embeds one short query (about 50 ms). A dense hit at least `retrieval.dense.min_similarity` similar to the query is kept even when it shares few of the query's words (`min_term_share`). bge-base-en-v1.5 (English only, 3x cheaper to build) is the alternative: switch `embedding.model_id`, `query_prefix`, `server.model_path` and `retrieval.dense.min_similarity` (values in the config comments) and rebuild.
+
+```bash
+uv run python -m ingest.embed_l2               # resumable: run again to continue; --restart starts over
+```
+
+The pass embeds 1.69M passages (~450M tokens): weeks on the CPU, about 10 h on the laptop GPU at 20 W, into 3.5 GB of vectors. To run the server on the GPU (WSL, CUDA build of llama.cpp; about 2 GB of VRAM, so nothing else on the GPU), set `EMBED_DEVICE=CUDA0 EMBED_CUDA_DEVICES=0`, and for throughput `EMBED_PARALLEL=16 EMBED_CTX_SIZE=16384` (1024 tokens per slot). It prints its rate and the time left; a stopped pass continues where it stopped. The index is built on the CPU at the end (minutes). `hybrid` without a complete index, with an index of another model or literature store build, or without a working embedding server stops the app and `evals.run` with the reason and the command.
+
+Licences: Wikipedia, Wikibooks and Stack Exchange CC BY-SA; LibreTexts mostly CC BY-NC-SA (local, non-commercial use); ChEBI CC BY 4.0; the bge embedding models MIT.
 
 ## Evals
 

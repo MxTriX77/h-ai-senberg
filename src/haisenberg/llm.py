@@ -1,4 +1,5 @@
-"""The one OpenAI-compatible chat client (D-003). A backend is only config: base URL, key and model."""
+"""The OpenAI-compatible clients (D-003): chat, and embeddings for the dense literature store. A backend is
+only config: base URL, key and model."""
 
 from __future__ import annotations
 
@@ -10,8 +11,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+import numpy as np
 
-from .config import ModelBackendConfig
+from .config import EmbeddingConfig, ModelBackendConfig
 
 
 RETRY_S = 2.0  # pause between attempts while the backend is unreachable or loading
@@ -105,6 +107,34 @@ class LLMClient:
                     return response
                 await response.aclose()
             await asyncio.sleep(min(RETRY_S, max(0.0, deadline - time.monotonic())))
+
+
+class EmbeddingClient:
+    """`POST <api_base>/embeddings`, synchronous: the knowledge tools and the index build call it from plain code
+    and threads."""
+
+    def __init__(self, cfg: EmbeddingConfig, http: httpx.Client | None = None):
+        self.cfg = cfg
+        self._http = http or httpx.Client(timeout=httpx.Timeout(cfg.timeout_s, connect=10.0))
+
+    def close(self) -> None:
+        self._http.close()
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        """One L2-normalised float32 row per text, in input order. Raises UpstreamError; an error answer carries
+        its HTTP status (llama-server: 400 for an input longer than the model's context)."""
+        cfg = self.cfg
+        headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
+        try:
+            response = self._http.post(cfg.api_base.rstrip("/") + "/embeddings",
+                                       json={"model": cfg.model_id, "input": texts}, headers=headers)
+        except httpx.HTTPError as e:
+            raise UpstreamError(f"embeddings backend unreachable at {cfg.api_base}: {e}") from e
+        if not response.is_success:
+            raise UpstreamError(_error_message(response), response.status_code)
+        rows = sorted(response.json()["data"], key=lambda d: d["index"])
+        vectors = np.asarray([r["embedding"] for r in rows], dtype=np.float32)
+        return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
 
 def _error_message(response: httpx.Response) -> str:

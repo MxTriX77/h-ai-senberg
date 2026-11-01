@@ -81,28 +81,55 @@ class L2Store:
     def close(self) -> None:
         self.con.close()
 
+    def identity(self) -> dict[str, str | int]:
+        """The build this store comes from (a dense index records it): build time and passage count."""
+        meta = dict(self.con.execute("SELECT key, value FROM meta WHERE key IN ('built_at', 'passages')"))
+        return {"store_built_at": meta["built_at"], "passages": int(meta["passages"])}
+
     def search(self, query: str, k: int = 5, domain: str | None = None) -> list[PassageRecord]:
         """Passages with every content word of the query (any of them if none has all), best BM25 first; with
         a domain, only passages having it."""
-        words = [w for w in _WORD.findall(query.lower()) if w not in STOPWORDS]
+        return [self._record(row) for row in self._ranked(query, k, domain, self._fts)]
+
+    def bm25_ids(self, query: str, k: int, domain: str | None = None) -> list[int]:
+        """The ids of the passages `search` finds, best first, without reading the passages."""
+        return [pid for (pid,) in self._ranked(query, k, domain, self._fts_ids)]
+
+    def passages(self, ids: list[int]) -> list[PassageRecord]:
+        """The passages with these ids, in this order (score 0)."""
+        marks = ",".join("?" * len(ids))
+        rows = {row[0]: row for row in self.con.execute(
+            "SELECT p.id, p.title, p.heading, p.text, p.domains, d.path, d.revision, d.source_id, 0.0"
+            f" FROM passage p JOIN doc d ON d.id = p.doc_id WHERE p.id IN ({marks})", ids)}
+        return [self._record(rows[i]) for i in ids]
+
+    def in_domain(self, ids: list[int], domain: str) -> list[int]:
+        """The ids, in this order, of the passages that have the domain."""
+        marks = ",".join("?" * len(ids))
+        found = dict(self.con.execute(f"SELECT id, domains FROM passage WHERE id IN ({marks})", ids))
+        return [i for i in ids if domain in found[i].split()]
+
+    def _ranked(self, query: str, k: int, domain: str | None, fts) -> list[tuple]:
+        words = content_words(query)
         if not words:
             return []
-        rows = self._fts(" ".join(f'"{w}"' for w in words), k, domain)
+        rows = fts(" ".join(f'"{w}"' for w in words), k, domain)
         if not rows and len(words) > 1:
-            rows = self._fts(" OR ".join(f'"{w}"' for w in words), k, domain)
-        return [
-            PassageRecord(
-                title=title,
-                heading=heading,
-                path=path,
-                text=text,
-                score=round(score, 4),
-                domains=domains.split(),
-                collection=self.sources[sid].title,
-                citation=self.sources[sid].cite(path, rev, pid),
-            )
-            for pid, title, heading, text, domains, path, rev, sid, score in rows
-        ]
+            rows = fts(" OR ".join(f'"{w}"' for w in words), k, domain)
+        return rows
+
+    def _record(self, row: tuple) -> PassageRecord:
+        pid, title, heading, text, domains, path, rev, sid, score = row
+        return PassageRecord(
+            title=title,
+            heading=heading,
+            path=path,
+            text=text,
+            score=round(score, 4),
+            domains=domains.split(),
+            collection=self.sources[sid].title,
+            citation=self.sources[sid].cite(path, rev, pid),
+        )
 
     def _fts(self, match: str, k: int, domain: str | None) -> list[tuple]:
         # Rank inside the FTS query and join the passage rows only for the top k.
@@ -115,3 +142,17 @@ class L2Store:
             " FROM top JOIN passage p ON p.id = top.id JOIN doc d ON d.id = p.doc_id ORDER BY top.score",
             (match, k),
         ).fetchall()
+
+    def _fts_ids(self, match: str, k: int, domain: str | None) -> list[tuple]:
+        if domain:
+            match = f'domains : "{domain}" AND ({match})'
+        return self.con.execute(
+            f"SELECT rowid FROM passage_fts WHERE passage_fts MATCH ? ORDER BY bm25(passage_fts, {BM25_WEIGHTS})"
+            " LIMIT ?",
+            (match, k),
+        ).fetchall()
+
+
+def content_words(query: str) -> list[str]:
+    """The query's words as the store searches them: lower case, stopwords left out."""
+    return [w for w in _WORD.findall(query.lower()) if w not in STOPWORDS]

@@ -475,6 +475,15 @@ def test_knowledge_switch_by_environment(monkeypatch):
     extended = load_config(SHIPPED)
     assert extended.retrieval.knowledge == "extended"
     assert extended.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()  # nothing else
+    monkeypatch.setenv("KNOWLEDGE", "hybrid")
+    hybrid = load_config(SHIPPED)
+    assert hybrid.retrieval.knowledge == "hybrid"
+    assert hybrid.retrieval.model_copy(update={"knowledge": "base"}).model_dump() == base.retrieval.model_dump()
+    assert hybrid.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()
+    monkeypatch.setenv("KNOWLEDGE", "crosslingual")
+    crosslingual = load_config(SHIPPED)
+    assert crosslingual.retrieval.model_copy(update={"knowledge": "base"}).model_dump() == base.retrieval.model_dump()
+    assert crosslingual.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()
     monkeypatch.setenv("KNOWLEDGE", "everything")
     with pytest.raises(ConfigError, match="retrieval.knowledge"):
         load_config(SHIPPED)
@@ -498,6 +507,8 @@ def test_sampling_seed_from_environment(tmp_path, monkeypatch):
     ({"stores": {"encyclopedia": {"kind": "encyclopedia", "path": "a.db"}, "other": {"kind": "encyclopedia", "path": "b.db"}},
       "knowledge_sets": {"base": ["encyclopedia", "other"]}}, "one store of each kind"),
     ({"stores": {"encyclopedia": {"kind": "graph", "path": "a.db"}}}, "retrieval.stores"),
+    ({"knowledge_sets": {"base": ["encyclopedia", "literature_dense"]}}, "needs a store of kind 'literature'"),
+    ({"knowledge_sets": {"base": ["literature", "encyclopedia_dense"]}}, "knowledge_sets.*needs a store of kind 'encyclopedia'"),
 ])
 def test_store_registry_validated(tmp_path, change, error):
     raw = yaml.safe_load(SHIPPED.read_text(encoding="utf-8"))
@@ -512,11 +523,30 @@ def test_store_registry_validated(tmp_path, change, error):
 def test_enabled_stores_follow_the_knowledge_setting(monkeypatch):
     monkeypatch.delenv("KNOWLEDGE", raising=False)
     r = load_config(SHIPPED).retrieval
-    assert {s.kind for s in r.stores.values()} == {"encyclopedia", "literature"}
+    assert {s.kind for s in r.stores.values()} == {"encyclopedia", "literature", "literature_dense", "encyclopedia_dense"}
     assert r.enabled("encyclopedia") == r.path("encyclopedia") and r.enabled("literature") is None
     monkeypatch.setenv("KNOWLEDGE", "extended")
     r = load_config(SHIPPED).retrieval
     assert r.enabled("literature") == r.path("literature") == r.stores["literature"].path
+    assert r.enabled("literature_dense") is None
+    monkeypatch.setenv("KNOWLEDGE", "hybrid")
+    r = load_config(SHIPPED).retrieval
+    assert r.enabled("literature_dense") == r.path("literature_dense") == r.stores["literature_dense"].path
+    assert r.enabled("encyclopedia_dense") is None
+    monkeypatch.setenv("KNOWLEDGE", "crosslingual")
+    r = load_config(SHIPPED).retrieval
+    assert r.knowledge_sets["crosslingual"] == ["encyclopedia", "encyclopedia_dense"]
+    assert r.enabled("encyclopedia_dense") == r.path("encyclopedia_dense") == r.stores["encyclopedia_dense"].path
+    assert r.enabled("literature") is None and r.enabled("literature_dense") is None
+
+
+def test_embedding_section(tmp_path):
+    cfg = load_config(write(tmp_path))
+    e = cfg.embedding
+    assert e.api_base == "http://127.0.0.1:8092/v1" and e.model_id and e.batch > 0 and e.workers > 0
+    assert e.server.model_path == tmp_path.resolve() / "data" / "raw" / "models" / "bge-m3-FP16.gguf"
+    assert e.server.env["CUDA_VISIBLE_DEVICES"] == "" and e.server.flags["device"] == "none"  # CPU only by default
+    assert e.server.flags["embedding"] is True
 
 
 def test_source_trust_settings(tmp_path):

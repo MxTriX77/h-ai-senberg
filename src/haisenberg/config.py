@@ -154,7 +154,9 @@ class ReasoningPolicyConfig(_Section):
 class StoreConfig(_Section):
     """A knowledge store: its kind says which ingest script builds it and which code reads it."""
 
-    kind: Literal["encyclopedia", "literature"]  # Layer 1 (ingest.build_l1) or Layer 2 literature (ingest.build_l2)
+    # Layer 1 (ingest.build_l1), Layer 2 literature (ingest.build_l2), or the vectors of either (ingest.embed_l1 /
+    # ingest.embed_l2, a folder)
+    kind: Literal["encyclopedia", "literature", "literature_dense", "encyclopedia_dense"]
     path: Path
 
 
@@ -172,12 +174,25 @@ class SourceLabels(_Section):
         return v
 
 
+class DenseConfig(_Section):
+    """The dense stores: how ingest.embed_l2 indexes the literature vectors (index, nprobe), and how a hybrid
+    literature search or a cross-lingual encyclopedia search ranks (the rest)."""
+
+    index: str  # FAISS index factory, e.g. 'IVF4096,PQ64'
+    nprobe: PositiveInt  # index lists searched per query
+    rerank: PositiveInt  # index hits re-scored exactly with the stored vectors
+    candidates: PositiveInt  # length of the BM25 ranking and of the dense ranking that are fused
+    rrf_k: NonNegativeInt  # reciprocal rank fusion: score = sum of 1 / (rrf_k + rank)
+    # a passage of the dense ranking at least this similar (cosine) to the query passes min_term_share's filter
+    min_similarity: Annotated[float, Field(ge=-1, le=1)]
+
+
 class RetrievalConfig(_Section):
     raw_dir: Path
     stores: dict[str, StoreConfig]  # every knowledge store by name
     knowledge_sets: dict[str, list[str]]  # knowledge setting -> the stores it enables
     knowledge: str  # the knowledge setting in use (the A/B switch), one of knowledge_sets
-    layer2_literature_index: Path
+    dense: DenseConfig
     layer2_chunk_chars: PositiveInt  # longest passage the Layer 2 build stores
     literature_k: PositiveInt  # most literature passages added to one search result when a literature store is enabled
     top_k_proofs: PositiveInt
@@ -193,8 +208,13 @@ class RetrievalConfig(_Section):
         for name, members in v.items():
             if unknown := [m for m in members if m not in stores]:
                 raise ValueError(f"{name}: unknown stores {unknown}; declared: {sorted(stores)}")
-            if len({stores[m].kind for m in members}) < len(members):
+            kinds = {stores[m].kind for m in members}
+            if len(kinds) < len(members):
                 raise ValueError(f"{name}: at most one store of each kind")
+            if "literature_dense" in kinds and "literature" not in kinds:  # the vectors index its passages
+                raise ValueError(f"{name}: a literature_dense store needs a store of kind 'literature'")
+            if "encyclopedia_dense" in kinds and "encyclopedia" not in kinds:  # the vectors index its articles
+                raise ValueError(f"{name}: an encyclopedia_dense store needs a store of kind 'encyclopedia'")
         return v
 
     @field_validator("knowledge")
@@ -343,6 +363,20 @@ class LlamaServerConfig(_Section):
     flags: dict[str, Any] = {}
 
 
+class EmbeddingConfig(_Section):
+    """The embedding model of the dense stores: an OpenAI-compatible embeddings backend and its own llama-server,
+    started on demand when the knowledge setting enables such a store."""
+
+    api_base: str
+    api_key: str
+    model_id: str  # sent as `model`, the server's alias; the index records it
+    query_prefix: str  # put before every search query, never before a passage
+    batch: PositiveInt  # passages per request while building
+    workers: PositiveInt  # parallel requests while building
+    timeout_s: PositiveFloat
+    server: LlamaServerConfig
+
+
 class UiConfig(_Section):
     dist_dir: Path
     settings: dict[str, Any] = {}
@@ -357,6 +391,7 @@ class Config(_Section):
     verifier: VerifierConfig
     evidence: EvidenceConfig
     llama_server: LlamaServerConfig
+    embedding: EmbeddingConfig
     ui: UiConfig
 
     _root: Path = PrivateAttr()
@@ -395,7 +430,6 @@ class Config(_Section):
 # (section, field) pairs resolved against the project root when relative.
 _PATH_FIELDS = [
     ("retrieval", "raw_dir"),
-    ("retrieval", "layer2_literature_index"),
     ("llama_server", "model_path"),
     ("ui", "dist_dir"),
 ]
@@ -442,6 +476,8 @@ def load_config(path: Path | str | None = None) -> Config:
     for store in cfg.retrieval.stores.values():
         if not store.path.is_absolute():
             store.path = root / store.path
+    if not cfg.embedding.server.model_path.is_absolute():
+        cfg.embedding.server.model_path = root / cfg.embedding.server.model_path
     cfg._root = root
     return cfg
 
