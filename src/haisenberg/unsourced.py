@@ -12,7 +12,7 @@ also numbers inside text it quotes from the conversation (verifier.quoted).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .calc import computations, find_arithmetic
@@ -51,12 +51,28 @@ def _integer(n: Number) -> bool:
     return n.decimals == 0 and not n.scientific
 
 
+def _numbers(text: str) -> list[Number]:
+    """verifier.read_numbers, line by line when a number is out of float range (`1e999` raises OverflowError there);
+    such a line is skipped."""
+    try:
+        return read_numbers(text)
+    except OverflowError:
+        out, at = [], 0
+        for line in text.splitlines(keepends=True):
+            try:
+                out += [replace(n, start=n.start + at, end=n.end + at) for n in read_numbers(line)]
+            except OverflowError:
+                pass
+            at += len(line)
+        return out
+
+
 def _tokens(text: str) -> list[_Token]:
     """The numbers of the text that count (see the module doc), a range (`60–70 %`, `3 to 5`) as one token, each with
     the unit right after it: `%` or a unit the unit reader knows (g/mol, °C, mL). An exponent (`10^{12}`) is part of
     its number."""
     prepared = _DASH.sub(lambda m: f"{m[1] or ''};", _decimal_points(text, bool(_CYRILLIC.search(text))))  # same length
-    nums, dates = read_numbers(prepared), [m.span() for m in _DATE.finditer(text)]
+    nums, dates = _numbers(prepared), [m.span() for m in _DATE.finditer(text)]
     out, i = [], 0
     while i < len(nums):
         group = nums[i : i + 2] if i + 1 < len(nums) and _GAP.fullmatch(text[nums[i].end : nums[i + 1].start]) \
@@ -106,8 +122,8 @@ def unsourced(answer: str, conversation: list[str], tool_results: list[str]) -> 
     own = []  # operands (one by one: `× 100` is an operand, not × 10^0) and the stated result of every `a op b = c`,
     for strict in (True, False):  # read both ways
         for a in find_arithmetic(equations, comma, strict):
-            own += [n for x in _OPERAND.findall(a.expression) for n in read_numbers(x)]
-            result = read_numbers(_decimal_points(answer[a.result_at : a.result_at + 80], comma))
+            own += [n for x in _OPERAND.findall(a.expression) for n in _numbers(x)]
+            result = _numbers(_decimal_points(answer[a.result_at : a.result_at + 80], comma))
             own += result[:1] if result and result[0].start == 0 else []
     stated += [n for n in own if not (_integer(n) and abs(n.value) <= 10)]  # as in sources: not the 2 of 2 × 1.008
     computed = computations(equations, comma)

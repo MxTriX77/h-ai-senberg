@@ -76,6 +76,11 @@ def test_numbers_inside_quoted_task_text_not_flagged():
     assert flagged("Масса 1,450 кг не проверена.", [request]) == ["1,450"]
 
 
+def test_a_number_out_of_float_range_is_skipped():  # read_numbers raises OverflowError on it
+    passage = "Ackermann-sized: 1e999 states.\nThe heat is 3.2 kJ."
+    assert flagged("It releases 3.2 kJ.\n1e999 is a lot.\n4.7 kJ is not.", tool_results=[passage]) == ["4.7 kJ"]
+
+
 @pytest.mark.parametrize("answer", ["The batch is 450 kg.", "Партия 450 кг."])
 def test_earlier_turns_are_sources(answer):
     assert flagged(answer, ["How heavy is the batch?", "The batch is 450 kg.", "Is that right?"]) == []
