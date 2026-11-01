@@ -21,7 +21,7 @@ def names(k):
 
 
 def test_tools_from_the_shipped_kinds(knowledge, cfg):
-    assert names(knowledge) == ["search_knowledge", "lookup_compound", "lookup_constant", "calculate"]
+    assert names(knowledge) == ["search_knowledge", "lookup_compound", "lookup_constant", "calculate", "compute"]
     search = knowledge.tools[0]
     assert search["type"] == "function"
     params = search["function"]["parameters"]
@@ -216,7 +216,7 @@ def test_real_store_keeps_the_ranked_first_hit(cfg):
 
 
 def test_calculator_next_to_the_knowledge_tools(knowledge, cfg):
-    calc_tool = knowledge.tools[-1]["function"]
+    calc_tool = knowledge.tools[names(knowledge).index("calculate")]["function"]
     assert calc_tool["description"] == cfg.tools["calculate"].description
     assert calc_tool["parameters"]["required"] == ["expressions"]
     assert calc_tool["parameters"]["properties"]["expressions"]["type"] == "array"
@@ -239,3 +239,49 @@ def test_several_calculations_in_one_call(knowledge):
 
 def test_no_calculator_without_the_store(cfg):
     assert Knowledge(None, cfg).tools == []
+
+
+def test_compute_right_after_the_calculator(knowledge, cfg):
+    tool = knowledge.tools[-1]["function"]
+    assert names(knowledge)[-2:] == ["calculate", "compute"]
+    assert tool["description"] == cfg.tools["compute"].description
+    assert tool["parameters"]["required"] == ["operations"]
+    ops = tool["parameters"]["properties"]["operations"]
+    assert ops["type"] == "array" and ops["description"] == cfg.tools["compute"].parameters["operations"]
+
+
+def test_compute_lines_and_no_source(knowledge):
+    sources = Sources()
+    ops = ["weekday(2026-10-29)", "weekday(2026-02-30)", "sort(3, 1, 2)"]
+    text, lines, ids = knowledge.run("compute", json.dumps({"operations": ops}), sources)
+    assert lines == ["weekday(2026-10-29) = Thursday",
+                     "weekday(2026-02-30): error: unknown date 2026-02-30 (February 2026 has 28 days)",
+                     "sort(3, 1, 2) = 1, 2, 3 (as numbers)"]
+    assert text == "\n".join(lines) and ids == [] and not sources.items
+    # written as text, the list arrives as a string; a plain string is one operation
+    assert run(knowledge, "compute", {"operations": '["count(a, b)", "count(a)"]'})[1] == [
+        "count(a, b) = 2 items (2 distinct)", "count(a) = 1 item (1 distinct)"]
+    assert run(knowledge, "compute", {"operations": "count(a, b)"})[1] == ["count(a, b) = 2 items (2 distinct)"]
+    for bad in ['{"operations": []}', '{"operation": "count(a)"}', "not json"]:
+        assert knowledge.run("compute", bad, Sources())[0].startswith("Error:"), bad
+    assert run(knowledge, "compute", {"operations": [3]})[1] == [
+        "error: an operation must be a non-empty string, e.g. weekday(2026-10-29)"]
+
+
+def test_compute_switched_off(cfg, built_store):
+    cfg.reasoning_policy.compute_tool = False
+    k = Knowledge(L1Store(built_store), cfg)
+    assert names(k)[-1] == "calculate" and not k.computer
+    assert run(k, "compute", {"operations": ["count(a)"]})[0].startswith("Error: unknown tool 'compute'")
+
+
+def test_compute_needs_its_texts(cfg, built_store):
+    del cfg.tools["compute"]
+    with pytest.raises(ConfigError, match=r"tools\.compute"):
+        Knowledge(L1Store(built_store), cfg)
+
+
+def test_no_compute_without_the_calculator(cfg, built_store):
+    del cfg.tools["calculate"]
+    k = Knowledge(L1Store(built_store), cfg)
+    assert "compute" not in names(k) and not k.computer

@@ -2,7 +2,7 @@
 # and what `uv run python -m ingest.build_l1` reads (found by `use`).
 #
 # Each entry: name, use, layer, domains (lowercase subject names; records from the source carry them,
-# and search_knowledge offers them as filter values), url, dest (relative to raw_dir), license,
+# and search_knowledge offers them as filter values; none for embedding-model files), url, dest (relative to raw_dir), license,
 # optional cite_url (citation template; {path} {revision} {cid} {name} are filled per record),
 # filter (wikipedia-mini-zim only: kept infobox classes and WikiProjects, each mapped to a domain),
 # and exactly one checksum:
@@ -103,6 +103,32 @@ sources:
     sha256: 350d8956ee3d7abe2839c464c3a983f93d6934a16c7f04b10715b49439dfd349
     license: CC BY-SA 4.0
     cite_url: https://en.wikipedia.org/w/index.php?title={path}&oldid={revision}
+
+  # Embedding models for the dense literature index (embedding.server.model_path), run only by llama.cpp.
+  # GGUF conversions from the most downloaded Hugging Face repos, pinned to a repo revision.
+  - name: bge_small_en_v1_5_f16
+    use: embedding-model
+    layer: 2
+    url: https://huggingface.co/unsloth/bge-small-en-v1.5-GGUF/resolve/395309658a295cc893b3aa279136ce84f472fc62/bge-small-en-v1.5-f16.gguf
+    dest: models/bge-small-en-v1.5-f16.gguf
+    sha256: c5d2302edc429f679642433b9f96dd217799727a06e675abef3b40a79f5e1589
+    license: MIT (BAAI/bge-small-en-v1.5; GGUF by unsloth)
+
+  - name: bge_base_en_v1_5_f16
+    use: embedding-model
+    layer: 2
+    url: https://huggingface.co/CompendiumLabs/bge-base-en-v1.5-gguf/resolve/24914efdfa9ee54e815c3fcaa78a617031251c5c/bge-base-en-v1.5-f16.gguf
+    dest: models/bge-base-en-v1.5-f16.gguf
+    sha256: 88360fdf8521af0ac08d43818bd272da679ab97c685d9b273c48efd01a4187c2
+    license: MIT (BAAI/bge-base-en-v1.5; GGUF by CompendiumLabs)
+
+  - name: bge_m3_fp16
+    use: embedding-model
+    layer: 2
+    url: https://huggingface.co/gpustack/bge-m3-GGUF/resolve/2d48f1737679ad900d5c26c5aad5410e9c70fdca/bge-m3-FP16.gguf
+    dest: models/bge-m3-FP16.gguf
+    sha256: daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
+    license: MIT (BAAI/bge-m3; GGUF by gpustack)
 
   - name: libretexts_en_phys_2026-01
     use: libretexts-zim

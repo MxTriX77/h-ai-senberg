@@ -44,7 +44,7 @@ def normalize(expression: str, decimal_comma: bool = False) -> str:
     """Typographic and LaTeX arithmetic as Python syntax (units are not handled here). Digits grouped in
     threes with spaces (20 000, 2\\,450) are one number. A comma between digits is a decimal comma, except
     before exactly three digits (1,900) unless `decimal_comma`."""
-    s = expression.strip()
+    s = expression.strip().replace("{,}", ",")  # LaTeX decimal comma: 1{,}20
     s = re.sub(r"\\(?:left|right)\b", "", s)
     for _ in range(3):  # nested \frac and \sqrt
         s = re.sub(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"((\1)/(\2))", s)
@@ -127,7 +127,32 @@ _OP = r"\s*(?:\*\*|[-+*/])\s*"
 _EXPR = re.compile(rf"(?<![\w.,]){_OPERAND}(?:{_OP}{_OPERAND})+\s*$")
 _EQUALS = re.compile(r"(?<![<>=!≤≥])=(?![=>])")
 _RESULT_LEAD = re.compile(r"[ \t]*(?:\\[,;! ]|[$])?[ \t]*\{?[ \t]*")
-_NEXT_OP = re.compile(r"[ \t]*[×*/·÷+^−-](?!\s*$)")
+_NEXT_OP = re.compile(  # after a stated result, maybe its % or unit, an operator: "= 0.0500 L × 1.50", "= 2.0 \times"
+    rf"[ \t]*(?:%|(?:\\[,;! ]|[ \t])*(?:\\(?:text|mathrm)\s*\{{[^{{}}\n]*\}}|[{_UNIT_CHARS}][{_UNIT_CHARS}·⋅/^\d.-]*+))?"
+    r"[ \t]*(?:[×/·÷+^−-]|\*(?!\*)|\\(?:times|cdot|div|frac|ln|log|sqrt)\b)(?!\s*$)")
+_SCI_AFTER = re.compile(r"[ \t]*(?:[×x·*]|\\times|\\cdot)[ \t]*10(?:\^|\*\*|[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺])")  # "= 1.25 × 10²³": one number
+_DATE = re.compile(  # a day and a month ("3 марта + 98 дней = 9 июня"): a date, not a number with a unit
+    r"\d[ \t]*(?:(?i:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?"
+    r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![A-Za-z])|(?i:январ|феврал|март|апрел|июн|июл|август|сентябр"
+    r"|октябр|ноябр|декабр)\w*|(?i:ма[йяю])(?![А-Яа-яЁё]))")
+_RANGE = re.compile(r"(?<![\d.,])(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?![\d.,])")  # "10-12", "3–7" (normalized): a range
+_OPERAND_UNIT = re.compile(rf"\d\s?([{_UNIT_CHARS}][{_UNIT_CHARS}/·*²³]*)")
+_SI_PREFIX = "kMGTPmµμnc"
+
+
+def _mixed_units(expression: str) -> bool:
+    """Operands in different units that the check would add unconverted (`2 h + 30 min`, `1 m + 50 cm`), or in
+    one unit with different prefixes (`1 TB / 1 GB`): without conversions in code the value is not the result."""
+    units = {u.rstrip("*") for u in _OPERAND_UNIT.findall(re.sub(r"(?<=\d)[eE][-+]?\d+", "", expression))}
+    if len(units) < 2:
+        return False
+    core = re.sub(r"(?<=\d)[eE][-+]?\d+", "", expression).lstrip("+-( ")
+    if re.search(r"[+\-]\s*[\d(]", core):
+        return True
+    bases = [u[1:] if len(u) > 1 and u[0] in _SI_PREFIX else u for u in units]
+    return len(set(bases)) < len(bases)
+
+
 _NUMBER_IN_UNITS = re.compile(rf"({_NUM}|\))(?:{_UNIT})")
 _LIST_MARKER = re.compile(r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d+[.)])[ \t]+)?")  # "- ", "  * ", "> 1. ": not a sign
 
@@ -141,8 +166,9 @@ _SCALED = re.compile(rf"\d(?:[kKMBT]|\s?(?i:{_SCALE_WORDS}))(?![{_UNIT_CHARS}])"
 _EMPHASIS = re.compile(r"(?:(?<=\S)[*_]\s+|(?<!\S)[*_])$")  # Markdown "*" or "_" (italics) around the equation
 _MULTIPLIERS = (rf"half|third|quarter|twice|thrice|double|triple|{_SCALE_WORDS}"
                 r"|половин\w*|трет\w*|четверт\w*|дважды|трижды|вдвое|втрое")
-_PART_BEFORE = re.compile(  # the text before the expression belongs to the math: an operator, "(", "½", "π", "half of"
-    rf"(?:[-+*/(€£¥₹₽¼½¾⅐-⅞π]|\bpi|(?<![A-Za-zА-Яа-яЁё])(?i:{_MULTIPLIERS})(?:\s+(?:of|от))?)\s*$")
+_PART_BEFORE = re.compile(  # the text before the expression belongs to the math: an operator, "(", "½", "π", "half of",
+    # "per" (22 g per 100 g × 0.40), a dash written as a minus (1 — 0.95^12)
+    rf"(?:[-+*/(—€£¥₹₽¼½¾⅐-⅞π]|\bpi|(?<![A-Za-zА-Яа-яЁё])(?i:{_MULTIPLIERS}|per)(?:\s+(?:of|от))?)\s*$")
 
 
 def _powers_of_ten(s: str) -> str:
@@ -166,7 +192,8 @@ class Arithmetic:
 
 def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True) -> Iterator[Arithmetic]:
     """Every `<arithmetic> = <number>` in the text, with the computed value of the left side.
-    Expressions with names other than units and functions, or that cannot be computed, are skipped.
+    Expressions with names other than units and functions, or that cannot be computed, are skipped, and so are
+    clock times and dates, and a step of a chain (a "result" followed by an operator, after its unit or %).
     With `strict`, a currency sign before a number is dropped, `a × 10ⁿ` and `10ⁿ` are one number (a left side
     that is one number is not arithmetic), and an expression is skipped when the text before it belongs to the
     math (an operator, "(", "½", "π", "half of", "million"; not Markdown emphasis) or an operand has a scale
@@ -180,11 +207,19 @@ def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True)
             lhs = _CURRENCY.sub("", lhs.replace("**", "").replace("__", ""))
         lhs = normalize(lhs, decimal_comma)
         m = _EXPR.search(lhs)
-        if not m or re.search(r"\d\s+$", lhs[: m.start()]):  # "6.626 070 15 × 2", "2 (3 + 4)": not one reading
-            continue
+        if not m or re.search(r"\d\s+$|[\d)]$", lhs[: m.start()]):  # "6.626 070 15 × 2", "2 (3 + 4)", "2(1)(1) + 1":
+            continue  # not one reading
+        if re.search(r"\d[:：]$", lhs[: m.start()]) and lhs[m.start()].isdigit():  # "10:50 - 1 hour": minutes of a
+            continue  # clock time, not a number ("A2: (1000 − 800) / 800" is still checked)
         expression = m.group().strip()
+        if _DATE.search(expression) or _mixed_units(expression) or \
+                any(float(a) < float(b) for a, b in _RANGE.findall(expression)):  # a range "10-12" is no subtraction
+            continue
         if strict:
-            if _PART_BEFORE.search(_EMPHASIS.sub("", lhs[: m.start()])) or _SCALED.search(expression):
+            before = lhs[: m.start()]
+            if not m.group()[:1].isspace():  # italics hug the text; "P_1 * (1 - 0.20)" has a times sign before it
+                before = _EMPHASIS.sub("", before)
+            if _PART_BEFORE.search(before) or _SCALED.search(expression):
                 continue
             expression = _powers_of_ten(expression)
             if not _EXPR.search(expression) and not re.search(r"\b(?:sqrt|ln|log|exp)\s*\(", expression):
@@ -194,8 +229,10 @@ def find_arithmetic(text: str, decimal_comma: bool = False, strict: bool = True)
         if not re.match(r"[-−]?\d", text[at : at + 2]):
             continue
         number_end = re.match(r"[-−]?[\d.,\s]*\d", text[at:]).end()
-        if _NEXT_OP.match(text, at + number_end) and not re.match(r"\s*[×x·]\s*10", text[at + number_end :]):
-            continue  # "= 2 × 3": the right side is an expression, not a result
+        if re.match(r"[:：]\d|\{,\}\d", text[at + number_end :]) or _DATE.match(text, at):  # "= 01:00", "= 9 июня",
+            continue  # "= 377{,}1" (LaTeX decimal comma: not read as one number here)
+        if _NEXT_OP.match(text, at + number_end) and not _SCI_AFTER.match(text, at + number_end):
+            continue  # "= 2 × 3", "= 0.0500 L × 1.50": the right side is an expression, not a result
         as_percent = bool(_AS_PERCENT.search(expression))
         core = _AS_PERCENT.sub("", expression) if as_percent else expression
         try:

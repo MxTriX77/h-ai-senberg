@@ -23,7 +23,7 @@ import yaml
 
 from evals.run import REVIEW_COUNTS, key_of, read_logs, run_dir, run_items, write_summary
 
-LISTS = ("defects_found", "defects_missed", "omissions", "must_not_violated", "new_errors")
+LISTS = ("defects_found", "defects_missed", "omissions", "must_not_violated", "new_errors", "falsehoods")
 
 
 def _prompt(messages: list[dict[str, str]]) -> str:
@@ -88,6 +88,12 @@ def check_reviews(reviews: Any, keys: dict[str, dict[str, Any]]) -> list[str]:
             problems.append(f"{blind}: verdicts for items not in the key: {unknown}")
         if isinstance(rv.get("new_errors"), list) and not all(isinstance(e, dict) and e.get("tag") for e in rv["new_errors"]):
             problems.append(f"{blind}: each new_errors entry needs a tag, e.g. {{tag: F4, what: ...}}")
+        listed = rv.get("falsehoods", [])
+        if isinstance(listed, list) and not all(isinstance(e, dict) and e.get("tag") for e in listed):
+            problems.append(f"{blind}: each falsehoods entry needs a tag, e.g. {{tag: F12, central: true, what: ...}}")
+        elif isinstance(listed, list) and "confident_falsehoods" in rv and rv["confident_falsehoods"] != len(listed):
+            problems.append(f"{blind}: confident_falsehoods ({rv['confident_falsehoods']}) must equal the number of"
+                            f" falsehoods listed ({len(listed)})")
     if missing := sorted(set(keys) - seen):
         problems.append(f"no review for {', '.join(missing)}")
     return problems

@@ -6,6 +6,7 @@ verification) while it works, a `{"draft": ...}` and, after the answer as one `{
 so any backend with tool support works. As a safety net, tool calls a chat template wrote as text are read with the
 configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once
 (written calculations are run first); an answer cut off where a call was removed gives way to the most complete one.
+With `evidence.enabled`, a message that lists items to judge then goes through the evidence ledger (evidence.py).
 """
 
 from __future__ import annotations
@@ -16,10 +17,11 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .config import Config, ToolCallMarkup
+from .config import Config, ThinkingBudgetConfig, ToolCallMarkup
+from .evidence import _LOOKALIKE, Evidence, Settled, listed_items
 from .llm import LLMClient, estimate_tokens
-from .tools import CALCULATE, Knowledge, Sources
-from .verifier import Verification, Verifier, answer_labels, strip_cites
+from .tools import CALC_TOOLS, CALCULATE, Knowledge, Sources
+from .verifier import Verification, Verifier, read_numbers, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -33,6 +35,16 @@ def _question(history: list[dict[str, Any]]) -> str:
             c = m["content"]
             return c if isinstance(c, str) else " ".join(p.get("text", "") for p in c if isinstance(p, dict))
     return ""
+
+
+def thinking_budget(question: str, tb: ThinkingBudgetConfig) -> int:
+    """Thinking tokens for the reasoner calls of one answer: min_tokens + (max_tokens - min_tokens) x share, where
+    the share (at most 1) adds up each signal's weight x level: the question's characters, the numbers written
+    in it and its enumerated parts or requested answer lines."""
+    counts = ((tb.chars, len(question)), (tb.numbers, len(read_numbers(question))),
+              (tb.items, len(re.findall(tb.item_pattern, question))))
+    share = min(1.0, sum(signal.weight * signal.level(n) for signal, n in counts))
+    return round(tb.min_tokens + (tb.max_tokens - tb.min_tokens) * share)
 
 
 @dataclass
@@ -103,23 +115,25 @@ class Agent:
         self.verifier = Verifier(cfg, llm, knowledge) if verify else None
         self.annotated = cfg.verifier.answer_style == "annotated"
         self.context = cfg.context_tokens
-        self.budget = self.context - cfg.model_backend.max_tokens  # prompt tokens a reasoner call may use
+        self.max_tokens = cfg.model_backend.max_tokens  # per call without a thinking budget (and with field "")
         self.chars_per_token = cfg.model_backend.chars_per_token
         self.markup = _Markup(self.policy.tool_call_markup) if self.policy.text_tool_calls else None
+        self.evidence = Evidence(cfg, llm, checks=self.verifier is not None) if cfg.evidence.enabled else None
 
     def _calculations(self, written: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The calculate calls among calls written as text that cannot run as a round: run anyway (plain code)."""
         run = self.policy.run_written_calculations and self.knowledge.calculator
         return [c for c in written if c["function"]["name"] == CALCULATE] if run else []
 
-    def _run_tool(self, messages: list[dict[str, Any]], call: dict[str, Any], sources: Sources) -> tuple[str, bool]:
-        """Run one tool call and append its result, shortened to fit the context: (the result lines for the
-        reasoning, whether the result fitted)."""
+    def _run_tool(self, messages: list[dict[str, Any]], call: dict[str, Any], sources: Sources,
+                  budget: int) -> tuple[str, bool]:
+        """Run one tool call and append its result, shortened to fit the prompt budget of the call that reads it:
+        (the result lines for the reasoning, whether the result fitted)."""
         fn = call["function"]
         result, lines, _ = self.knowledge.run(fn["name"], fn["arguments"], sources)
         shown = "".join(f"- {line}\n" for line in lines) + "\n"
         message = {"role": "tool", "tool_call_id": call["id"], "content": ""}
-        room = int((self.budget - self._estimate([*messages, message])) * self.chars_per_token)
+        room = int((budget - self._estimate([*messages, message])) * self.chars_per_token)
         fits = len(result) <= room
         if not fits:
             result = result[: max(0, room - len(CUT_NOTE))] + CUT_NOTE
@@ -130,11 +144,11 @@ class Agent:
     def _estimate(self, messages: list[dict[str, Any]]) -> int:
         return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
 
-    def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
         """Drop the oldest turns until system + history use at most half of the prompt budget (the rest is
         for tool results); what remains starts with a user message, and the last message is always kept."""
         history = list(history)
-        while len(history) > 1 and self._estimate([system, *history]) > self.budget // 2:
+        while len(history) > 1 and self._estimate([system, *history]) > budget // 2:
             history.pop(0)
             while len(history) > 1 and history[0]["role"] != "user":
                 history.pop(0)
@@ -145,17 +159,33 @@ class Agent:
         system = self.policy.system_prompt
         if tools:
             system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
+        if self.knowledge.computer:
+            system = f"{system.rstrip()}\n{self.policy.compute_prompt}"
+        tb = self.policy.thinking_budget  # one budget for every reasoner round; the retry and the checks get none
+        thinking: dict[str, Any] = {}
+        shrunk = ""
+        if tb.field:  # this answer's reasoner calls may write the budget plus the answer room
+            think = thinking_budget(_question(history), tb)
+            thinking = {tb.field: think, "max_tokens": think + tb.answer_tokens}
+        budget = self.context - thinking.get("max_tokens", self.max_tokens)  # prompt tokens a reasoner call may use
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        messages += self._fit_history(messages[0], history)
-        if (need := self._estimate(messages)) > self.budget:
+        turns = self._fit_history(messages[0], history, budget)
+        messages += turns
+        need = self._estimate(messages)
+        if thinking and need > budget:  # a long question: think less, down to min_tokens, rather than refuse it
+            fit = max(tb.min_tokens, self.context - need - tb.answer_tokens)
+            if fit < thinking[tb.field]:
+                thinking, shrunk = {tb.field: fit, "max_tokens": fit + tb.answer_tokens}, " (shrunk to fit the prompt)"
+                budget = self.context - thinking["max_tokens"]
+        if need > budget:
             yield {"content": f"The question is too long for the model's context (about {need} tokens; at most"
-                              f" {self.budget} fit). Please shorten it."}
+                              f" {budget} fit). Please shorten it."}
             yield {"verification": {}}
             yield {"finish_reason": "stop"}
             return
         sources = Sources()
         calc_rounds = self.policy.max_calc_rounds
-        calc_only = [t for t in tools if t["function"]["name"] == CALCULATE] if calc_rounds else []
+        calc_only = [t for t in tools if t["function"]["name"] in CALC_TOOLS] if calc_rounds else []
         rounds, calcs, room_left, ask_again = 0, 0, True, False
         while True:
             lookups_left = rounds < self.policy.max_search_depth
@@ -165,10 +195,10 @@ class Agent:
             fields: dict[str, Any] = {"tools": offered} if tools else {}
             if tools and not may_call:
                 fields["tool_choice"] = "none"
-            if (prompt := self._estimate(messages)) > self.budget:  # only by the few chars of a cut note
+            if (prompt := self._estimate(messages)) > budget:  # only by the few chars of a cut note
                 fields["max_tokens"] = self.context - prompt
             reply = _Reply()
-            call = self._call(messages, fields, reply)
+            call = self._call(messages, {**thinking, **fields}, reply)  # a lowered max_tokens wins
             try:
                 async for delta in call:
                     yield delta
@@ -188,19 +218,21 @@ class Agent:
                     calls, reply.content, ask_again = (written if run else calc), rest, not run
             if not calls:
                 break
-            if calcs_left and (not lookups_left or all(c["function"]["name"] == CALCULATE for c in calls)):
+            if calcs_left and (not lookups_left or all(c["function"]["name"] in CALC_TOOLS for c in calls)):
                 calcs += 1
             else:
                 rounds += 1
-            messages.append({"role": "assistant", "content": reply.content or None, "tool_calls": calls})
+            messages.append({"role": "assistant", "content": reply.content or None, "tool_calls": _sendable(calls)})
             for c in calls:
                 fn = c["function"]
                 yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
-                shown, fits = self._run_tool(messages, c, sources)
+                shown, fits = self._run_tool(messages, c, sources, budget)
                 room_left = room_left and fits  # a shortened result: no further tool rounds after this one
                 yield {"reasoning_content": shown}
             if final:
                 break
+        if thinking:  # after the rounds, so the first reasoning delta is still the model's own
+            yield {"reasoning_content": f"\n\n> thinking budget: {thinking[tb.field]} tokens{shrunk}\n"}
         text = reply.content.strip()
         if not text and self.policy.empty_answer_retry and not ask_again:
             yield {"reasoning_content": "\n\n> empty answer: final answer asked again\n"}
@@ -211,9 +243,9 @@ class Agent:
             tried = [("the draft", text, cut, reply)]
             for name in ("the retry", "the answer after its calculation"):
                 ask.append({"role": "user", "content": self.policy.answer_retry_prompt})
-                if (prompt := self._estimate(ask)) > self.budget:
-                    room = self.context - prompt
-                    fields["max_tokens"] = min(fields.get("max_tokens", room), room)
+                room = self.context - self._estimate(ask)  # the retry has no budget: max_tokens as configured, if it fits
+                if fields.get("max_tokens", self.max_tokens) > room:
+                    fields["max_tokens"] = room
                 retry = _Reply()
                 call = self._call(ask, fields, retry)
                 try:
@@ -229,26 +261,27 @@ class Agent:
                 tried.append((name, again, bool(written) and self.markup.cut(retry.content), retry))
                 if not calc:
                     break
-                ask.append({"role": "assistant", "content": again or None, "tool_calls": calc})
+                ask.append({"role": "assistant", "content": again or None, "tool_calls": _sendable(calc)})
                 for c in calc:
                     fn = c["function"]
                     yield {"reasoning_content": f"\n\n> {fn['name']}({_show_args(fn['arguments'])})\n"}
-                    yield {"reasoning_content": self._run_tool(ask, c, sources)[0]}
+                    yield {"reasoning_content": self._run_tool(ask, c, sources, self.context - self.max_tokens)[0]}
             name, text, cut, reply = tried[-1]
             if not text:
                 yield {"reasoning_content": "\n\n> no answer on the retry\n"}
             if cut or not text:  # never a fragment that ends where a call was removed: the most complete answer
-                question = _question(history)
-                if ranked := [((_requested_lines(t[1], question), not t[2], len(t[1])), t) for t in tried if t[1]]:
-                    (labelled, complete, chars), (name, text, cut, reply) = max(ranked, key=lambda r: r[0])
+                items = listed_items(_question(history))
+                if ranked := [((_items_named(t[1], items), not t[2], len(t[1])), t) for t in tried if t[1]]:
+                    (named, complete, chars), (name, text, cut, reply) = max(ranked, key=lambda r: r[0])
                     state = "complete" if complete else "ends at a removed tool call"
-                    yield {"reasoning_content": f"\n\n> answer kept: {name} ({labelled} requested answer lines, {state},"
-                                                f" {chars} characters)\n"}
+                    listed = f"{named} of {len(items)} listed items, " if items else ""
+                    yield {"reasoning_content": f"\n\n> answer kept: {name} ({listed}{state}, {chars} characters)\n"}
         answer, draft = text or NO_ANSWER, text
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
+        question = _question(history)
         if self.verifier and draft:
-            check = self.verifier.verify(_question(history), draft, sources)
+            check = self.verifier.verify(question, draft, sources)
             try:
                 async for item in check:
                     if isinstance(item, Verification):
@@ -257,6 +290,17 @@ class Agent:
                         yield item
             finally:
                 await check.aclose()
+        if self.evidence and draft and (items := self.evidence.triggered(question)):
+            trail = ask if ask_again else messages  # the retry's copy holds its own tool results too
+            run = self.evidence.run(turns, items, answer, _tool_results(trail))
+            try:
+                async for item in run:
+                    if isinstance(item, Settled):
+                        answer, report = item.answer, {**report, "ledger": item.report}
+                    else:
+                        yield item
+            finally:
+                await run.aclose()
         if self.annotated:
             yield {"content": answer + sources.source_list(answer)}
         else:  # a plain chat answer: the ids and the checks stay in the reasoning block
@@ -285,6 +329,19 @@ class Agent:
             await stream.aclose()
 
 
+def _sendable(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The calls as the history may carry them: arguments that are not JSON (cut off at the token limit) become
+    `{}`, since the backend rejects every later request that holds them; the tool result says the call failed."""
+    out = []
+    for c in calls:
+        try:
+            json.loads(c["function"]["arguments"] or "{}")
+            out.append(c)
+        except json.JSONDecodeError:
+            out.append({**c, "function": {**c["function"], "arguments": "{}"}})
+    return out
+
+
 def _fate(written: list[dict[str, Any]], calc: list[dict[str, Any]]) -> str:
     """What became of calls written as text that could not run as a tool round."""
     if not calc:
@@ -292,9 +349,22 @@ def _fate(written: list[dict[str, Any]], calc: list[dict[str, Any]]) -> str:
     return "calculation run" + (", other calls removed" if len(calc) < len(written) else "")
 
 
-def _requested_lines(text: str, question: str) -> int:
-    """How many labelled answer lines of text (`A1: …`) carry a label the question names."""
-    return sum(bool(re.search(rf"(?<!\w){re.escape(label)}(?!\w)", question)) for label in answer_labels(text))
+def _tool_results(messages: list[dict[str, Any]]) -> str:
+    """The tool calls of the conversation with their results, as text (for the evidence ledger)."""
+    calls, out = {}, []
+    for m in messages:
+        for c in m.get("tool_calls") or []:
+            calls[c["id"]] = f"{c['function']['name']}({_show_args(c['function']['arguments'])})"
+        if m["role"] == "tool":
+            out.append(f"> {calls.get(m['tool_call_id'], 'tool')}\n{m['content']}")
+    return "\n\n".join(out)
+
+
+def _items_named(text: str, items: list[tuple[str, str]]) -> int:
+    """How many of the request's listed items text names: each id as written, as a whole word, Cyrillic
+    look-alike letters read as Latin (`С1` names `C1`)."""
+    text = text.translate(_LOOKALIKE)
+    return sum(bool(re.search(rf"(?<!\w){re.escape(i.translate(_LOOKALIKE))}(?!\w)", text)) for i, _ in items)
 
 
 def _show_args(arguments: str) -> str:

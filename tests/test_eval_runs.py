@@ -148,7 +148,7 @@ async def test_draft_scores_and_corrections(cfg, fake, built_store, tmp_path):
     apply_mode(cfg, load_modes()["D"])
     cfg.verifier.max_research = 0  # no re-search: the review is the only call after the draft
     cfg.verifier.consistency_quotes = False  # the review's unquoted edits stand in for any false/true correction
-    cfg.verifier.consistency_keep_answer_lines = False  # ... and they change answer lines
+    cfg.verifier.consistency_keep_verdicts = False  # ... and they change verdicts
     item = {"id": "s4-1", "set": "S4", "question": "Q?", "lang": "en",
             "turns": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}],
             "parts": [{"label": "A1", "number": 6, "abs_tol": 0}, {"label": "A2", "verdict": ["true"]},
@@ -274,7 +274,7 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     os.utime(index / "a.bin", (1e9, 1e9))
     os.utime(index / "sub" / "b.bin", (2e9, 2e9))
     cfg.llama_server.model_path, cfg.retrieval.stores["encyclopedia"].path = model, store
-    cfg.retrieval.layer2_literature_index = index
+    cfg.retrieval.stores["literature_dense"].path = index
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
     monkeypatch.setenv("MODEL_PROFILE", "p1")
@@ -286,10 +286,10 @@ def test_manifest(cfg, tmp_path, monkeypatch):
     assert (enc["kind"], enc["enabled"], enc["path"], enc["size"]) == ("encyclopedia", True, str(store), 5)
     assert enc["mtime"] and "raw_dir" not in stores
     assert (stores["literature"]["kind"], stores["literature"]["enabled"]) == ("literature", False)
-    assert stores["layer2_literature_index"] == {"path": str(index), "size": 5,
-                                                 "mtime": datetime.fromtimestamp(2e9).isoformat(timespec="seconds")}
-    cfg.retrieval.layer2_literature_index = tmp_path / "missing"
-    assert manifest(cfg, "r1", "A", [], [], cache)["stores"]["layer2_literature_index"]["size"] is None
+    assert stores["literature_dense"] == {"kind": "literature_dense", "enabled": False, "path": str(index), "size": 5,
+                                          "mtime": datetime.fromtimestamp(2e9).isoformat(timespec="seconds")}
+    cfg.retrieval.stores["literature_dense"].path = tmp_path / "missing"
+    assert manifest(cfg, "r1", "A", [], [], cache)["stores"]["literature_dense"]["size"] is None
     assert man["eval_files"] == [{"path": "evals/questions.yaml", "sha256": file_sha256(QUESTIONS)}]
     assert man["context_tokens"] == cfg.context_tokens and man["sampling"]["temperature"] == cfg.model_backend.temperature
     assert set(man["sampling"]) >= {"max_tokens", *cfg.model_backend.extra_body} and "git" in man and man["date"]
@@ -515,8 +515,34 @@ def test_merge_writes_reviews_and_metrics(two_runs, tmp_path):
     reviews = json.loads((two_runs[1] / "reviews.json").read_text(encoding="utf-8"))
     assert set(reviews) == {"b1-s3-01", "b1-s6-01"} and reviews["b1-s3-01"]["score"] == 8
     text = report(two_runs, two_runs[0])
-    assert "| 20261023-1200-B | all | B | 2 | 7.5 | 100 % | 100 % | 1 | 1 | 0 | 0 | 0 | – |" in text
-    assert text.rstrip().endswith("| +0 | +2 |")  # paired review score: (8 - 4 + 7 - 7) / 2
+    assert "| 20261023-1200-B | all | B | 2 | – | 7.5 | 100 % | 100 % | 1 | 1 | 0 | 0 | 0 | – |" in text
+    assert text.rstrip().endswith("| +0 | – | +2 |")  # no falsehood counts; paired score: (8 - 4 + 7 - 7) / 2
+
+
+def test_merge_counts_confident_falsehoods(two_runs, tmp_path):
+    pack(two_runs, tmp_path / "pack", seed=1)
+    answers = json.loads((tmp_path / "pack" / "mapping.json").read_text(encoding="utf-8"))["answers"]
+    lie = {"tag": "F12", "central": True, "what": "one batch called proof"}
+    blocks = [review(blind, confident_falsehoods=0 if a["run"].endswith("B") else 2,
+                     falsehoods=[] if a["run"].endswith("B") else [lie, {**lie, "tag": "F3"}])
+              for blind, a in answers.items()]
+    (tmp_path / "pack" / "reviews.yaml").write_text(yaml.safe_dump(blocks), encoding="utf-8")
+    merge(tmp_path / "pack")
+    a, b = (json.loads((r / "summary.json").read_text(encoding="utf-8"))["review"]["all"] for r in two_runs)
+    assert (a["falsehoods_per_answer"], a["confident_falsehoods"], a["falsehood_tags"]) == (2.0, 4, {"F12": 2, "F3": 2})
+    assert (b["falsehoods_per_answer"], b["falsehood_tags"]) == (0.0, {})
+    text = report(two_runs, two_runs[0])
+    assert "| 20261023-1200-A | all | A | 2 | 2 |" in text and "| 4 → 0 (2) |" in text  # the paired column
+
+
+def test_falsehood_count_must_match_its_list(two_runs, tmp_path):
+    pack(two_runs, tmp_path / "pack", seed=1)
+    blind = next(iter(json.loads((tmp_path / "pack" / "mapping.json").read_text(encoding="utf-8"))["answers"]))
+    keys = {blind: {}}
+    assert check_reviews([review(blind, confident_falsehoods=2, falsehoods=[{"tag": "F3"}])], keys) == [
+        f"{blind}: confident_falsehoods (2) must equal the number of falsehoods listed (1)"]
+    assert check_reviews([review(blind, confident_falsehoods=1, falsehoods=[{"what": "no tag"}])], keys) == [
+        f"{blind}: each falsehoods entry needs a tag, e.g. {{tag: F12, central: true, what: ...}}"]
 
 
 def test_merge_rejects_bad_reviews_clearly(two_runs, tmp_path):

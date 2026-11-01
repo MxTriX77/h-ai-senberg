@@ -85,6 +85,7 @@ def test_valid_entry(tmp_path):
         ({"domains": []}, "domains"),
         ({"domains": "physics"}, "domains"),
         ({"domains": ["Physics"]}, "domains"),
+        ({"use": "embedding-model"}, "domains"),  # a model file has no domains
         ({"filter": MINI_FILTER}, "filter"),  # filter on a codata entry
         ({"use": "wikipedia-mini-zim"}, "filter"),  # mini entry without its filter
         ({"use": "wikipedia-mini-zim", "filter": MINI_FILTER}, "filter"),  # filter names chemistry, entry only physics
@@ -103,6 +104,11 @@ def test_invalid_entry_names_entry_and_field(tmp_path, over, field):
     assert "bad_one" in str(err.value) and f"'{field}'" in str(err.value)
 
 
+def test_embedding_model_entry_without_domains(tmp_path):
+    (e,) = load_manifest(write(tmp_path, entry(use="embedding-model", layer=2, domains=None, dest="models/m.gguf")))
+    assert (e.use, e.domains, e.filter) == ("embedding-model", (), None)
+
+
 def test_duplicate_name(tmp_path):
     with pytest.raises(ManifestError, match="duplicate"):
         load_manifest(write(tmp_path, entry(), entry(dest="codata/y.txt")))
@@ -110,7 +116,7 @@ def test_duplicate_name(tmp_path):
 
 def test_shipped_manifest_domains_and_mini_filter():
     by_name = {e.name: e for e in load_manifest(SHIPPED)}
-    assert all(e.domains for e in by_name.values())
+    assert all(bool(e.domains) == (e.use != "embedding-model") for e in by_name.values())
     assert by_name["codata_2022_allascii"].domains == ("physics", "chemistry")
     mini = by_name["wikipedia_en_all_mini_2026-09"].filter
     assert mini == MiniFilter(**{**MINI_FILTER, "importance": tuple(MINI_FILTER["importance"])})

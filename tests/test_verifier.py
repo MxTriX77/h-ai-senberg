@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, tool_call
 from haisenberg.agent import Agent
-from haisenberg.l1.store import ArticleRecord, Citation, L1Store
+from haisenberg.l1.store import ArticleRecord, Citation, CompoundRecord, L1Store
 from haisenberg.l2.store import PassageRecord
 from haisenberg.server import create_app
 from haisenberg.llm import estimate_tokens
@@ -16,6 +16,7 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
+    carry_forward,
     code_check,
     echoes,
     fix_answer_lines,
@@ -34,6 +35,7 @@ from haisenberg.verifier import (
     Verifier,
     split_claims,
     unconfirmed,
+    verdict_tokens,
 )
 from test_server import chat, events
 
@@ -113,6 +115,20 @@ def test_number_notations(text, value):
 ])
 def test_four_digits_after_a_decimal_are_another_number(text, values):
     assert [n.value for n in read_numbers(text)] == pytest.approx(values)
+
+
+@pytest.mark.parametrize("text, spans", [
+    ("23.4 / 23.75 × 100 = 98.5 %", ["23.4", "23.75", "100", "98.5"]),  # × 100 is no exponent
+    ("x × 103 and 2 x 100", ["103", "2", "100"]),
+    ("1.6×10-19 C", ["1.6×10-19"]),  # a minus right after the 10 is one
+    ("3 x 10**8 m/s", ["3 x 10**8"]),
+])
+def test_times_ten_needs_a_written_exponent(text, spans):
+    assert [text[n.start : n.end] for n in read_numbers(text)] == spans
+
+
+def test_numbers_beyond_float_range_are_skipped():
+    assert [n.value for n in read_numbers("1e999 J, or 2 × 10^400 J, and 5 J")] == [5]
 
 
 def test_digits_in_words_are_not_numbers():
@@ -252,6 +268,45 @@ def test_two_masses_of_one_compound(store):
     assert outcome == CORRECTED and fixed == "The monoisotopic mass of sodium chloride is 57.96 Da [S1]."
     outcome, _, fixed, _ = code_check(claim("The molar mass of sodium chloride is 57.96 g/mol [S1]."), s, 0.001)
     assert outcome == CORRECTED and fixed == "The molar mass of sodium chloride is 58.44 g/mol [S1]."
+
+
+def compound(title, formula, molar_mass, mono, synonyms=()):
+    return CompoundRecord(len(title), title, formula, molar_mass, None, mono, list(synonyms), "name", ["chemistry"],
+                          Citation("pubchem", "p", "1", "CC0", {}, f"https://pubchem/{title}"))
+
+
+WATER_C, ACID_C = compound("Water", "H2O", 18.015, 18.0106), compound("Sulfuric acid", "H2SO4", 98.08, 97.967)
+ETHANOL_C = compound("Ethanol", "C2H6O", 46.07, 46.042)
+
+
+@pytest.mark.parametrize("records, text", [  # a number of another substance than the cited record's
+    ((ACID_C,), "My calculation: Cu (63.546) + S (32.065) + 4×O (63.996) + 5×H₂O (90.075) = 249.682 g/mol [S1]."),
+    ((ACID_C,), "The molar mass of CuSO4·5H2O is 249.68 g/mol [S1]."),  # recorded m2 c03-s3-01: "fixed" to 98.08
+    ((WATER_C,), "Ethanol (46.07 g/mol) is heavier than water [S1]."),
+    ((WATER_C,), "Heavy water D2O has a molar mass of 20.03 g/mol [S1]."),
+    ((WATER_C,), "Water and ethanol have molar masses of 18.015 g/mol and 46.07 g/mol [S1]."),
+    ((WATER_C,), "The hydrate holds 5 waters, 5 × 18.015 = 90.08 g/mol [S1]."),  # a computed result
+    ((ACID_C, WATER_C), "Sulfuric acid (98.08 g/mol) is mixed with water (18.02 g/mol) [S1][S2]."),
+    ((ACID_C,), "H2SO4 + 2NaOH: the salt Na2SO4 has a molar mass of 142.04 g/mol [S1]."),
+    ((ETHANOL_C,), "Methanol (32.04 g/mol) is lighter than ethanol [S1]."),
+])
+def test_numbers_of_other_substances_not_corrected(records, text):
+    s = Sources()
+    for r in records:
+        s.add("x", r, r.passage("", 1500))
+    found = code_check(claim(text), s, 0.005)
+    assert found is None or found[0] != CORRECTED
+
+
+@pytest.mark.parametrize("text, fixed", [
+    ("Water has a molar mass of 19.5 g/mol [S1].", "Water has a molar mass of 18.0 g/mol [S1]."),
+    ("M(H2O) = 19.5 g/mol [S1].", "M(H2O) = 18.0 g/mol [S1]."),  # an assignment is no computation
+])
+def test_wrong_value_of_the_named_substance_still_corrected(text, fixed):
+    s = Sources()
+    s.add("x", WATER_C, WATER_C.passage("", 1500))
+    outcome, _, out, _ = code_check(claim(text), s, 0.005)
+    assert (outcome, out) == (CORRECTED, fixed)
 
 
 @pytest.mark.parametrize("text", [
@@ -527,6 +582,9 @@ def test_parse_fixes():
 
 
 def test_conclusion_fixed(reviewing, fake, cfg):
+    # `consistent` → `implausibly high` changes a verdict, but with the answer's own 98.6 %: it stands with the
+    # verdict guard on (user case 1, D-032)
+    assert cfg.verifier.consistency_keep_verdicts
     fake.chunks = [content("C1: not_said\nC2: not_said")]
     fake.scripts = [[content(DRAFT)], [content("C1: not_said\nC2: not_said")], [content(REVIEW)]]
     r = chat(reviewing, [{"role": "user", "content": "Check the report."}])
@@ -535,6 +593,14 @@ def test_conclusion_fixed(reviewing, fake, cfg):
     assert review[0]["content"] == cfg.verifier.consistency_prompt
     assert review[1]["content"].startswith("Task:\nCheck the report.")
     assert "'85 % (consistent)' → '98.6 % (implausibly high)' (the calculation above gives 98.6 %)" in reasoning_text(r)
+
+
+def test_only_reasoner_calls_carry_the_thinking_budget(reviewing, fake):
+    fake.chunks = [content("C1: not_said\nC2: not_said")]
+    fake.scripts = [[content(DRAFT)], [content("C1: not_said\nC2: not_said")], [content(REVIEW)]]
+    chat(reviewing, [{"role": "user", "content": "Check the report."}])
+    sent =["thinking_budget_tokens" in b for b in fake.bodies]
+    assert len(sent) >= 3 and sent[0] and not any(sent[1:])  # the draft; the judge and review calls do not think
 
 
 @pytest.mark.parametrize("old, why", [("98.6", "found 2 times"), ("90 % yield", "not in the answer")])
@@ -609,7 +675,7 @@ async def review(cfg, fake, knowledge, reply, text=REPORT, task="Task."):
     ("about 120 °C", "about 114 °C", "ΔT = 96 − (−18) ≈ 114 °C"),
 ])
 async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, old, new, conflict):
-    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
+    cfg.verifier.consistency_keep_verdicts = False  # the quote rule, on verdicts too
     text, steps = await review(cfg, fake, knowledge, f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w")
     assert text == REPORT.replace(old, new) and f"{old!r} → {new!r} (w)" in steps
 
@@ -630,7 +696,7 @@ async def test_review_fix_with_a_quoted_conflict_applied(cfg, fake, knowledge, o
     ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "the answer line would lose its label"),
 ])
 async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, new, conflict, why):
-    cfg.verifier.consistency_keep_answer_lines = False  # the quote rule, on answer lines too
+    cfg.verifier.consistency_keep_verdicts = False  # the quote rule, on verdicts too
     reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: clarity"
     text, steps = await review(cfg, fake, knowledge, reply)
     assert text == REPORT and f"skipped {old!r} ({why})" in steps
@@ -638,36 +704,100 @@ async def test_review_fix_without_a_conflict_skipped(cfg, fake, knowledge, old, 
 
 @pytest.mark.anyio
 async def test_review_quotes_switched_off(cfg, fake, knowledge):
-    cfg.verifier.consistency_quotes = cfg.verifier.consistency_keep_answer_lines = False
+    cfg.verifier.consistency_quotes = cfg.verifier.consistency_keep_verdicts = False
     text, _ = await review(cfg, fake, knowledge, "OLD: A1: 4.17\nNEW: A1: 3.65\nWHY: the sheet's formula")
     assert text == REPORT.replace("A1: 4.17", "A1: 3.65")
 
 
+def test_verdict_tokens(cfg):
+    words = cfg.verifier.verdict_words
+    assert verdict_tokens("C3 is not verified; it isn’t correct, but INCORRECTLY so. Неверно.", words) == [
+        "not", "verif", "isn't", "correct", "incorrect", "неверн"]
+    assert verdict_tokens("Note: none of the 5 kg is right-hand, нельзя", words) == ["right"]  # whole-word negators
+    assert verdict_tokens("about 120 °C", words) == []
+
+
+# Verdict flips with a quote that passes the quote rules: only consistency_keep_verdicts keeps them out.
+FLIPS = [
+    ("The log shows 5 kg, so the statement is correct.\n\nC3 is incorrect.",  # free-form, EN
+     "C3 is incorrect.", "C3 is correct.", "so the statement is correct"),
+    ("Среднее 486,5 мг, значит утверждение верно.\n\nУтверждение 4 неверно.",  # free-form, RU
+     "Утверждение 4 неверно", "Утверждение 4 верно", "значит утверждение верно"),
+    ("No test record is given, so it is not verified.\n\nThe yield claim is verified.",  # a negator added
+     "The yield claim is verified.", "The yield claim is not verified.", "so it is not verified"),
+    ("| Claim | Verdict |\n|---|---|\n| C3 | incorrect |\n\nThe log shows 5 kg, so C3 is correct.",  # a table cell
+     "| C3 | incorrect |", "| C3 | correct |", "so C3 is correct"),
+    ("The log shows 5 kg, so the statement is true.\n\nA3: false",  # a labelled line
+     "A3: false", "A3: true", "so the statement is true"),
+]
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("old, new, conflict, named", [
-    ("A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C", "'ΔT = 96 − (−18) ≈ 114 °C'"),  # even with a good quote
-    ("A2: 120", "A2: 114", None, "'w'"),  # without one, its reason is named
-    ("True", "False", "so the statement is false", "'so the statement is false'"),  # on "- **B:** True"
-    ("A1: 4.17", "4.2", "5000 / 1200 = 4.17", "'5000 / 1200 = 4.17'"),  # would drop the label
+@pytest.mark.parametrize("text, old, new, conflict", FLIPS)
+async def test_review_keeps_verdicts(cfg, fake, knowledge, text, old, new, conflict):
+    assert cfg.verifier.consistency_keep_verdicts  # shipped default
+    reply = f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w"
+    kept, steps = await review(cfg, fake, knowledge, reply, text)
+    assert kept == text and f"skipped {old!r} (verdict kept; conflict: {conflict!r})" in steps
+    cfg.verifier.consistency_keep_verdicts = False  # off: the quote rules alone, which these fixes pass
+    assert (await review(cfg, fake, knowledge, reply, text))[0] == text.replace(old, new)
+
+
+@pytest.mark.anyio
+async def test_review_verdict_change_needs_the_answers_own_number(cfg, fake, knowledge):
+    text = "The theoretical yield is 23.75 g, so 23.4 g is a 98.6 % yield.\n\nYield: 85 % (consistent)"
+    own = "OLD: 85 % (consistent)\nNEW: 98.6 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\nWHY: w"
+    assert (await review(cfg, fake, knowledge, own, text))[0].endswith("Yield: 98.6 % (implausibly high)")
+    invented = "OLD: 85 % (consistent)\nNEW: 91 % (implausibly high)\nCONFLICT: so 23.4 g is a 98.6 % yield\nWHY: w"
+    kept, steps = await review(cfg, fake, knowledge, invented, text)
+    assert kept == text and "skipped '85 % (consistent)' (verdict kept" in steps
+
+
+@pytest.mark.anyio
+async def test_review_keeps_verdicts_names_the_reason_without_a_quote(cfg, fake, knowledge):
+    _, steps = await review(cfg, fake, knowledge, "OLD: True\nNEW: False\nWHY: w")
+    assert "skipped 'True' (verdict kept; conflict: 'w')" in steps
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("text, old, new, conflict", [
+    (REPORT, "A2: 120", "A2: 114", "ΔT = 96 − (−18) ≈ 114 °C"),  # a number on a labelled line
+    (REPORT, "about 120 °C", "about 114 °C", "ΔT = 96 − (−18) ≈ 114 °C"),
+    ("The batch weighed 5.2 kg, as logged.\n\nC3 is incorrect: the batch weighed 5 kg.",  # a number next to a verdict
+     "C3 is incorrect: the batch weighed 5 kg.", "C3 is incorrect: the batch weighed 5.2 kg.", "The batch weighed 5.2 kg"),
 ])
-async def test_review_keeps_answer_lines(cfg, fake, knowledge, old, new, conflict, named):
-    assert cfg.verifier.consistency_keep_answer_lines  # shipped default
-    reply = f"OLD: {old}\nNEW: {new}\n" + (f"CONFLICT: {conflict}\n" if conflict else "") + "WHY: w"
-    text, steps = await review(cfg, fake, knowledge, reply)
-    assert text == REPORT and f"skipped {old!r} (answer line kept; conflict: {named})" in steps
+async def test_review_with_verdicts_kept_still_fixes_numbers(cfg, fake, knowledge, text, old, new, conflict):
+    reply = f"OLD: {old}\nNEW: {new}\nCONFLICT: {conflict}\nWHY: w"
+    assert (await review(cfg, fake, knowledge, reply, text))[0] == text.replace(old, new)
 
 
 @pytest.mark.anyio
-async def test_review_with_answer_lines_kept_still_fixes_other_text(cfg, fake, knowledge):
-    reply = "OLD: about 120 °C\nNEW: about 114 °C\nCONFLICT: ΔT = 96 − (−18) ≈ 114 °C\nWHY: w"
-    text, _ = await review(cfg, fake, knowledge, reply)
-    assert text == REPORT.replace("about 120 °C", "about 114 °C")
+async def test_review_with_verdicts_kept_still_follows_the_quote_rules(cfg, fake, knowledge):
+    reply = "OLD: A1: 4.17\nNEW: 4.2\nCONFLICT: 5000 / 1200 = 4.17\nWHY: w"  # same verdict words, drops the label
+    text, steps = await review(cfg, fake, knowledge, reply)
+    assert text == REPORT and "skipped 'A1: 4.17' (the answer line would lose its label)" in steps
 
 
 @pytest.mark.parametrize("new, why", [("A4: неверно", ""), ("A4: 486,5", ""), ("A4: 486,4", "486,4 is not stated")])
 def test_unconfirmed_reads_decimal_commas(new, why):
     text = "Среднее 486,5 мг, значит утверждение неверно.\nA4: верно"
     result = unconfirmed(text, {"old": "A4: верно", "new": new, "conflict": "Среднее 486,5 мг, значит утверждение неверно"})
+    assert result.startswith(why) and bool(result) == bool(why)
+
+
+UNITS = ("The yield is 23.4 / 27.5 × 100 = 85.1 %. C1: the 85 % yield is consistent. The reagent costs 98.6 € per kg. "
+         "The batch took 12 h. C2: the 12 % loss is plausible. Mass lost: 5.00 − 3.80 = 1.20 g. C3: a loss of 2.20 g.")
+
+
+@pytest.mark.parametrize("old, new, conflict, why", [
+    ("the 85 % yield", "the 85.1 % yield", "23.4 / 27.5 × 100 = 85.1 %", ""),
+    ("a loss of 2.20 g", "a loss of 1.20 g", "5.00 − 3.80 = 1.20 g", ""),
+    ("the 85 % yield", "the 98.6 % yield", "The reagent costs 98.6 € per kg.", "98.6 is not stated"),  # € ≠ %
+    ("a loss of 2.20 g", "a loss of 98.6 g", "The reagent costs 98.6 € per kg.", "98.6 is not stated"),
+    ("the 12 % loss", "the 12 h loss", "The batch took 12 h.", "12 measures something else"),  # % → h
+])
+def test_review_numbers_must_be_the_same_quantity(old, new, conflict, why):
+    result = unconfirmed(UNITS, {"old": old, "new": new, "conflict": conflict})
     assert result.startswith(why) and bool(result) == bool(why)
 
 
@@ -703,6 +833,16 @@ def test_derived_claims_judged_when_switched_off(cfg, fake, knowledge):
         chat(c, [{"role": "user", "content": PUMP_TASK}])
     user = fake.bodies[2]["messages"][1]["content"]
     assert "C1: P = 1000 × 9.81" in user and "A1: 2354 W" in user
+
+
+def test_labelled_lines_judged_when_their_switch_is_off(cfg, fake, knowledge):
+    cfg.verifier.skip_labelled_claims = False  # computations still skipped, labelled lines judged like prose
+    fake.chunks = [content("C1: not_said")]
+    fake.scripts = [SEARCH_ETHANOL, [content(LOOP_DRAFT)]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        chat(c, [{"role": "user", "content": PUMP_TASK}])
+    user = fake.bodies[2]["messages"][1]["content"]
+    assert "Claim B: Incorrect, the motor is too small" in user and "P = 1000 × 9.81" not in user
 
 
 @pytest.mark.parametrize("keep, expected", [(True, "Ethanol is a liquid. It is blue."), (False, "Ethanol is a liquid.")])
@@ -777,6 +917,23 @@ def test_minimal_edit_applied(claim, passage, correction, fixed):
 def test_minimal_edit_refused(claim, correction, why):
     fixed, said = minimal_edit(claim, correction, f"{BOILS} An unbalanced equation is not balanced.")
     assert fixed is None and said.startswith(why)
+
+
+@pytest.mark.parametrize("claim, passage, correction", [  # the passage states what the edit takes out too
+    ("Galena has the rock salt (halite) structure.",
+     "Galena, PbS, has the same cubic crystal structure as halite (rock salt), like sodium chloride.",
+     "Galena has the rock salt (galena) structure."),
+    ("The proton mass has a standard uncertainty of 5.2 × 10⁻³⁷ kg.",
+     "proton mass = 1.67262192595e-27 kg (standard uncertainty 5.2e-37 kg); the electron mass uncertainty is 5.1e-40 kg.",
+     "The proton mass has a standard uncertainty of 5.1 × 10⁻⁴⁰ kg."),
+    ("Iron melts at 1538 °C and boils at 2862 °C.", "Iron: melting point 1538 °C, boiling point 2862 °C.",
+     "Iron melts at 2862 °C and boils at 2862 °C."),
+    ("Nitrogen makes up 78 % of air; oxygen 21 %.", "Dry air contains 78 % nitrogen and 21 % oxygen by volume.",
+     "Nitrogen makes up 21 % of air; oxygen 21 %."),
+])
+def test_correction_of_a_term_the_source_states_refused(claim, passage, correction):
+    fixed, said = minimal_edit(claim, correction, passage)
+    assert fixed is None and said.startswith("not a contradiction: the source also states")
 
 
 REWRITE = "C1: supports S1\nC2: contradicts S1 | It is not blue, ethanol is a colorless liquid."
@@ -923,6 +1080,59 @@ def test_grouped_numbers_left_alone(draft):
     assert fixed == draft and fixes == []
 
 
+@pytest.mark.parametrize("draft", [  # recorded drafts (c02-s5-09, c01-s3-11): all were "fixed" to 49:50, 19:15, ...
+    "- Convert to UTC: 10:50 - 1 hour = 09:50 UTC",
+    "- Convert to H local time (UTC-4): 17:15 + 4 hours = 21:15 H local time",
+    "- Convert to F local time: 18:50 - 2 = 16:50 F local time",
+    "Lisbon 07:40 UTC+0 = 07:40 UTC. Helsinki 14:15 UTC+2 = 12:15 UTC.",
+    "Departure at 22 + 3 = 01:00 the next day",  # a clock time as the result
+])
+def test_clock_times_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
+@pytest.mark.parametrize("draft", [  # recorded drafts that main "fixed" (to 0.120, 88, 0.7, 28, 101, 54, 40.0, ...)
+    "- H₂SO₄: 60.0 mL × 2.00 mol/L = 0.0600 L × 2.00 mol/L = 0.120 mol.",  # a step of a chain, after its unit
+    "Allowable force = (250/3.0) MPa × 113.1 mm² = 83.33 MPa × 113.1 mm² = 9,425 N",
+    "Remaining = 100% × (1 - 0.005)^25 = 100% × 0.995^25 = 100% × 0.881 ≈ 88.1%",  # ... after its %
+    "- Относительное снижение риска = (4% − 3%) / 4% = 1%/4% = 25%",
+    r"$$I = 2.0\,\text{A} \times \frac{6.0}{6.0 + 3.0} = 2.0 \times \frac{6.0}{9.0} = 1.333\,\text{A}$$",  # LaTeX
+    r"$E = 408 \cdot (1 - 0.14) = 408 \cdot 0.86 = 350.88 \text{ kWh}$",
+    r"\ln(10^{12}) = 12 \ln(10) = 12 \cdot 2.302585 = 27.631",  # a function after the result
+    "= 3.785411784 × 100 ÷ 56.32704 = 6.720416667 L/100 km",  # × 100 is no power of ten
+    r"$P_2 = P_1 \times (1 - 0.20) = 1.25 \times 0.80 = 1.00$",  # a times sign before "(", not italics
+    "C_исходная = C_аликвоты × (100.0 мл / 10.00 мл) = 0.0820 × 10 = 0.820 моль/л",
+    "**Sugars per bar:** 22.0 g per 100 g × 0.40 = 8.8 g",  # "per" belongs to the math
+    "| Правильная доля = 1 — 0.95^12 = 46% |",  # a dash written as a minus
+    r"$Q = 1{,}20 \times 4{,}19 \times 75 = 377{,}1$ кДж.",  # LaTeX decimal comma
+    "A1: да (3 марта + 14 недель = 3 марта + 98 дней = 9 июня)",  # a date
+    "giving 2(1)(1) + 1 = 3 peaks",  # an implied product
+    # probes of right statements the check had "fixed" (to 0.5 km, 32.0 h, 51.0 m, -14 min, 1, -2, -10, -4):
+    "2 km + 500 m = 2.5 km", "2 h + 30 min = 2.5 h", "1 m + 50 cm = 1.5 m", "1 h - 15 min = 45 min",  # mixed units
+    "1 TB / 1 GB = 1000", "1 GB / 1 MB = 1024",  # one unit, different prefixes
+    "pages 10-12 = 3 pages", "years 2010-2020 = 11 years", "items 3–7 = 5 items",  # ranges
+])
+def test_misread_expressions_left_alone(draft):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005)
+    assert fixed == draft and fixes == []
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("Total: 2 h + 3 h = 6 h", "Total: 2 h + 3 h = 5 h"),
+    ("A2: (1000 − 800) / 800 = 0.30", "A2: (1000 − 800) / 800 = 0.25"),  # a label's colon is no clock time
+    ("**S7:** (4.2-3.8)/3.8 × 100 = 12.5%", "**S7:** (4.2-3.8)/3.8 × 100 = 10.5%"),
+    ("E = 1932 Вт × 4,333 мин / 60 = 0,1388 кВт·ч = 500 кДж",  # a unit with "·" is no operator
+     "E = 1932 Вт × 4,333 мин / 60 = 0.1395 кВт·ч = 500 кДж"),
+    ("- Total: 162 + 240 + 36 + 12 = 350 kcal per 100 g", "- Total: 162 + 240 + 36 + 12 = 450 kcal per 100 g"),
+    ("n = (5.00 × 10⁻³) / (4.005 × 10⁻²⁵) = 1.248 × 10²³ m⁻³", "n = (5.00 × 10⁻³) / (4.005 × 10⁻²⁵) = 1.248 × 10^22 m⁻³"),
+    ("12-10 = 3", "12-10 = 2"),  # a tight subtraction with the larger number first is no range
+    ("100 W × 2 h = 300 Wh", "100 W × 2 h = 200 Wh"),  # units that multiply are no mix
+])
+def test_hours_and_labelled_lines_still_checked(draft, expected):
+    assert fix_arithmetic(draft, 0.005)[0] == expected
+
+
 @pytest.mark.parametrize("draft, expected", [
     ("m = 0.0500 × 56.08 = 3.80 g.\n\nA1: 3.80 g", "m = 0.0500 × 56.08 = 2.80 g.\n\nA1: 2.80 g"),
     ("m = 0.0500 × 56.08 = 3.80 g.\n- **A1:** 3.80 g of CaO", "m = 0.0500 × 56.08 = 2.80 g.\n- **A1:** 2.80 g of CaO"),
@@ -955,6 +1165,79 @@ def test_answer_line_follows_the_arithmetic_fix(cfg, fake, knowledge, on):
         r = chat(c)
     assert answer(r).endswith("A1: 2.80 g" if on else "A1: 3.80 g")
     assert ("answer line: 3.80 → 2.80" in reasoning_text(r)) is on
+
+
+# c10d: a fix carried forward to the later uses of the stale value (c7 cluster P), in free-form answers.
+def carried(draft, request="", task=""):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005, task=task)
+    applied = [f for f in fixes if "note" not in f]
+    out, trace = carry_forward(fixed, applied, request, task)
+    return out, trace, applied
+
+
+@pytest.mark.parametrize("draft, expected", [
+    ("The label says 350 kcal. 3 × 150 = 350 kcal, so 350 kcal in all.",  # not before the fix
+     "The label says 350 kcal. 3 × 150 = 450 kcal, so 450 kcal in all."),
+    ("E = 3 × 150 = 350 kcal. Then 350 kcal and 350 g, not 1350 kcal or 350.5 kcal.",  # units must match
+     "E = 3 × 150 = 450 kcal. Then 450 kcal and 350 g, not 1350 kcal or 350.5 kcal."),
+    ("share = 7 / 20 × 100 = 30 %. So 30 % of 30 bars.", "share = 7 / 20 × 100 = 35 %. So 35 % of 30 bars."),
+    ("n = 3 × 10 = 35. Then 35 % and 35 + 5 = 40.", "n = 3 × 10 = 30. Then 35 % and 30 + 5 = 40."),  # % vs plain
+    ("m = 0,5 × 7 = 3,6 г. Итого 3,6 г, а не 13,6 г или 3,65 г.",  # Russian decimal comma
+     "m = 0,5 × 7 = 3.5 г. Итого 3.5 г, а не 13,6 г или 3,65 г."),
+    ("E = 3 × 150 = 350 kcal. Left: 350 − 200 = 150 kcal.",  # a bare input of a later computation
+     "E = 3 × 150 = 450 kcal. Left: 450 − 200 = 150 kcal."),
+])
+def test_fix_carried_to_later_uses(draft, expected):
+    out, trace, fixes = carried(draft)
+    assert out == expected and fixes[0]["carried"] == len(trace) >= 1
+    old, new, expression = fixes[0]["stated"], fixes[0]["fixed"], fixes[0]["expression"]
+    assert trace[0] == f"> carried: {old} → {new} (after the fix of {expression} = {old})"
+
+
+@pytest.mark.parametrize("draft, asked, task, why", [
+    ("3 × 150 = 350 kcal. The label's 350 kcal is right.", "The label says 350 kcal per bar.", "",
+     "> not carried: 350 is in the request, maybe given data"),
+    ("3 × 150 = 350 kcal. The label says: one bar gives 350 kcal of energy per serving.", "",
+     "The label says: one bar gives 350 kcal of energy per serving. Check it.", ""),  # quoted from the task
+    ("3 × 150 = 350 kcal; 700 / 2 = 350 kcal.", "", "", "> not carried: 350 is also the value of 700 / 2"),
+    ("3 × 150 = 350 kcal. Group sizes: 350, 120.", "", "", ""),  # a bare number in prose: maybe another quantity
+    ("a = 2 × 3 = 7, b = 2 × 4 = 7. So 7 in all.", "", "", "> not carried: 7 was fixed to 2 different values"),
+    ("Cost: 4 × 4 = 17. Meet at 17:00, or at 9:17.", "", "", ""),  # a clock time's hour or minutes: not the value
+    ("Boxes: 2 × 3 = 7. A week has 7 days, so we ship on day 7.", "", "", ""),  # a bare result: other quantities
+    ("Score: 12 / 4 = 4. Table 4 lists 4 teams; step 4 is the last.", "", "", ""),  # and labels keep their numbers
+    ("x = 2 × 6 = 13\n\n## 13. Next section", "", "", ""),
+    ("- Path 2: S1 → S3 → S4 → S6 → S8 = 3 + 2 + 6 + 3 + 1 = 14 days\n"  # recorded c02-s5-04: 14 is also path 3's
+     "- Path 3: S1 → S3 → S5 → S6 → S8 = 3 + 2 + 5 + 3 + 1 = 14 days\n"  # right total, so a later 14 may mean that
+     "S5 is on path 3 with duration 14 days.", "", "",
+     "> not carried: 14 is also the value of 3 + 2 + 5 + 3 + 1"),
+])
+def test_fix_not_carried(draft, asked, task, why):
+    fixed, fixes, _ = fix_arithmetic(draft, 0.005, task=task)
+    out, trace, applied = carried(draft, asked, task)
+    assert out == fixed and all(f["carried"] == 0 for f in applied)
+    assert all(t.startswith(why) for t in trace) and bool(trace) is bool(why)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("on", [True, False])
+async def test_carried_fix_recomputes_later_steps(cfg, fake, knowledge, on):
+    cfg.verifier.carry_fixes_forward = on
+    fake.chunks = [content("C1: not_said")]
+    question = "A bar has three portions of 150 kcal each, and a walk burns 200 kcal. How much energy is left?"
+    draft = ("Energy: 3 × 150 = 350 kcal.\nThe bar gives 350 kcal, so after the walk 350 − 200 = 150 kcal are left."
+             " So 150 kcal remain.")
+    items = [i async for i in Verifier(cfg, fake.client(cfg.model_backend), knowledge).verify(question, draft, Sources())]
+    result, steps = items[-1], "".join(i.get("reasoning_content", "") for i in items[:-1])
+    if on:  # one extra pass recomputes 450 − 200; its own fix is not carried again
+        assert result.answer == ("Energy: 3 × 150 = 450 kcal.\nThe bar gives 450 kcal, so after the walk"
+                                 " 450 − 200 = 250 kcal are left. So 150 kcal remain.")
+        assert steps.count("> carried: 350 → 450 (after the fix of 3 * 150 = 350)") == 2
+        assert [a.get("carried") for a in result.arithmetic] == [2, None] and result.arithmetic[1]["fixed"] == "250"
+    else:  # as before
+        assert result.answer == ("Energy: 3 × 150 = 450 kcal.\nThe bar gives 350 kcal, so after the walk"
+                                 " 350 − 200 = 150 kcal are left. So 150 kcal remain.")
+        assert "carried" not in steps and result.arithmetic == [
+            {"expression": "3 * 150", "stated": "350", "fixed": "450"}]
 # c4: false corrections from a misread left side.
 @pytest.mark.parametrize("draft", [
     "growth = ($52.10 − $48.00) / $48.00 × 100 = 8.5 %",

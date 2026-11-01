@@ -23,11 +23,13 @@ USES = {
     "stackexchange-zim",
     "wikibooks-zim",
     "chebi-obo",
+    "embedding-model",
 }
+NO_DOMAINS = {"embedding-model"}  # model files: they yield no records, so they have no domains
 CHECKSUM_FIELDS = ("sha256", "md5", "sha256_url", "md5_url")
 HEX_LEN = {"sha256": 64, "md5": 32}
 FIELDS = {"name", "use", "layer", "domains", "url", "dest", "license", "cite_url", "filter", *CHECKSUM_FIELDS}
-REQUIRED = ("name", "use", "layer", "domains", "url", "dest", "license")
+REQUIRED = ("name", "use", "layer", "url", "dest", "license")  # and domains, except for NO_DOMAINS uses
 MINI_FIELDS = {"infoboxes", "projects", "importance"}
 FILTER_FIELDS = {  # use -> the fields its entry's filter must have; entries of other uses have no filter
     "wikipedia-mini-zim": MINI_FIELDS,
@@ -151,8 +153,12 @@ def _entry(item: dict, label: str) -> Entry:
         if not isinstance(pinned, str) or not re.fullmatch(rf"[0-9a-f]{{{HEX_LEN[algo]}}}", pinned):
             raise bad(field, f"must be {HEX_LEN[algo]} lowercase hex digits")
 
-    domains = item["domains"]
-    if not isinstance(domains, list) or not domains or not all(isinstance(d, str) and _DOMAIN.match(d) for d in domains):
+    domains = item.get("domains")
+    if item["use"] in NO_DOMAINS:
+        if domains is not None:
+            raise bad("domains", f"must be absent for use {item['use']}")
+        domains = []
+    elif not isinstance(domains, list) or not domains or not all(isinstance(d, str) and _DOMAIN.match(d) for d in domains):
         raise bad("domains", "must be a non-empty list of lowercase domain names")
     mini_filter = _filter(item, domains, bad)
 

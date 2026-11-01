@@ -52,6 +52,13 @@ def health_url(cfg: Config) -> str:
     return f"http://{ls.host}:{ls.port}/health"
 
 
+def embedding_view(cfg: Config) -> Config:
+    """The config as this launcher sees the embedding server: llama_server = embedding.server, alias =
+    embedding.model_id. Every function here and Supervisor take it unchanged."""
+    backend = cfg.model_backend.model_copy(update={"model_id": cfg.embedding.model_id})
+    return cfg.model_copy(update={"llama_server": cfg.embedding.server, "model_backend": backend})
+
+
 def ensure_llama_server(
     cfg: Config,
     http: httpx.Client | None = None,

@@ -7,7 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import CONNECT_ERROR, content, finish, reasoning, tool_call
-from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _Markup
+from haisenberg.agent import CUT_NOTE, DRAFT_MARK, NO_ANSWER, Agent, _items_named, _Markup, thinking_budget
+from haisenberg.evidence import listed_items
 from haisenberg.llm import estimate_tokens
 from haisenberg.l1.store import L1Store
 from haisenberg.server import create_app
@@ -110,7 +111,8 @@ def test_tool_prompt_added_when_tools_offered(client, fake, cfg):
     chat(client)
     policy = cfg.reasoning_policy
     assert fake.last_body["messages"][0] == {
-        "role": "system", "content": policy.system_prompt.rstrip() + "\n\n" + policy.tool_prompt,
+        "role": "system",
+        "content": policy.system_prompt.rstrip() + "\n\n" + policy.tool_prompt.rstrip() + "\n" + policy.compute_prompt,
     }
 
 
@@ -173,13 +175,21 @@ def within_context(cfg, body) -> bool:
     return prompt + body.get("max_tokens", cfg.model_backend.max_tokens) <= cfg.context_tokens
 
 
+def limit_output(cfg, tokens=1000):
+    """Let every model call write at most `tokens`: thinking budget + answer room, and max_tokens for the rest."""
+    tb = cfg.reasoning_policy.thinking_budget
+    cfg.model_backend.max_tokens = tokens
+    tb.min_tokens = tb.max_tokens = tokens // 2
+    tb.answer_tokens = tokens - tokens // 2
+
+
 def base_tokens(cfg, knowledge) -> int:
     system = f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"
     return estimate_tokens([{"role": "system", "content": system}], cfg.model_backend.chars_per_token, knowledge.tools)
 
 
 def test_long_history_trimmed(cfg, fake, knowledge):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 3000
     turns = [{"role": r, "content": f"{r} turn {i} " + "x" * 600} for i in range(10) for r in ("user", "assistant")]
     fake.scripts = [[content("ok")]]
@@ -192,7 +202,7 @@ def test_long_history_trimmed(cfg, fake, knowledge):
 
 
 def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkeypatch):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + 2 * base_tokens(cfg, knowledge) + 100
     big = "x" * 4 * base_tokens(cfg, knowledge)  # one result is larger than all the room left
     monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
@@ -209,7 +219,7 @@ def test_worst_case_tool_rounds_stay_within_context(cfg, fake, knowledge, monkey
 
 
 def test_question_too_long(cfg, fake, knowledge):
-    cfg.model_backend.max_tokens = 1000
+    limit_output(cfg)
     cfg.llama_server.ctx_size = 1000 + base_tokens(cfg, knowledge) + 100
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
         r = chat(c, [{"role": "user", "content": "x" * 5000}])
@@ -269,12 +279,24 @@ def test_calculator_rounds_use_no_lookup_rounds(client, fake, cfg):
     assert sum(m["role"] == "tool" for m in fake.bodies[-1]["messages"]) == 3  # both lookups ran after the calculation
 
 
+def test_cut_off_tool_arguments_do_not_break_the_next_call(client, fake):
+    """A call cut off at the token limit (recorded: c03-s3-08, c03-s3-01) has arguments that are not JSON; llama-server
+    rejects any later request that carries them ("Failed to parse tool call arguments as JSON"), so the history
+    keeps the call with empty arguments and the tool's error, and the answer goes on."""
+    cut = '{"expressions": ["0.1000 * 0.01640 / 0.02000 * 10 /'
+    fake.scripts = [[tool_call("calculate", cut, call_id="k1"), finish("length")], [content("done")]]
+    assert answer(chat(client)) == "done"
+    call, result = fake.bodies[1]["messages"][-2:]
+    assert json.loads(call["tool_calls"][0]["function"]["arguments"]) == {}
+    assert result["role"] == "tool" and "not valid JSON" in result["content"]
+
+
 def test_lookups_used_up_leave_the_calculator(client, fake, cfg):
     cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 2
     fake.scripts = [lookup_round(), calc_round(call_id="k1"), calc_round(call_id="k2"), [content("done")]]
     assert answer(chat(client)) == "done"
     assert "lookup_compound" in offered(fake.bodies[0])
-    assert [offered(b) for b in fake.bodies[1:]] == [["calculate"]] * 3  # the same tools up to the last call
+    assert [offered(b) for b in fake.bodies[1:]] == [["calculate", "compute"]] * 3  # the same up to the last call
     assert [b.get("tool_choice") for b in fake.bodies] == [None, None, None, "none"]
 
 
@@ -331,26 +353,36 @@ def test_calculation_written_in_the_retry_is_run_and_asked_once_more(client, fak
 def test_one_more_call_at_most_and_the_most_complete_answer_kept(client, fake, cfg):
     policy = cfg.reasoning_policy
     policy.max_search_depth, policy.max_calc_rounds = 1, 0
-    fake.scripts = [lookup_round(), [content("A1: 480 g\nLet me check:\n" + XML_CALL)],
-                    [content("A1: 480 g\nA2: 12 J\nLet me verify the energy:\n" + XML_CALL)],
-                    [content("Let me recompute everything once more, step by step, to be sure.\n" + XML_CALL)]]
+    fake.scripts = [lookup_round(), [content("C1 holds: 480 g.\nLet me check:\n" + XML_CALL)],
+                    [content("C1 holds: 480 g. C2 holds too: 12 J.\nLet me verify the energy:\n" + XML_CALL)],
+                    [content("Let me recompute everything once more, step by step, with every unit written out, "
+                             "to be sure.\n" + XML_CALL)]]
     fake.chunks = [content("never asked")]
-    r = chat(client, QUESTION)
+    r = chat(client, [{"role": "user", "content": "Check each:\nC1. The mass is 480 g.\nC2. The energy is 12 J."}])
     assert len(fake.requests) == 4  # the lookup, the draft, the retry and one more call
-    assert answer(r) == "A1: 480 g\nA2: 12 J\nLet me verify the energy:"  # the retry: both requested lines
+    assert answer(r) == "C1 holds: 480 g. C2 holds too: 12 J.\nLet me verify the energy:"  # both items, not the longest
     text = reasoning_text(r)
     assert text.count("calculation run") == 2 and "tool call written as text in the retry: removed\n" in text
-    assert "answer kept: the retry (2 requested answer lines, ends at a removed tool call, " in text
+    assert "answer kept: the retry (2 of 2 listed items, ends at a removed tool call, " in text
 
 
 def test_lookup_written_in_the_retry_removed_and_the_best_answer_kept(client, fake, cfg):
     cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 0
-    fake.scripts = [lookup_round(), [content("**A1:** 194.19 g/mol\nA2: C8H10N4O2\n" + LOOKUP_CALL)],
+    fake.scripts = [lookup_round(), [content("Q1 is 194.19 g/mol; for Q2, C8H10N4O2.\n" + LOOKUP_CALL)],
                     [content("I should look the formula up again to be sure of every atom.\n" + LOOKUP_CALL)]]
-    r = chat(client, [{"role": "user", "content": "Give A1: the molar mass and A2: the formula of caffeine."}])
-    assert answer(r) == "**A1:** 194.19 g/mol\nA2: C8H10N4O2" and len(fake.requests) == 3
+    r = chat(client, [{"role": "user", "content": "About caffeine:\nQ1. its molar mass\nQ2. its formula"}])
+    assert answer(r) == "Q1 is 194.19 g/mol; for Q2, C8H10N4O2." and len(fake.requests) == 3
     assert "tool call written as text in the retry: removed\n" in reasoning_text(r)
-    assert "answer kept: the draft (2 requested answer lines, ends at a removed tool call, " in reasoning_text(r)
+    assert "answer kept: the draft (2 of 2 listed items, ends at a removed tool call, " in reasoning_text(r)
+
+
+@pytest.mark.parametrize("text, named", [
+    ("C1 holds; С2 (Cyrillic С) too, C10 is not listed.", 2),  # look-alike letters, whole words
+    ("**C3:** fine. C1x, xC2", 1),
+    ("Nothing named.", 0),
+])
+def test_items_named(text, named):
+    assert _items_named(text, listed_items("C1. a\nC2. b\nC3. c")) == named
 
 
 def test_complete_answer_kept_over_a_longer_fragment(client, fake):
@@ -359,7 +391,7 @@ def test_complete_answer_kept_over_a_longer_fragment(client, fake):
                     [content("I should look this up once more before I answer, to be precise.\n" + LOOKUP_CALL)]]
     r = chat(client)
     assert answer(r) == "Caffeine is 194.19 g/mol." and len(fake.requests) == 2
-    assert "answer kept: the draft (0 requested answer lines, complete, 25 characters)" in reasoning_text(r)
+    assert "answer kept: the draft (complete, 25 characters)" in reasoning_text(r)  # no listed items: as before
 
 
 def test_tool_call_written_as_text_is_run_when_rounds_are_left(client, fake):
@@ -439,3 +471,147 @@ def test_markup_read_also_when_cut_off(cfg):
     assert markup.split("no markup") == ([], "no markup")
     assert markup.cut("Plan.\n" + XML_CALL + "\n ") and markup.cut("Plan.\n<function=calculate><parameter=expressions>2")
     assert not markup.cut(XML_CALL + "\nIt is 480.") and not markup.cut("no markup")
+
+
+# --- thinking budget ---------------------------------------------------------------------------------
+
+FIELD = "thinking_budget_tokens"
+LONG_TASK = "A calorimetry lab report lists six runs. Check each run and give one answer line per run.\n" + "\n".join(
+    f"{i}. A {i * 2.5} g sample of metal at {95 + i} °C is dropped into {50 + 10 * i} g of water at {20 + i} °C; the "
+    f"final temperature is {24.5 + i} °C and the balance reads to ±{i / 100} g. Compute the heat taken up by the "
+    f"water, the specific heat of the metal and its relative uncertainty. Answer line A{i}: <value> J/(g·K)."
+    for i in range(1, 7))
+
+
+def test_thinking_budget_follows_the_question(cfg):
+    tb = cfg.reasoning_policy.thinking_budget
+    assert thinking_budget("What is the molar mass of water?", tb) == tb.min_tokens == 1024
+    two_parts = "Water (18.02 g/mol) and ethanol (46.07 g/mol) are mixed 1:1 by mass. Find (a) the mole fraction and (b) the molality."
+    assert tb.min_tokens < thinking_budget(two_parts, tb) < (tb.min_tokens + tb.max_tokens) / 2
+    assert 0.9 * tb.max_tokens <= thinking_budget(LONG_TASK, tb) <= tb.max_tokens == 4096
+
+
+def test_thinking_budget_on_every_reasoner_round(client, fake):
+    fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+    r = chat(client, [{"role": "user", "content": LONG_TASK}])
+    sent = [(b.get(FIELD), b["max_tokens"]) for b in fake.bodies]
+    budget = sent[0][0]
+    assert sent == [(budget, budget + 3072)] * 2 and budget >= 0.9 * 4096  # every round: the budget + the answer room
+    steps = reasoning_text(r)
+    assert steps.count("> thinking budget:") == 1 and f"\n\n> thinking budget: {budget} tokens\n" in steps
+
+
+def test_short_question_keeps_the_old_request_size(client, fake, cfg):
+    chat(client, [{"role": "user", "content": "What is the molar mass of water?"}])
+    assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096) == (1024, cfg.model_backend.max_tokens)
+
+
+def test_no_thinking_budget_on_the_retry(client, fake):
+    fake.scripts = [[reasoning("the whole answer, A1: 42"), finish("stop")], [content("A1: 42")]]
+    chat(client, [{"role": "user", "content": LONG_TASK}])
+    first, retry = fake.bodies
+    assert first[FIELD] > 1024 and FIELD not in retry  # the retry does not think
+    assert retry["max_tokens"] == 4096  # model_backend.max_tokens, not the answer's
+
+
+def test_cut_logic_uses_the_answers_max_tokens(cfg, fake, knowledge, monkeypatch):
+    cfg.model_backend.max_tokens = 1000  # calls without a budget
+    tb = cfg.reasoning_policy.thinking_budget
+    tb.min_tokens = tb.max_tokens = 1500
+    tb.answer_tokens = 500  # this answer's calls: 2000
+    cfg.llama_server.ctx_size = 2000 + 2 * base_tokens(cfg, knowledge) + 100
+    big = "x" * 4 * base_tokens(cfg, knowledge)
+    monkeypatch.setattr(knowledge, "run", lambda name, args, sources, k=None: (big, ["[S1] X"], ["S1"]))
+    fake.scripts = [lookup_round(), [content("answer")]]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        r = chat(c)
+    first, second = (b["max_tokens"] for b in fake.bodies)
+    assert answer(r) == "answer" and first == 2000 and second > 1900  # cut for 2000, not for 1000 (then second ~1000)
+    assert all(within_context(cfg, b) for b in fake.bodies) and "shortened to fit" in reasoning_text(r)
+
+
+def test_fixed_budget_a_arm(cfg, client, fake):
+    """min = max = 1024 on the B arm's server: every question gets today's 1024 thinking and 4096 max_tokens."""
+    cfg.reasoning_policy.thinking_budget.max_tokens = 1024
+    chat(client, [{"role": "user", "content": LONG_TASK}])
+    assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (1024, 4096)
+
+
+def test_long_question_thinks_less_rather_than_refused(cfg, fake, knowledge):
+    question = {"role": "user", "content": LONG_TASK}  # its own budget: over 3900 + 3072
+    text = f"{cfg.reasoning_policy.system_prompt.rstrip()}\n\n{cfg.reasoning_policy.tool_prompt}"
+    if knowledge.computer:  # the compute tool's prompt is part of the system message too (#55)
+        text = f"{text.rstrip()}\n{cfg.reasoning_policy.compute_prompt}"
+    system = {"role": "system", "content": text}
+    need = estimate_tokens([system, question], cfg.model_backend.chars_per_token, knowledge.tools)
+
+    def ask(ctx_size):
+        cfg.llama_server.ctx_size = ctx_size
+        fake.requests.clear()
+        with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+            return chat(c, [question])
+
+    for spare, sent in ((500, 1524), (0, 1024)):  # today's max_tokens (4096) fits with `spare` tokens to spare
+        r = ask(need + 4096 + spare)
+        assert (fake.last_body[FIELD], fake.last_body["max_tokens"]) == (sent, sent + 3072)  # floored at min_tokens
+        assert f"> thinking budget: {sent} tokens (shrunk to fit the prompt)\n" in reasoning_text(r)
+        assert within_context(cfg, fake.last_body)
+    r = ask(need + 4095)  # even min_tokens does not fit: refused, as today
+    assert "too long for the model's context" in answer(r) and not fake.requests
+
+
+def test_thinking_budget_off_sends_the_old_requests(cfg, fake, knowledge):
+    question = [{"role": "user", "content": LONG_TASK}]
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
+        fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+        chat(c, question)
+        with_budget = fake.bodies
+        cfg.reasoning_policy.thinking_budget.field = ""
+        fake.requests.clear()
+        fake.scripts = [lookup_round(), [content("Caffeine is 194.19 g/mol [S1].")]]
+        r = chat(c, question)
+    assert all(FIELD in b for b in with_budget) and not any(FIELD in b for b in fake.bodies)
+    old = [{**{k: v for k, v in b.items() if k != FIELD}, "max_tokens": cfg.model_backend.max_tokens} for b in with_budget]
+    assert fake.bodies == old  # nothing else differs
+    assert "thinking budget" not in reasoning_text(r)
+
+
+# --- the compute tool ----------------------------------------------------------------------------------------
+
+def compute_round(*operations, call_id="m1"):
+    return [tool_call("compute", json.dumps({"operations": list(operations)}), call_id=call_id), finish("tool_calls")]
+
+
+def test_compute_result_reaches_the_model_and_the_trace(client, fake):
+    fake.scripts = [compute_round("weekday(2026-10-29)", "add_days(2026-10-29, 3)"), [content("Thursday.")]]
+    r = chat(client)
+    assert answer(r) == "Thursday." and "compute" in offered(fake.bodies[0])
+    call, result = fake.bodies[1]["messages"][-2:]
+    assert call["tool_calls"][0]["function"]["name"] == "compute"
+    assert result == {"role": "tool", "tool_call_id": "m1",
+                      "content": "weekday(2026-10-29) = Thursday\nadd_days(2026-10-29, 3) = 2026-11-01 (Sunday)"}
+    text = reasoning_text(r)
+    assert '> compute(operations=["weekday(2026-10-29)", "add_days(2026-10-29, 3)"])' in text
+    assert "- weekday(2026-10-29) = Thursday\n- add_days(2026-10-29, 3) = 2026-11-01 (Sunday)\n" in text
+
+
+def test_compute_rounds_are_calculator_rounds(client, fake, cfg):
+    cfg.reasoning_policy.max_search_depth, cfg.reasoning_policy.max_calc_rounds = 1, 1
+    both = [tool_call("compute", json.dumps({"operations": ["count(a)"]}), call_id="m1"),
+            tool_call("calculate", json.dumps({"expressions": ["2 * 3"]}), index=1, call_id="k1"), finish("tool_calls")]
+    fake.scripts = [both, lookup_round(), [content("done")]]
+    assert answer(chat(client)) == "done"
+    assert [b.get("tool_choice") for b in fake.bodies] == [None, None, "none"]  # the lookup still had its round
+    assert sum(m["role"] == "tool" for m in fake.bodies[-1]["messages"]) == 3
+
+
+def test_compute_switched_off_in_the_loop(cfg, fake, built_store):
+    cfg.reasoning_policy.enable_multi_hop_verification = False
+    cfg.reasoning_policy.compute_tool = False
+    with TestClient(create_app(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))) as c:
+        chat(c)
+    policy = cfg.reasoning_policy
+    assert "compute" not in offered(fake.last_body)
+    system = fake.last_body["messages"][0]["content"]
+    assert system == policy.system_prompt.rstrip() + "\n\n" + policy.tool_prompt
+    assert policy.compute_prompt.strip() not in system

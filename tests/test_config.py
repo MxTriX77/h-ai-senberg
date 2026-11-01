@@ -184,18 +184,20 @@ def test_machine_knob_defaults_unchanged(tmp_path):
 
     cmd = build_command(load_config(write(tmp_path)))
     assert (_arg(cmd, "--host"), _arg(cmd, "--port"), _arg(cmd, "--ctx-size")) == ("127.0.0.1", "8080", "16384")
-    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "1024")
+    assert (_arg(cmd, "--gpu-layers"), _arg(cmd, "--threads"), _arg(cmd, "--reasoning-budget")) == ("99", "8", "4096")
 
 
 def test_machine_knobs_from_environment(tmp_path, monkeypatch):
     from haisenberg.launcher import build_command
 
-    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "4096", "LLAMA_PORT": "9090"}
+    knobs = {"CTX_SIZE": "65536", "GPU_LAYERS": "40", "LLAMA_THREADS": "32", "REASONING_BUDGET": "2048", "LLAMA_PORT": "9090"}
     for k, v in knobs.items():
         monkeypatch.setenv(k, v)
-    cmd = build_command(load_config(write(tmp_path)))
+    cfg = load_config(write(tmp_path))
+    cmd = build_command(cfg)
     assert _arg(cmd, "--ctx-size") == "65536" and _arg(cmd, "--gpu-layers") == "40"
-    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "4096"
+    assert _arg(cmd, "--threads") == "32" and _arg(cmd, "--reasoning-budget") == "2048"
+    assert cfg.reasoning_policy.thinking_budget.max_tokens == 2048  # the cap is also the top of the budget
     assert _arg(cmd, "--port") == "9090"
 
 
@@ -250,6 +252,33 @@ def test_shipped_profiles_load(tmp_path, monkeypatch):
         assert load_config(path).model_backend.model_id
 
 
+def test_evidence_settings(tmp_path):
+    ev = load_config(write(tmp_path)).evidence  # shipped on (release 2026-11-01)
+    assert ev.enabled is True and ev.min_items == 3 and {"guarantee", "гарантир"} <= set(ev.strong_words)
+    assert ev.ledger_request["response_format"] == {"type": "json_object"} and "{missing}" in ev.repair_prompt
+
+
+def test_independent_settings(tmp_path):
+    ev = load_config(write(tmp_path)).evidence
+    assert ev.independent is True and ev.independent_max_items == 10
+    assert "{id}" in ev.item_prompt and "{text}" in ev.item_prompt and "response_format" not in ev.item_request
+
+
+def test_evidence_repair_prompt_names_the_missing_ids(tmp_path):
+    data = base()
+    data["evidence"]["repair_prompt"] = "Add the missing items."
+    with pytest.raises(ConfigError, match=r"evidence\.repair_prompt"):
+        load_config(write(tmp_path, data))
+
+
+@pytest.mark.parametrize("value", ["Judge {text}.", "Judge {id}."])
+def test_item_prompt_names_the_item(tmp_path, value):
+    data = base()
+    data["evidence"]["item_prompt"] = value
+    with pytest.raises(ConfigError, match=r"evidence\.item_prompt"):
+        load_config(write(tmp_path, data))
+
+
 @pytest.mark.parametrize("section, key, value, named", [
     ("reasoning_policy", "max_search_depth", -1, r"reasoning_policy\.max_search_depth"),
     ("reasoning_policy", "tool_prompt", None, r"reasoning_policy\.tool_prompt"),
@@ -272,7 +301,8 @@ def test_tool_and_search_settings_validated(tmp_path, section, key, value, named
 
 def test_tool_texts(tmp_path):
     cfg = load_config(write(tmp_path))
-    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate"}
+    assert set(cfg.tools) == {"search_knowledge", "lookup_compound", "lookup_constant", "calculate", "compute"}
+    assert set(cfg.tools["compute"].parameters) == {"operations"}
     assert set(cfg.tools["calculate"].parameters) == {"expressions"}
     assert cfg.verifier.arithmetic_rel_tol == 0.005
     assert set(cfg.tools["search_knowledge"].parameters) == {"query", "domain"}
@@ -290,6 +320,19 @@ def test_answer_robustness_settings(tmp_path):
     data["reasoning_policy"]["tool_call_markup"]["call"] = "<tool_call>("
     with pytest.raises(ConfigError, match=r"reasoning_policy\.tool_call_markup\.call: .*invalid regular expression"):
         load_config(write(tmp_path, data))
+
+
+def test_compute_settings(tmp_path):
+    p = load_config(write(tmp_path)).reasoning_policy
+    assert p.compute_tool is True and p.compute_prompt.strip()
+    for key, value in [("compute_tool", None), ("compute_prompt", " ")]:
+        data = base()
+        if value is None:
+            del data["reasoning_policy"][key]
+        else:
+            data["reasoning_policy"][key] = value
+        with pytest.raises(ConfigError, match=rf"reasoning_policy\.{key}"):
+            load_config(write(tmp_path, data))
 
 
 def test_config_and_sources_are_not_profiles(tmp_path, monkeypatch):
@@ -338,6 +381,9 @@ def test_big_profile_budget(tmp_path, monkeypatch):
     monkeypatch.setenv(PROFILE_ENV, profile.stem)
     cfg = load_config(path)
     assert (cfg.context_tokens, cfg.model_backend.max_tokens) == (32768, 8192)
+    tb = cfg.reasoning_policy.thinking_budget
+    assert (tb.min_tokens, tb.max_tokens, tb.answer_tokens) == (4096, 8192, 4096)
+    assert cfg.llama_server.flags["reasoning-budget"] == "8192"
 
 
 def test_consistency_settings(tmp_path):
@@ -353,7 +399,7 @@ def test_conservative_check_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.arithmetic_prefixes is v.skip_derived_claims is v.keep_uncorrected is v.arithmetic_strict_parse is True
     assert v.arithmetic_max_change == 100
-    assert v.unit_checks is v.arithmetic_answer_lines is True
+    assert v.unit_checks is True and v.arithmetic_answer_lines is False  # carry_fixes_forward replaces it (D-042)
     for key in ("keep_uncorrected", "unit_checks", "arithmetic_answer_lines", "arithmetic_strict_parse", "arithmetic_max_change"):
         data = base()
         del data["verifier"][key]
@@ -365,12 +411,23 @@ def test_conservative_check_settings(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_carry_fixes_forward_setting(tmp_path):
+    v = load_config(write(tmp_path)).verifier  # shipped on, answer lines and the labelled-line skip off (D-042)
+    assert v.carry_fixes_forward is True and v.arithmetic_answer_lines is False and v.skip_labelled_claims is False
+    data = base()
+    del data["verifier"]["carry_fixes_forward"]
+    with pytest.raises(ConfigError, match="verifier.carry_fixes_forward"):
+        load_config(write(tmp_path, data))
+
+
 def test_conservative_review_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
-    assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_answer_lines is v.keep_quotes is True
+    assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_verdicts is v.keep_quotes is True
     assert v.judge_minimal_edits is True
-    for key in ("consistency_quotes", "ignore_prompt_echo", "consistency_keep_answer_lines", "keep_quotes",
-                "judge_minimal_edits"):
+    assert {"correct", "incorrect", "verif", "верн", "неверн"} <= set(v.verdict_words.stems)
+    assert {"not", "no", "не", "нет"} <= set(v.verdict_words.negators)
+    for key in ("consistency_quotes", "ignore_prompt_echo", "consistency_keep_verdicts", "verdict_words",
+                "keep_quotes", "judge_minimal_edits"):
         data = base()
         del data["verifier"][key]
         with pytest.raises(ConfigError, match=f"verifier.{key}"):
@@ -406,6 +463,15 @@ def test_knowledge_switch_by_environment(monkeypatch):
     extended = load_config(SHIPPED)
     assert extended.retrieval.knowledge == "extended"
     assert extended.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()  # nothing else
+    monkeypatch.setenv("KNOWLEDGE", "hybrid")
+    hybrid = load_config(SHIPPED)
+    assert hybrid.retrieval.knowledge == "hybrid"
+    assert hybrid.retrieval.model_copy(update={"knowledge": "base"}).model_dump() == base.retrieval.model_dump()
+    assert hybrid.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()
+    monkeypatch.setenv("KNOWLEDGE", "crosslingual")
+    crosslingual = load_config(SHIPPED)
+    assert crosslingual.retrieval.model_copy(update={"knowledge": "base"}).model_dump() == base.retrieval.model_dump()
+    assert crosslingual.model_copy(update={"retrieval": base.retrieval}).model_dump() == base.model_dump()
     monkeypatch.setenv("KNOWLEDGE", "everything")
     with pytest.raises(ConfigError, match="retrieval.knowledge"):
         load_config(SHIPPED)
@@ -429,6 +495,8 @@ def test_sampling_seed_from_environment(tmp_path, monkeypatch):
     ({"stores": {"encyclopedia": {"kind": "encyclopedia", "path": "a.db"}, "other": {"kind": "encyclopedia", "path": "b.db"}},
       "knowledge_sets": {"base": ["encyclopedia", "other"]}}, "one store of each kind"),
     ({"stores": {"encyclopedia": {"kind": "graph", "path": "a.db"}}}, "retrieval.stores"),
+    ({"knowledge_sets": {"base": ["encyclopedia", "literature_dense"]}}, "needs a store of kind 'literature'"),
+    ({"knowledge_sets": {"base": ["literature", "encyclopedia_dense"]}}, "knowledge_sets.*needs a store of kind 'encyclopedia'"),
 ])
 def test_store_registry_validated(tmp_path, change, error):
     raw = yaml.safe_load(SHIPPED.read_text(encoding="utf-8"))
@@ -443,11 +511,30 @@ def test_store_registry_validated(tmp_path, change, error):
 def test_enabled_stores_follow_the_knowledge_setting(monkeypatch):
     monkeypatch.delenv("KNOWLEDGE", raising=False)
     r = load_config(SHIPPED).retrieval
-    assert {s.kind for s in r.stores.values()} == {"encyclopedia", "literature"}
+    assert {s.kind for s in r.stores.values()} == {"encyclopedia", "literature", "literature_dense", "encyclopedia_dense"}
     assert r.enabled("encyclopedia") == r.path("encyclopedia") and r.enabled("literature") is None
     monkeypatch.setenv("KNOWLEDGE", "extended")
     r = load_config(SHIPPED).retrieval
     assert r.enabled("literature") == r.path("literature") == r.stores["literature"].path
+    assert r.enabled("literature_dense") is None
+    monkeypatch.setenv("KNOWLEDGE", "hybrid")
+    r = load_config(SHIPPED).retrieval
+    assert r.enabled("literature_dense") == r.path("literature_dense") == r.stores["literature_dense"].path
+    assert r.enabled("encyclopedia_dense") is None
+    monkeypatch.setenv("KNOWLEDGE", "crosslingual")
+    r = load_config(SHIPPED).retrieval
+    assert r.knowledge_sets["crosslingual"] == ["encyclopedia", "encyclopedia_dense"]
+    assert r.enabled("encyclopedia_dense") == r.path("encyclopedia_dense") == r.stores["encyclopedia_dense"].path
+    assert r.enabled("literature") is None and r.enabled("literature_dense") is None
+
+
+def test_embedding_section(tmp_path):
+    cfg = load_config(write(tmp_path))
+    e = cfg.embedding
+    assert e.api_base == "http://127.0.0.1:8092/v1" and e.model_id and e.batch > 0 and e.workers > 0
+    assert e.server.model_path == tmp_path.resolve() / "data" / "raw" / "models" / "bge-m3-FP16.gguf"
+    assert e.server.env["CUDA_VISIBLE_DEVICES"] == "" and e.server.flags["device"] == "none"  # CPU only by default
+    assert e.server.flags["embedding"] is True
 
 
 def test_source_trust_settings(tmp_path):
@@ -465,3 +552,70 @@ def test_source_trust_settings(tmp_path):
         del data[section][key]
         with pytest.raises(ConfigError, match=f"{section}.{key}"):
             load_config(write(tmp_path, data))
+
+
+def test_shipped_prompt_states_the_evidence_discipline():
+    prompt = " ".join(yaml.safe_load(SHIPPED.read_text(encoding="utf-8"))["reasoning_policy"]["system_prompt"].split())
+    for rule in ('"Not shown" is not "false"', "never proves a cause or a general rule",
+                 "a right calculation on a wrong input does not make the claim right",
+                 "A correction is a claim too"):
+        assert rule in prompt
+
+
+def test_thinking_budget_settings(tmp_path):
+    cfg = load_config(write(tmp_path))
+    tb = cfg.reasoning_policy.thinking_budget
+    assert (tb.field, tb.min_tokens, tb.max_tokens, tb.answer_tokens) == ("thinking_budget_tokens", 1024, 4096, 3072)
+    assert (tb.chars.weight + tb.numbers.weight + tb.items.weight) == pytest.approx(1)  # share 1 when all are full
+    assert cfg.llama_server.flags["reasoning-budget"] == "4096" and cfg.model_backend.max_tokens == 4096
+
+
+@pytest.mark.parametrize("change, error", [
+    ({"answer_tokens": 0}, r"reasoning_policy\.thinking_budget\.answer_tokens"),
+    ({"min_tokens": 4096, "max_tokens": 1024}, r"reasoning_policy\.thinking_budget: .*min_tokens must not exceed max_tokens"),
+    ({"chars": {"start": 2000, "full": 200, "weight": 0.4}}, r"reasoning_policy\.thinking_budget\.chars: .*full"),
+    ({"items": {"start": 1, "full": 6, "weight": 1.5}}, r"reasoning_policy\.thinking_budget\.items\.weight"),
+    ({"item_pattern": "("}, r"reasoning_policy\.thinking_budget\.item_pattern: .*regular expression"),
+    ({"max_tokens": 6144}, r"reasoning_policy\.thinking_budget\.max_tokens \(6144\) exceeds the server cap "
+                           r"llama_server\.flags\.reasoning-budget \(4096\)"),
+])
+def test_thinking_budget_validated(tmp_path, change, error):
+    data = base()
+    data["reasoning_policy"]["thinking_budget"].update(change)
+    with pytest.raises(ConfigError, match=error):
+        load_config(write(tmp_path, data))
+
+
+def test_thinking_budget_fits_the_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("CTX_SIZE", "7168")  # 4096 + 3072: no room left for the prompt
+    with pytest.raises(ConfigError, match=r"thinking_budget\.max_tokens \(4096\) \+ answer_tokens \(3072\) leaves no "
+                                          r"room for the prompt in the context \(7168 tokens\)"):
+        load_config(write(tmp_path))
+    monkeypatch.setenv("CTX_SIZE", "7169")
+    assert load_config(write(tmp_path)).context_tokens == 7169
+    monkeypatch.delenv("CTX_SIZE")
+    data = base()
+    data["llama_server"]["enabled"] = False  # a remote backend: its context counts, not llama-server's cap
+    data["reasoning_policy"]["thinking_budget"]["max_tokens"] = 6144
+    assert load_config(write(tmp_path, data)).reasoning_policy.thinking_budget.max_tokens == 6144
+
+
+def test_fixed_thinking_budget_is_the_a_arm(tmp_path):
+    """The A arm on the B arm's server (cap 4096): min = max = 1024, so every answer gets today's 1024 + 3072."""
+    data = base()
+    data["reasoning_policy"]["thinking_budget"]["max_tokens"] = 1024
+    tb = load_config(write(tmp_path, data)).reasoning_policy.thinking_budget
+    assert tb.min_tokens == tb.max_tokens == 1024 and tb.field
+
+
+def test_thinking_budget_off_is_the_old_setup(tmp_path, monkeypatch):
+    """No field and the old server cap: the bounds are then unused and not checked."""
+    from haisenberg.launcher import build_command
+
+    monkeypatch.setenv("REASONING_BUDGET", "1024")
+    data = base()
+    data["reasoning_policy"]["thinking_budget"]["field"] = ""
+    cfg = load_config(write(tmp_path, data))
+    assert _arg(build_command(cfg), "--reasoning-budget") == "1024" and cfg.model_backend.max_tokens == 4096
+    data["reasoning_policy"]["thinking_budget"]["max_tokens"] = 99999  # above the cap and the context
+    assert load_config(write(tmp_path, data)).reasoning_policy.thinking_budget.field == ""
