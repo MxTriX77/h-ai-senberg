@@ -505,6 +505,21 @@ async def test_an_unreadable_or_failed_independent_reply_is_ignored(cfg, fake):
 
 
 @pytest.mark.anyio
+async def test_an_item_unverified_in_the_ledger_gets_no_independent_call(cfg, fake):
+    # R-f can only make an item unverified, so judging one that already is can change nothing: no call for C2
+    first = ledger(item("C1", "established", support=("given",)), item("C2", "unverified"),
+                   item("C3", "contradicted", "computed", against=("computation",)))
+    fake.scripts = [[content(DRAFT)], [content(first)], AGREE[0], AGREE[2]]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == DRAFT and len(fake.requests) == 4  # draft, ledger, C1 and C3; nothing changed, no writer
+    assert ("- C2: unverified in the ledger already, which no independent judgment can change; the ledger's judgment"
+            " stays\nIndependent judgment: 2 items, one call each\n") in trace
+    assert [b["messages"][0]["content"].split(":")[0][-2:] for b in fake.bodies[2:]] == ["C1", "C3"]
+    led = report["ledger"]
+    assert led["independent_calls"] == 2 and [i["independent"] is None for i in led["items"]] == [False, True, False]
+
+
+@pytest.mark.anyio
 async def test_independent_cap_and_skipped_items(cfg, fake):
     cfg.evidence.independent_max_items = 1
     first = ledger(item("C1", "established", support=("given",)),

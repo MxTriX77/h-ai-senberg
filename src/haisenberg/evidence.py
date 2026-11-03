@@ -414,7 +414,7 @@ class Evidence:
         changed, ind, added = settle(entries, self.cfg.strong_words), None, []
         if self.cfg.independent:
             ind = _Independent()
-            async for line in self._independent(conversation, items, skipped, tools, ind):
+            async for line in self._independent(conversation, items, skipped, entries, tools, ind):
                 yield line
             ind.disagreements, added = compare(entries, ind.own)
             gone = [i for i in gone if key(i) not in ind.own]
@@ -453,13 +453,18 @@ class Evidence:
                 yield _say("".join(lines))
         yield Settled(answer, _report(entries, skipped, gone, True, ind=ind))
 
-    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str], tools: str,
-                           ind: _Independent) -> AsyncIterator[dict]:
-        """Judge each listed item the ledger did not skip (up to `independent_max_items`) in its own call, from
-        the conversation and the tool results only (never the draft or the ledger); settle the entries by the
-        same rules into `ind.own`. An unreadable or failed reply leaves that item out."""
+    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str],
+                           entries: list[Entry], tools: str, ind: _Independent) -> AsyncIterator[dict]:
+        """Judge each listed item the ledger did not skip or settle as unverified (up to `independent_max_items`)
+        in its own call, from the conversation and the tool results only (never the draft or the ledger); settle
+        the entries by the same rules into `ind.own`. An unreadable or failed reply leaves that item out. An item
+        already unverified ends unverified whatever its judgment says (R-f), so it gets no call."""
+        status = {key(e.id): e.status for e in entries}
         done, cap = {key(s) for s in skipped}, self.cfg.independent_max_items
-        todo = [i for i in items if key(i[0]) not in done]
+        todo = [i for i in items if key(i[0]) not in done and status.get(key(i[0])) != UNVERIFIED]
+        if already := [i for i, _ in items if key(i) not in done and status.get(key(i)) == UNVERIFIED]:
+            yield _say(f"- {', '.join(already)}: unverified in the ledger already, which no independent judgment"
+                       " can change; the ledger's judgment stays\n")
         yield _say(f"Independent judgment: {len(todo[:cap])} items, one call each\n")
         if rest := todo[cap:]:
             yield _say(f"- {', '.join(i for i, _ in rest)}: over the limit of {cap}; the ledger's judgment stays\n")
