@@ -322,7 +322,9 @@ verifier:                                  # claim checks on the draft; on/off: 
 evidence:                                  # evidence ledger (D-032): verdicts settled by rules from the recorded evidence
   enabled: true                            # on; false: no ledger (the answer is the checked draft, as before)
   min_items: 3                             # runs when the last user message lists this many items (lines starting with
-                                           # an id: 1. / a) / C1. / У3) / Claim A:, or bulleted lines); else no change
+                                           # an id: 1. / a) / C1. / У3) / Claim A:, header lines `Claim 1 — Title` with
+                                           # the text below, or bulleted lines); else no change. With this many named
+                                           # items (Claim 1, C1, У3), only those: bare ones (1., a)) are instructions
   strong_words: [prove, proof, guarantee, confirm, establish, validat, verif, independent,
                  доказ, гарантир, подтвержд, установлен, валидир, верифиц, независим]
                                            # a statement with one of these (at a word start) is a claim of proof;

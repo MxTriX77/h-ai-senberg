@@ -119,6 +119,7 @@ class Agent:
         self.chars_per_token = cfg.model_backend.chars_per_token
         self.markup = _Markup(self.policy.tool_call_markup) if self.policy.text_tool_calls else None
         self.evidence = Evidence(cfg, llm, checks=self.verifier is not None) if cfg.evidence.enabled else None
+        self.min_items = cfg.evidence.min_items  # named items that make the whole list (listed_items)
 
     def _calculations(self, written: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The calculate calls among calls written as text that cannot run as a round: run anyway (plain code)."""
@@ -270,7 +271,7 @@ class Agent:
             if not text:
                 yield {"reasoning_content": "\n\n> no answer on the retry\n"}
             if cut or not text:  # never a fragment that ends where a call was removed: the most complete answer
-                items = listed_items(_question(history))
+                items = listed_items(_question(history), self.min_items)
                 if ranked := [((_items_named(t[1], items), not t[2], len(t[1])), t) for t in tried if t[1]]:
                     (named, complete, chars), (name, text, cut, reply) = max(ranked, key=lambda r: r[0])
                     state = "complete" if complete else "ends at a removed tool call"

@@ -41,30 +41,53 @@ _ID = r"\d{1,2}|[^\W\d_]{1,2}\d{1,2}|[^\W\d_]"
 _LISTED = re.compile(rf"^[ \t>]*(?:[-*•][ \t]+)?[*_]*(?:\((?P<p>{_ID})\)|(?:(?P<word>[^\W\d_]+)[ \t]+)?"
                      rf"(?P<id>{_ID})[*_]*[.):：])[*_]*[ \t]+(?P<text>\S.*)$", re.M)
 _BULLET = re.compile(r"^[ \t>]*[-*•][ \t]+(?P<text>\S.*)$", re.M)
+# A header item: one word and an id, then a dash and an optional title (`Claim 1 — Reaction equation`,
+# `Claim 2 - …`) or `:` and nothing else (`### Claim 3:`); its text goes on over the lines below (`_body`). The word
+# starts with a capital letter, so a wrapped line of prose (`is 3:`, `was 5 – 6 hours`) is not a header.
+_HEADER = re.compile(rf"^[ \t>#]*(?:[-*•][ \t]+)?[*_]*(?P<word>[^\W\d_]+)[ \t]+(?P<id>{_ID})[*_]*"
+                     rf"(?:[ \t]*[—–][ \t]*|[ \t]+-[ \t]+|[ \t]*[:：][*_]*[ \t]*$)[*_]*(?P<text>.*?)[*_]*[ \t]*$", re.M)
 _TEMPLATE = re.compile(r"<[^<>]*>[.,;]?")  # a line that is only a placeholder to fill in
 _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic for Latin in ids
 
 
-def listed_items(text: str) -> list[tuple[str, str]]:
+def listed_items(text: str, least: int) -> list[tuple[str, str]]:
     """(id as the message writes it, text) of every item the message lists, first occurrence of each id. Lines
-    with an id win; without any, bulleted lines are numbered 1, 2, … in order. With a word before the id
-    (`Claim A:`), the id has a digit or is one capital letter, so `Mass m: 5 g` is not an item."""
-    found = []
-    for m in _LISTED.finditer(text):
-        iid = m["p"] or m["id"]
-        if m["word"] and not (re.search(r"\d", iid) or (len(iid) == 1 and iid.isupper())):
+    with an id and header lines win; without any, bulleted lines are numbered 1, 2, … in order. With a word before
+    the id (`Claim A:`), the id has a digit or is one capital letter, so `Mass m: 5 g` is not an item. When at
+    least `least` items are named (`Claim 1`, `C1`, `У3`), only those count: the bare ones (`1.`, `a)`) are then
+    the request's instructions or data."""
+    heads = [m for m in _HEADER.finditer(text) if m["word"][0].isupper()]
+    lines = list(_LISTED.finditer(text))
+    starts, found = [m.start() for m in lines + heads], []
+    for m in sorted(lines + heads, key=lambda m: m.start()):
+        word, iid = m["word"], m.groupdict().get("p") or m["id"]
+        if word and not (re.search(r"\d", iid) or (len(iid) == 1 and iid.isupper())):
             continue
-        if _TEMPLATE.fullmatch(m["text"].strip()):  # `A1: <your verdict>`: a form to fill in, not an item to judge
+        t = m["text"].strip()
+        if m.re is _HEADER:
+            t = ": ".join(filter(None, (t, _body(text, m.end(), starts))))
+        if not t or _TEMPLATE.fullmatch(t):  # `A1: <your verdict>`: a form to fill in, not an item to judge
             continue
-        found.append((f"{m['word']} {iid}" if m["word"] else iid, m["text"].strip()))
+        named = bool(word or (re.search(r"\d", iid) and not iid.isdigit()))
+        found.append((f"{word} {iid}" if word else iid, t, named))
     if not found:
-        found = [(str(n), m["text"].strip()) for n, m in enumerate(_BULLET.finditer(text), 1)]
+        found = [(str(n), m["text"].strip(), False) for n, m in enumerate(_BULLET.finditer(text), 1)]
+    if len(named := [f for f in found if f[2]]) >= least:
+        found = named
     seen, items = set(), []
-    for iid, t in found:
+    for iid, t, _ in found:
         if (k := key(iid)) not in seen:
             seen.add(k)
             items.append((iid, t))
     return items
+
+
+def _body(text: str, end: int, starts: list[int]) -> str:
+    """The lines after a header (from `end`), up to the next item line or the first blank line after some text,
+    as one line."""
+    stop = min((s for s in starts if s > end), default=len(text))
+    para = re.split(r"\n[ \t]*\n", text[end:stop].strip(), maxsplit=1)[0]
+    return " ".join(line.strip() for line in para.splitlines() if line.strip())
 
 
 def key(value: Any) -> str:
@@ -354,7 +377,7 @@ class Evidence:
 
     def triggered(self, question: str) -> list[tuple[str, str]]:
         """The items the last user message lists, when there are enough to run the ledger; else []."""
-        items = listed_items(question)
+        items = listed_items(question, self.cfg.min_items)
         return items if len(items) >= self.cfg.min_items else []
 
     def _fits(self, messages: list[dict[str, Any]], request: dict[str, Any]) -> bool:

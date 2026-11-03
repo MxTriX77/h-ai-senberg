@@ -50,22 +50,49 @@ V2 = ledger(item("C1", "established", support=("given",)),
 
 
 def test_listed_items_keep_the_ids_as_written():
-    assert listed_items(TASK) == [("C1", "The batch weighed 5 kg."),
+    assert listed_items(TASK, 3) == [("C1", "The batch weighed 5 kg."),
                                   ("C2", "One batch guarantees an 85 % yield at any scale."), ("C3", "2 × 3 = 7.")]
-    assert listed_items("У1) Выход 85 %.\n**У2:** Метод безопасен.\n- У3. Партия одна.") == [
+    assert listed_items("У1) Выход 85 %.\n**У2:** Метод безопасен.\n- У3. Партия одна.", 3) == [
         ("У1", "Выход 85 %."), ("У2", "Метод безопасен."), ("У3", "Партия одна.")]
-    assert listed_items("1. a\n2) b\n(3) c\n1.1 not an item") == [("1", "a"), ("2", "b"), ("3", "c")]
-    assert listed_items("а) первое\nб) второе") == [("а", "первое"), ("б", "второе")]
-    assert listed_items("Claim A: x\nClaim 2. y\nMass m: 5 g") == [("Claim A", "x"), ("Claim 2", "y")]
-    assert listed_items("C1. x\nC1: the same id again") == [("C1", "x")]
+    assert listed_items("1. a\n2) b\n(3) c\n1.1 not an item", 3) == [("1", "a"), ("2", "b"), ("3", "c")]
+    assert listed_items("а) первое\nб) второе", 3) == [("а", "первое"), ("б", "второе")]
+    assert listed_items("Claim A: x\nClaim 2. y\nMass m: 5 g", 3) == [("Claim A", "x"), ("Claim 2", "y")]
+    assert listed_items("C1. x\nC1: the same id again", 3) == [("C1", "x")]
     # a line that is only a placeholder is a form to fill in, not an item to judge
-    assert listed_items("C1. x\nC2. y\nFinish with:\nA1: <verdict for C1>\nA2: <число>.") == [("C1", "x"), ("C2", "y")]
+    assert listed_items("C1. x\nC2. y\nFinish with:\nA1: <verdict for C1>\nA2: <число>.", 3) == [
+        ("C1", "x"), ("C2", "y")]
 
 
 def test_bullets_count_only_without_ids():
-    assert listed_items("Check:\n- a\n* b\n• c") == [("1", "a"), ("2", "b"), ("3", "c")]
-    assert listed_items("Given:\n- m = 5 g\n- V = 2 L\n- T = 300 K\nC1. x\nC2. y") == [("C1", "x"), ("C2", "y")]
-    assert listed_items("What is the boiling point of ethanol?") == []
+    assert listed_items("Check:\n- a\n* b\n• c", 3) == [("1", "a"), ("2", "b"), ("3", "c")]
+    assert listed_items("Given:\n- m = 5 g\n- V = 2 L\n- T = 300 K\nC1. x\nC2. y", 3) == [("C1", "x"), ("C2", "y")]
+    assert listed_items("What is the boiling point of ethanol?", 3) == []
+
+
+def test_header_items_take_the_lines_below():
+    text = ("Report\nClaim 1 — Reaction equation\nThe equation is balanced.\nClaim 2 - Sample\nIt holds 1.35 g.\n"
+            "So 0.01349 mol.\n\nNot part of it.\n**Claim 3 —** Gas\n### Claim 4 – Yield: 98 %\nClaim 5:\n\n"
+            "After a blank line.")
+    assert listed_items(text, 3) == [
+        ("Claim 1", "Reaction equation: The equation is balanced."),
+        ("Claim 2", "Sample: It holds 1.35 g. So 0.01349 mol."),
+        ("Claim 3", "Gas"), ("Claim 4", "Yield: 98 %"), ("Claim 5", "After a blank line.")]
+    # no separator, a range, a hyphen without spaces, a header without any text, wrapped prose: not items
+    assert listed_items("Apples 3\nPears 2\nStep 1-2 mix\nClaim 7 -x\nRatio 2.\nwas 5 – 6 hours\nis 3:\nClaim 8 —\n",
+                        3) == []
+    assert listed_items("Claim 1 —\nIt took\nwas 5 – 6 hours\nTotal 3.", 3) == [
+        ("Claim 1", "It took was 5 – 6 hours Total 3.")]
+
+
+def test_named_items_are_the_list_when_there_are_enough():
+    claims = "".join(f"Claim {n} — Title {n}\nText {n}.\n" for n in (1, 2, 3))
+    tasks = "\nRequired audit\n1. Evaluate all three claims.\n2. Recalculate.\n3. Explain.\n4. Propose checks."
+    assert listed_items(claims + tasks, 3) == [(f"Claim {n}", f"Title {n}: Text {n}.") for n in (1, 2, 3)]
+    assert listed_items("C1. x\nC2. y\nУ3. z\n1. Recompute.\n(2) Verdicts.\na) Table.", 3) == [
+        ("C1", "x"), ("C2", "y"), ("У3", "z")]
+    # too few named items to be the list: everything counts, as the numbered questions are what is asked
+    accounts = "Account X: 4.0 % monthly.\nAccount Y: 4.1 % yearly.\n1. Which pays more?\n2. With fees?\n3. How much?"
+    assert [i for i, _ in listed_items(accounts, 3)] == ["Account X", "Account Y", "1", "2", "3"]
 
 
 def test_key():
@@ -345,7 +372,7 @@ def evidence(cfg, fake, checks=False):
 
 
 async def settle_run(ev, draft=DRAFT, tools=""):
-    items = [i async for i in ev.run([{"role": "user", "content": TASK}], listed_items(TASK), draft, tools)]
+    items = [i async for i in ev.run([{"role": "user", "content": TASK}], listed_items(TASK, 3), draft, tools)]
     return next(i for i in items if isinstance(i, Settled)), "".join(i.get("reasoning_content", "")
                                                                      for i in items if isinstance(i, dict))
 
@@ -465,7 +492,7 @@ async def test_independent_calls_never_see_the_draft_or_the_ledger(cfg, fake):
     tools = "> calculate(expressions=[\"2*3\"])\n2*3 = 6"
     settled, _ = await settle_run(evidence(cfg, fake), tools=tools)
     assert settled.answer == DRAFT and len(fake.requests) == 4
-    for n, (iid, text) in enumerate(listed_items(TASK), 1):
+    for n, (iid, text) in enumerate(listed_items(TASK, 3), 1):
         body = fake.bodies[n]
         system, user = (m["content"] for m in body["messages"])
         assert system == cfg.evidence.item_prompt.replace("{id}", iid).replace("{text}", text)
@@ -533,6 +560,33 @@ async def test_independent_ids_in_russian(cfg, fake):
     led = report["ledger"]
     assert [i["id"] for i in led["items"]] == ["У1", "У2", "У3"] and led["disagreements"] == 1
     assert led["items"][1]["independent"] == {"status": "contradicted", "claimed": "established", "rule": "R-b"}
+
+
+# The shape of user case 6 (LESSONS §4.13): claims as `Claim N — Title` headers with the text below, then the
+# numbered audit tasks. The ledger and the independent check judge the claims; the tasks stay the draft's to-do list.
+AUDIT = ("Act as an independent reviewer and audit the report.\nReport to audit\n"
+         "Claim 1 — Sample composition\nThe sample holds 1.50 × 0.900 = 1.35 g of CaCO₃.\n"
+         "Claim 2 — Limiting reagent\nSince 0.0300 mol > 0.01349 mol, HCl is in excess.\n"
+         "Claim 3 — Yield\nThe yield is (0.01368 / 0.01349) × 100 = 101.4 %.\n"
+         "Claim 4 — Conclusion\nThe sample is exactly 90.0 % CaCO₃.\n\nRequired audit\n"
+         "1. Evaluate all four claims independently.\n2. Recalculate the mass of CaCO₃.\n"
+         "3. Correct the pressure for water vapour.\n4. Explain recovery vs yield.\n5. Propose deterministic checks.")
+
+
+@pytest.mark.anyio
+async def test_audit_claim_headers_are_the_items_not_the_tasks(cfg, fake):
+    claims = [f"Claim {n}" for n in (1, 2, 3, 4)]
+    fake.scripts = [[content("Claim 1 is true. …")], [content(ledger(*(item(c, "unverified") for c in claims)))],
+                    *(judged(c, "unverified") for c in claims)]
+    answer, trace, report, _ = await run_independent(cfg, fake, AUDIT)
+    assert answer == "Claim 1 is true. …" and len(fake.requests) == 6  # draft, ledger, one call per claim
+    assert "Evidence ledger: 4 listed items" in trace and "Independent judgment: 4 items, one call each" in trace
+    assert ("Items listed in the last message:\nClaim 1: Sample composition: The sample holds 1.50 × 0.900 = 1.35 g of "
+            "CaCO₃.\nClaim 2: Limiting reagent: ") in fake.bodies[1]["messages"][1]["content"]
+    for n, c in enumerate(claims, 2):
+        assert fake.bodies[n]["messages"][0]["content"].startswith(f"Judge one item of the user's last message, {c}: ")
+    assert "Evaluate all four" not in "".join(fake.bodies[n]["messages"][0]["content"] for n in (2, 3, 4, 5))
+    assert [i["id"] for i in report["ledger"]["items"]] == claims
 
 
 def test_parse_entry():
