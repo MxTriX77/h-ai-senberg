@@ -192,6 +192,19 @@ def test_re_dependencies_to_a_fixed_point():
     assert b.why == "it depends on A, which is contradicted"
 
 
+def test_re_spares_an_item_its_own_computation_settles():
+    # u-06 (queue25, queue27): Claim 4 "the maximum CO2 is 0.01349 mol", computed in full, nothing against it, was
+    # lowered by R-e because Claim 3 (right conclusion, flawed reasoning) was contradicted
+    premise = entry("Claim 3", support=("computation",), against=("computation",))
+    own = entry("Claim 4", support=("computation",), depends_on=["Claim 3"], strong_enough=True, asserts="computed")
+    guess = entry("Claim 6", support=("given",), depends_on=["Claim 3"], strong_enough=True)
+    assumed = entry("Claim 7", support=("computation",), depends_on=["Claim 3"], strong_enough=True,
+                    assumptions=["no CO2 dissolved"])
+    assert changed(premise, own, guess, assumed) == [
+        ("Claim 3", CONTRADICTED, "R-a"), ("Claim 6", UNVERIFIED, "R-e"), ("Claim 7", UNVERIFIED, "R-e")]
+    assert own.status == ESTABLISHED
+
+
 def test_rg_own_computation_settles_a_plain_claim():
     # c10a baseline: "410 > 407.42" yet "cannot be determined"; own 132,258 yet "roughly 132,000" rejected
     assert changed(entry(status=UNVERIFIED, support=("computation",), strong_enough=True, asserts="computed")) == [
