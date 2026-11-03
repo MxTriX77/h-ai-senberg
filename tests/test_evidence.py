@@ -107,6 +107,16 @@ def test_ra_hard_evidence_against_contradicts():
     assert changed(entry(status=CONTRADICTED, against=("knowledge",))) == []
 
 
+def test_ra_material_against_never_overrides_the_models_unverified():
+    # u-06 smoke, Claim 8 ("CO2 does not dissolve significantly"): the model said unverified and filed the gap
+    # "dissolved CO2 not measured" as given evidence against; R-a made it a confident "contradicted"
+    for status in (UNVERIFIED, HYPOTHESIS):
+        for source in ("given", "source"):
+            assert changed(entry(status=status, support=(), against=(source,))) == []
+        assert changed(entry(status=status, support=(), against=("given", "computation"))) == [
+            ("A", CONTRADICTED, "R-a")]  # a computation against still settles it
+
+
 def test_rb_claim_of_proof_with_evidence_that_cannot_give_it_is_contradicted():
     assert changed(entry(status=UNVERIFIED, asserts="proof")) == [("A", CONTRADICTED, "R-b")]
     assert changed(entry(status=ESTABLISHED, statement="One run guarantees it")) == [("A", CONTRADICTED, "R-b")]
