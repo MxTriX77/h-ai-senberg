@@ -505,6 +505,22 @@ async def test_independent_calls_never_see_the_draft_or_the_ledger(cfg, fake):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("field, item_request", [
+    ("thinking_budget_tokens", {}), ("", {}), ("thinking_budget_tokens", {"max_tokens": 6000}),
+], ids=["budget-field", "no-field", "item-request-wins"])
+async def test_independent_calls_have_room_after_the_thinking(cfg, fake, field, item_request):
+    tb = cfg.reasoning_policy.thinking_budget
+    tb.field, cfg.evidence.item_request, cfg.evidence.independent = field, item_request, True
+    fake.scripts = [[content(SETTLED)], *AGREE]
+    await settle_run(evidence(cfg, fake))
+    room = tb.max_tokens + cfg.evidence.item_answer_tokens if field else cfg.model_backend.max_tokens  # 4096 + 1024
+    want = item_request.get("max_tokens", room)  # without the field (the old setup): the model's max_tokens
+    for body in fake.bodies[1:]:  # after the ledger call: one per item
+        assert body["max_tokens"] == want and body.get("thinking_budget_tokens") == (tb.max_tokens if field else None)
+    assert len(fake.bodies) == 4 and fake.bodies[0]["max_tokens"] == cfg.evidence.ledger_request["max_tokens"]
+
+
+@pytest.mark.anyio
 async def test_an_unreadable_or_failed_independent_reply_is_ignored(cfg, fake):
     fake.scripts = [[content(DRAFT)], [content(SETTLED)], [content("C1 looks fine to me.")], CONNECT_ERROR,
                     judged("C3", "maybe")]
@@ -515,6 +531,21 @@ async def test_an_unreadable_or_failed_independent_reply_is_ignored(cfg, fake):
     led = report["ledger"]
     assert [i["independent"] for i in led["items"]] == [None, None, None] and led["disagreements"] == 0
     assert led["independent_calls"] == 3
+
+
+@pytest.mark.anyio
+async def test_an_item_unverified_in_the_ledger_gets_no_independent_call(cfg, fake):
+    # R-f can only make an item unverified, so judging one that already is can change nothing: no call for C2
+    first = ledger(item("C1", "established", support=("given",)), item("C2", "unverified"),
+                   item("C3", "contradicted", "computed", against=("computation",)))
+    fake.scripts = [[content(DRAFT)], [content(first)], AGREE[0], AGREE[2]]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == DRAFT and len(fake.requests) == 4  # draft, ledger, C1 and C3; nothing changed, no writer
+    assert ("- C2: unverified in the ledger already, which no independent judgment can change; the ledger's judgment"
+            " stays\nIndependent judgment: 2 items, one call each\n") in trace
+    assert [b["messages"][0]["content"].split(":")[0][-2:] for b in fake.bodies[2:]] == ["C1", "C3"]
+    led = report["ledger"]
+    assert led["independent_calls"] == 2 and [i["independent"] is None for i in led["items"]] == [False, True, False]
 
 
 @pytest.mark.anyio

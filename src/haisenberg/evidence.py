@@ -376,6 +376,9 @@ class Evidence:
         self.context = cfg.context_tokens
         self.max_tokens = cfg.model_backend.max_tokens
         self.chars_per_token = cfg.model_backend.chars_per_token
+        tb = cfg.reasoning_policy.thinking_budget  # an item call thinks up to the cap, then has room for its JSON;
+        room = {tb.field: tb.max_tokens, "max_tokens": tb.max_tokens + self.cfg.item_answer_tokens} if tb.field else {}
+        self.item_request = {**room, **self.cfg.item_request}  # without the field: the old setup, model's max_tokens
 
     def triggered(self, question: str) -> list[tuple[str, str]]:
         """The items the last user message lists, when there are enough to run the ledger; else []."""
@@ -436,7 +439,7 @@ class Evidence:
         changed, ind, added = settle(entries, self.cfg.strong_words), None, []
         if self.cfg.independent:
             ind = _Independent()
-            async for line in self._independent(conversation, items, skipped, tools, ind):
+            async for line in self._independent(conversation, items, skipped, entries, tools, ind):
                 yield line
             ind.disagreements, added = compare(entries, ind.own)
             gone = [i for i in gone if key(i) not in ind.own]
@@ -475,13 +478,18 @@ class Evidence:
                 yield _say("".join(lines))
         yield Settled(answer, _report(entries, skipped, gone, True, ind=ind))
 
-    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str], tools: str,
-                           ind: _Independent) -> AsyncIterator[dict]:
-        """Judge each listed item the ledger did not skip (up to `independent_max_items`) in its own call, from
-        the conversation and the tool results only (never the draft or the ledger); settle the entries by the
-        same rules into `ind.own`. An unreadable or failed reply leaves that item out."""
+    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str],
+                           entries: list[Entry], tools: str, ind: _Independent) -> AsyncIterator[dict]:
+        """Judge each listed item the ledger did not skip or settle as unverified (up to `independent_max_items`)
+        in its own call, from the conversation and the tool results only (never the draft or the ledger); settle
+        the entries by the same rules into `ind.own`. An unreadable or failed reply leaves that item out. An item
+        already unverified ends unverified whatever its judgment says (R-f), so it gets no call."""
+        status = {key(e.id): e.status for e in entries}
         done, cap = {key(s) for s in skipped}, self.cfg.independent_max_items
-        todo = [i for i in items if key(i[0]) not in done]
+        todo = [i for i in items if key(i[0]) not in done and status.get(key(i[0])) != UNVERIFIED]
+        if already := [i for i, _ in items if key(i) not in done and status.get(key(i)) == UNVERIFIED]:
+            yield _say(f"- {', '.join(already)}: unverified in the ledger already, which no independent judgment"
+                       " can change; the ledger's judgment stays\n")
         yield _say(f"Independent judgment: {len(todo[:cap])} items, one call each\n")
         if rest := todo[cap:]:
             yield _say(f"- {', '.join(i for i, _ in rest)}: over the limit of {cap}; the ledger's judgment stays\n")
@@ -490,12 +498,12 @@ class Evidence:
         for item in todo[:cap]:
             prompt = self.cfg.item_prompt.replace("{id}", item[0]).replace("{text}", item[1])
             messages = [{"role": "system", "content": prompt}, {"role": "user", "content": full}]
-            if tools and not self._fits(messages, self.cfg.item_request):
+            if tools and not self._fits(messages, self.item_request):
                 messages[1]["content"] = material
                 if not dropped:
                     dropped = True
                     yield _say("- tool results left out (context budget)\n")
-            reply, problem = await self._ask(messages, self.cfg.item_request)
+            reply, problem = await self._ask(messages, self.item_request)
             if problem != TOO_LONG:
                 ind.calls += 1
             if (e := parse_entry(reply, item, items) if reply is not None else None) is None:
