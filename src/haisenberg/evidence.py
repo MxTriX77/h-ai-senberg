@@ -208,7 +208,9 @@ def wrong_computations(entries: list[Entry], rel_tol: float, prefixes: bool = Tr
 def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     """Settle each status from the recorded evidence, first rule that applies (R-a … R-d), then R-e to a fixed
     point; return the entries whose status changed. Only R-g makes anything established.
-    - R-a: evidence against from the given material, a source or a computation → contradicted.
+    - R-a: evidence against from a computation → contradicted; from the given material or a source, only when the
+      model said established or contradicted: its unverified or hypothesis stands (code cannot check a quoted
+      passage, and a gap filed as evidence against must not make a claim false).
     - R-b: a claim of proof (`asserts: proof`, or a proof word in the statement) without evidence for its full
       strength: when the material it refers to is not here (gaps) → unverified; else, with evidence for it that
       cannot give what it claims → contradicted.
@@ -220,7 +222,9 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
       evidence for its full strength → unverified.
     - R-e: established but built on an item that is not established → unverified."""
     for e in entries:
-        hard = next((a["from"] for a in e.against if a["from"] in HARD), None)
+        firm = e.status in (ESTABLISHED, CONTRADICTED)  # the model's own verdict was not "not settled"
+        hard = next((a["from"] for a in e.against if a["from"] == "computation" or (firm and a["from"] in HARD)),
+                    None)
         proof = (e.asserts == PROOF or strong_word(e.statement, strong_words)) and not e.strong_enough
         if hard:
             _set(e, CONTRADICTED, "R-a", f"evidence against it from {_FROM[hard]}")
