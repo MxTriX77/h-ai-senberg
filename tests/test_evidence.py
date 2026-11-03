@@ -57,6 +57,8 @@ def test_listed_items_keep_the_ids_as_written():
     assert listed_items("1. a\n2) b\n(3) c\n1.1 not an item", 3) == [("1", "a"), ("2", "b"), ("3", "c")]
     assert listed_items("а) первое\nб) второе", 3) == [("а", "первое"), ("б", "второе")]
     assert listed_items("Claim A: x\nClaim 2. y\nMass m: 5 g", 3) == [("Claim A", "x"), ("Claim 2", "y")]
+    # an initial is not an id: a word and a capital letter count with `:` or `)`, not with `.`
+    assert listed_items("An E. coli culture was grown.\nDr J. Smith ran it.\nOption B) z", 3) == [("Option B", "z")]
     assert listed_items("C1. x\nC1: the same id again", 3) == [("C1", "x")]
     # a line that is only a placeholder is a form to fill in, not an item to judge
     assert listed_items("C1. x\nC2. y\nFinish with:\nA1: <verdict for C1>\nA2: <число>.", 3) == [

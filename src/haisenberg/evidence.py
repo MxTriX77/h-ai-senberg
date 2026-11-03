@@ -39,7 +39,7 @@ TOO_LONG = "too long for the context"
 # Markdown emphasis or one word: `Claim A:`), or a bulleted line without one (`- …`, `* …`, `• …`).
 _ID = r"\d{1,2}|[^\W\d_]{1,2}\d{1,2}|[^\W\d_]"
 _LISTED = re.compile(rf"^[ \t>]*(?:[-*•][ \t]+)?[*_]*(?:\((?P<p>{_ID})\)|(?:(?P<word>[^\W\d_]+)[ \t]+)?"
-                     rf"(?P<id>{_ID})[*_]*[.):：])[*_]*[ \t]+(?P<text>\S.*)$", re.M)
+                     rf"(?P<id>{_ID})[*_]*(?P<sep>[.):：]))[*_]*[ \t]+(?P<text>\S.*)$", re.M)
 _BULLET = re.compile(r"^[ \t>]*[-*•][ \t]+(?P<text>\S.*)$", re.M)
 # A header item: one word and an id, then a dash and an optional title (`Claim 1 — Reaction equation`,
 # `Claim 2 - …`) or `:` and nothing else (`### Claim 3:`); its text goes on over the lines below (`_body`). The word
@@ -53,15 +53,17 @@ _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCE
 def listed_items(text: str, least: int) -> list[tuple[str, str]]:
     """(id as the message writes it, text) of every item the message lists, first occurrence of each id. Lines
     with an id and header lines win; without any, bulleted lines are numbered 1, 2, … in order. With a word before
-    the id (`Claim A:`), the id has a digit or is one capital letter, so `Mass m: 5 g` is not an item. When at
-    least `least` items are named (`Claim 1`, `C1`, `У3`), only those count: the bare ones (`1.`, `a)`) are then
+    the id (`Claim A:`), the id has a digit or is one capital letter, so `Mass m: 5 g` is not an item, and a
+    capital letter ends in `:` or `)`, so an initial (`An E. coli culture`, `Dr J. Smith`) is not one either. When
+    at least `least` items are named (`Claim 1`, `C1`, `У3`), only those count: the bare ones (`1.`, `a)`) are then
     the request's instructions or data."""
     heads = [m for m in _HEADER.finditer(text) if m["word"][0].isupper()]
     lines = list(_LISTED.finditer(text))
     starts, found = [m.start() for m in lines + heads], []
     for m in sorted(lines + heads, key=lambda m: m.start()):
         word, iid = m["word"], m.groupdict().get("p") or m["id"]
-        if word and not (re.search(r"\d", iid) or (len(iid) == 1 and iid.isupper())):
+        letter = len(iid) == 1 and iid.isupper() and m.groupdict().get("sep") != "."
+        if word and not (re.search(r"\d", iid) or letter):
             continue
         t = m["text"].strip()
         if m.re is _HEADER:
