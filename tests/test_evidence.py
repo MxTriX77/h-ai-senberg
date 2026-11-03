@@ -578,8 +578,10 @@ AUDIT = ("Act as an independent reviewer and audit the report.\nReport to audit\
 @pytest.mark.anyio
 async def test_audit_claim_headers_are_the_items_not_the_tasks(cfg, fake):
     claims = [f"Claim {n}" for n in (1, 2, 3, 4)]
-    fake.scripts = [[content("Claim 1 is true. …")], [content(ledger(*(item(c, "unverified") for c in claims)))],
-                    *(judged(c, "unverified") for c in claims)]
+    given = {"support": ("given",)}  # established on both sides: each claim gets its call, nothing changes
+    first = ledger(*(item(c, "established", **given) for c in claims))
+    fake.scripts = [[content("Claim 1 is true. …")], [content(first)],
+                    *(judged(c, "established", **given) for c in claims)]
     answer, trace, report, _ = await run_independent(cfg, fake, AUDIT)
     assert answer == "Claim 1 is true. …" and len(fake.requests) == 6  # draft, ledger, one call per claim
     assert "Evidence ledger: 4 listed items" in trace and "Independent judgment: 4 items, one call each" in trace
