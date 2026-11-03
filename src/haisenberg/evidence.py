@@ -351,6 +351,9 @@ class Evidence:
         self.context = cfg.context_tokens
         self.max_tokens = cfg.model_backend.max_tokens
         self.chars_per_token = cfg.model_backend.chars_per_token
+        tb = cfg.reasoning_policy.thinking_budget  # an item call thinks up to the cap, then has room for its JSON;
+        room = {tb.field: tb.max_tokens, "max_tokens": tb.max_tokens + self.cfg.item_answer_tokens} if tb.field else {}
+        self.item_request = {**room, **self.cfg.item_request}  # without the field: the old setup, model's max_tokens
 
     def triggered(self, question: str) -> list[tuple[str, str]]:
         """The items the last user message lists, when there are enough to run the ledger; else []."""
@@ -465,12 +468,12 @@ class Evidence:
         for item in todo[:cap]:
             prompt = self.cfg.item_prompt.replace("{id}", item[0]).replace("{text}", item[1])
             messages = [{"role": "system", "content": prompt}, {"role": "user", "content": full}]
-            if tools and not self._fits(messages, self.cfg.item_request):
+            if tools and not self._fits(messages, self.item_request):
                 messages[1]["content"] = material
                 if not dropped:
                     dropped = True
                     yield _say("- tool results left out (context budget)\n")
-            reply, problem = await self._ask(messages, self.cfg.item_request)
+            reply, problem = await self._ask(messages, self.item_request)
             if problem != TOO_LONG:
                 ind.calls += 1
             if (e := parse_entry(reply, item, items) if reply is not None else None) is None:

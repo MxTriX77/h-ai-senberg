@@ -385,6 +385,9 @@ evidence:                                  # evidence ledger (D-032): verdicts s
                                            # ledger; a different settled status makes the item unverified (R-f).
                                            # Needs enabled; up to independent_max_items more thinking calls per request
   independent_max_items: 10                # items past this many keep the ledger's judgment
+  item_answer_tokens: 1024                 # room for an item's JSON after its thinking: with a thinking budget field,
+                                           # each item call sends it with the cap (reasoning_policy.thinking_budget.
+                                           # max_tokens) and asks for max_tokens = the cap + this
   item_prompt: |
     Judge one item of the user's last message, {id}: {text}
     Judge only this item, as the message states it; the other items are context. Use the data the request gives,
@@ -427,8 +430,8 @@ evidence:                                  # evidence ledger (D-032): verdicts s
     temperature: 0.2
     max_tokens: 4096                       # the whole answer again
     chat_template_kwargs: {enable_thinking: false}
-  item_request: {}                         # fields merged into each independent judgment call: the model's default
-                                           # request, thinking on (its own reasoning-budget per item), no JSON mode
+  item_request: {}                         # fields merged last into each independent judgment call (they win): the
+                                           # model's default request with item_answer_tokens' room, thinking on, no JSON mode
 
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend
