@@ -193,7 +193,8 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     - R-c: contradicted with nothing against it → unverified (not shown is not false).
     - R-d: established with nothing for it → unverified; resting only on assumptions → hypothesis; without
       evidence for its full strength → unverified.
-    - R-e: established but built on an item that is not established → unverified."""
+    - R-e: established but built on an item that is not established → unverified, unless its own computation
+      settles it (R-g's test): a premise's flawed reasoning does not undo a result computed at full strength."""
     for e in entries:
         hard = next((a["from"] for a in e.against if a["from"] in HARD), None)
         proof = (e.asserts == PROOF or strong_word(e.statement, strong_words)) and not e.strong_enough
@@ -203,8 +204,7 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
             _set(e, UNVERIFIED, "R-b", "claim of proof; the material it refers to is not here")
         elif proof and e.support:
             _set(e, CONTRADICTED, "R-b", "claim of proof the evidence can't give")
-        elif (e.status in (UNVERIFIED, CONTRADICTED) and e.asserts in ("fact", "computed") and e.strong_enough
-              and not (e.against or e.gaps or e.assumptions) and any(s["from"] == "computation" for s in e.support)):
+        elif e.status in (UNVERIFIED, CONTRADICTED) and computed_in_full(e):
             _set(e, ESTABLISHED, "R-g", "a computation settles it at full strength and nothing is against it")
         elif e.status == CONTRADICTED and not e.against:
             _set(e, UNVERIFIED, "R-c", "nothing against it: not shown is not false")
@@ -218,8 +218,17 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     return [e for e in entries if e.status != e.claimed]
 
 
+def computed_in_full(e: Entry) -> bool:
+    """A plain fact or computed value that a computation supports at full strength, with nothing against it, no
+    gaps and no assumptions: settled by its own numbers (R-g establishes it; R-e leaves it established)."""
+    return (e.asserts in ("fact", "computed") and e.strong_enough and not (e.against or e.gaps or e.assumptions)
+            and any(s["from"] == "computation" for s in e.support))
+
+
 def propagate(entries: list[Entry]) -> None:
-    """R-e to a fixed point: an established entry built on an entry that is not established → unverified."""
+    """R-e to a fixed point: an established entry built on an entry that is not established → unverified, unless
+    its own computation settles it (u-06: Claim 4's theoretical CO₂, computed in full, was lowered because Claim 3,
+    which it builds on, was contradicted for its reasoning while its conclusion held)."""
     by_key = {key(e.id): e for e in entries}
     changed = True
     while changed:  # only lowers established, so it ends
@@ -227,7 +236,7 @@ def propagate(entries: list[Entry]) -> None:
         for e in entries:
             weak = [d for d in e.depends_on if (k := key(d)) != key(e.id) and k in by_key
                     and by_key[k].status != ESTABLISHED]
-            if e.status == ESTABLISHED and weak:
+            if e.status == ESTABLISHED and weak and not computed_in_full(e):
                 d = by_key[key(weak[0])]
                 _set(e, UNVERIFIED, "R-e", f"it depends on {d.id}, which is {d.status}")
                 changed = True
