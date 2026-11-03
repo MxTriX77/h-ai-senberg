@@ -382,7 +382,7 @@ def test_lookup_written_in_the_retry_removed_and_the_best_answer_kept(client, fa
     ("Nothing named.", 0),
 ])
 def test_items_named(text, named):
-    assert _items_named(text, listed_items("C1. a\nC2. b\nC3. c")) == named
+    assert _items_named(text, listed_items("C1. a\nC2. b\nC3. c", 3)) == named
 
 
 def test_complete_answer_kept_over_a_longer_fragment(client, fake):

@@ -50,22 +50,51 @@ V2 = ledger(item("C1", "established", support=("given",)),
 
 
 def test_listed_items_keep_the_ids_as_written():
-    assert listed_items(TASK) == [("C1", "The batch weighed 5 kg."),
+    assert listed_items(TASK, 3) == [("C1", "The batch weighed 5 kg."),
                                   ("C2", "One batch guarantees an 85 % yield at any scale."), ("C3", "2 × 3 = 7.")]
-    assert listed_items("У1) Выход 85 %.\n**У2:** Метод безопасен.\n- У3. Партия одна.") == [
+    assert listed_items("У1) Выход 85 %.\n**У2:** Метод безопасен.\n- У3. Партия одна.", 3) == [
         ("У1", "Выход 85 %."), ("У2", "Метод безопасен."), ("У3", "Партия одна.")]
-    assert listed_items("1. a\n2) b\n(3) c\n1.1 not an item") == [("1", "a"), ("2", "b"), ("3", "c")]
-    assert listed_items("а) первое\nб) второе") == [("а", "первое"), ("б", "второе")]
-    assert listed_items("Claim A: x\nClaim 2. y\nMass m: 5 g") == [("Claim A", "x"), ("Claim 2", "y")]
-    assert listed_items("C1. x\nC1: the same id again") == [("C1", "x")]
+    assert listed_items("1. a\n2) b\n(3) c\n1.1 not an item", 3) == [("1", "a"), ("2", "b"), ("3", "c")]
+    assert listed_items("а) первое\nб) второе", 3) == [("а", "первое"), ("б", "второе")]
+    assert listed_items("Claim A: x\nClaim 2. y\nMass m: 5 g", 3) == [("Claim A", "x"), ("Claim 2", "y")]
+    # an initial is not an id: a word and a capital letter count with `:` or `)`, not with `.`
+    assert listed_items("An E. coli culture was grown.\nDr J. Smith ran it.\nOption B) z", 3) == [("Option B", "z")]
+    assert listed_items("C1. x\nC1: the same id again", 3) == [("C1", "x")]
     # a line that is only a placeholder is a form to fill in, not an item to judge
-    assert listed_items("C1. x\nC2. y\nFinish with:\nA1: <verdict for C1>\nA2: <число>.") == [("C1", "x"), ("C2", "y")]
+    assert listed_items("C1. x\nC2. y\nFinish with:\nA1: <verdict for C1>\nA2: <число>.", 3) == [
+        ("C1", "x"), ("C2", "y")]
 
 
 def test_bullets_count_only_without_ids():
-    assert listed_items("Check:\n- a\n* b\n• c") == [("1", "a"), ("2", "b"), ("3", "c")]
-    assert listed_items("Given:\n- m = 5 g\n- V = 2 L\n- T = 300 K\nC1. x\nC2. y") == [("C1", "x"), ("C2", "y")]
-    assert listed_items("What is the boiling point of ethanol?") == []
+    assert listed_items("Check:\n- a\n* b\n• c", 3) == [("1", "a"), ("2", "b"), ("3", "c")]
+    assert listed_items("Given:\n- m = 5 g\n- V = 2 L\n- T = 300 K\nC1. x\nC2. y", 3) == [("C1", "x"), ("C2", "y")]
+    assert listed_items("What is the boiling point of ethanol?", 3) == []
+
+
+def test_header_items_take_the_lines_below():
+    text = ("Report\nClaim 1 — Reaction equation\nThe equation is balanced.\nClaim 2 - Sample\nIt holds 1.35 g.\n"
+            "So 0.01349 mol.\n\nNot part of it.\n**Claim 3 —** Gas\n### Claim 4 – Yield: 98 %\nClaim 5:\n\n"
+            "After a blank line.")
+    assert listed_items(text, 3) == [
+        ("Claim 1", "Reaction equation: The equation is balanced."),
+        ("Claim 2", "Sample: It holds 1.35 g. So 0.01349 mol."),
+        ("Claim 3", "Gas"), ("Claim 4", "Yield: 98 %"), ("Claim 5", "After a blank line.")]
+    # no separator, a range, a hyphen without spaces, a header without any text, wrapped prose: not items
+    assert listed_items("Apples 3\nPears 2\nStep 1-2 mix\nClaim 7 -x\nRatio 2.\nwas 5 – 6 hours\nis 3:\nClaim 8 —\n",
+                        3) == []
+    assert listed_items("Claim 1 —\nIt took\nwas 5 – 6 hours\nTotal 3.", 3) == [
+        ("Claim 1", "It took was 5 – 6 hours Total 3.")]
+
+
+def test_named_items_are_the_list_when_there_are_enough():
+    claims = "".join(f"Claim {n} — Title {n}\nText {n}.\n" for n in (1, 2, 3))
+    tasks = "\nRequired audit\n1. Evaluate all three claims.\n2. Recalculate.\n3. Explain.\n4. Propose checks."
+    assert listed_items(claims + tasks, 3) == [(f"Claim {n}", f"Title {n}: Text {n}.") for n in (1, 2, 3)]
+    assert listed_items("C1. x\nC2. y\nУ3. z\n1. Recompute.\n(2) Verdicts.\na) Table.", 3) == [
+        ("C1", "x"), ("C2", "y"), ("У3", "z")]
+    # too few named items to be the list: everything counts, as the numbered questions are what is asked
+    accounts = "Account X: 4.0 % monthly.\nAccount Y: 4.1 % yearly.\n1. Which pays more?\n2. With fees?\n3. How much?"
+    assert [i for i, _ in listed_items(accounts, 3)] == ["Account X", "Account Y", "1", "2", "3"]
 
 
 def test_key():
@@ -105,6 +134,16 @@ def test_ra_hard_evidence_against_contradicts():
         assert changed(e) == [("A", CONTRADICTED, "R-a")] and e.claimed == ESTABLISHED
     assert changed(entry(status=UNVERIFIED, support=(), against=("computation",))) == [("A", CONTRADICTED, "R-a")]
     assert changed(entry(status=CONTRADICTED, against=("knowledge",))) == []
+
+
+def test_ra_material_against_never_overrides_the_models_unverified():
+    # u-06 smoke, Claim 8 ("CO2 does not dissolve significantly"): the model said unverified and filed the gap
+    # "dissolved CO2 not measured" as given evidence against; R-a made it a confident "contradicted"
+    for status in (UNVERIFIED, HYPOTHESIS):
+        for source in ("given", "source"):
+            assert changed(entry(status=status, support=(), against=(source,))) == []
+        assert changed(entry(status=status, support=(), against=("given", "computation"))) == [
+            ("A", CONTRADICTED, "R-a")]  # a computation against still settles it
 
 
 def test_rb_claim_of_proof_with_evidence_that_cannot_give_it_is_contradicted():
@@ -151,6 +190,19 @@ def test_re_dependencies_to_a_fixed_point():
     c = entry("C", depends_on=["B", "C", "Z"], strong_enough=True)  # itself and unknown ids are ignored
     assert changed(c, b, a) == [("C", UNVERIFIED, "R-e"), ("B", UNVERIFIED, "R-e"), ("A", CONTRADICTED, "R-a")]
     assert b.why == "it depends on A, which is contradicted"
+
+
+def test_re_spares_an_item_its_own_computation_settles():
+    # u-06 (queue25, queue27): Claim 4 "the maximum CO2 is 0.01349 mol", computed in full, nothing against it, was
+    # lowered by R-e because Claim 3 (right conclusion, flawed reasoning) was contradicted
+    premise = entry("Claim 3", support=("computation",), against=("computation",))
+    own = entry("Claim 4", support=("computation",), depends_on=["Claim 3"], strong_enough=True, asserts="computed")
+    guess = entry("Claim 6", support=("given",), depends_on=["Claim 3"], strong_enough=True)
+    assumed = entry("Claim 7", support=("computation",), depends_on=["Claim 3"], strong_enough=True,
+                    assumptions=["no CO2 dissolved"])
+    assert changed(premise, own, guess, assumed) == [
+        ("Claim 3", CONTRADICTED, "R-a"), ("Claim 6", UNVERIFIED, "R-e"), ("Claim 7", UNVERIFIED, "R-e")]
+    assert own.status == ESTABLISHED
 
 
 def test_rg_own_computation_settles_a_plain_claim():
@@ -274,6 +326,7 @@ async def test_no_change_keeps_the_draft_with_one_extra_call(cfg, fake):
         {"id": "C1", "asserts": "fact", "claimed": "established", "status": "established", "rule": ""},
         {"id": "C2", "asserts": "proof", "claimed": "contradicted", "status": "contradicted", "rule": ""},
         {"id": "C3", "asserts": "computed", "claimed": "contradicted", "status": "contradicted", "rule": ""}],
+        "entries": json.loads(SETTLED)["items"],  # as the model wrote them: a rule change can be replayed offline
         "skipped": [], "missing": [], "written": False, "fallback": ""}
 
 
@@ -345,7 +398,7 @@ def evidence(cfg, fake, checks=False):
 
 
 async def settle_run(ev, draft=DRAFT, tools=""):
-    items = [i async for i in ev.run([{"role": "user", "content": TASK}], listed_items(TASK), draft, tools)]
+    items = [i async for i in ev.run([{"role": "user", "content": TASK}], listed_items(TASK, 3), draft, tools)]
     return next(i for i in items if isinstance(i, Settled)), "".join(i.get("reasoning_content", "")
                                                                      for i in items if isinstance(i, dict))
 
@@ -465,7 +518,7 @@ async def test_independent_calls_never_see_the_draft_or_the_ledger(cfg, fake):
     tools = "> calculate(expressions=[\"2*3\"])\n2*3 = 6"
     settled, _ = await settle_run(evidence(cfg, fake), tools=tools)
     assert settled.answer == DRAFT and len(fake.requests) == 4
-    for n, (iid, text) in enumerate(listed_items(TASK), 1):
+    for n, (iid, text) in enumerate(listed_items(TASK, 3), 1):
         body = fake.bodies[n]
         system, user = (m["content"] for m in body["messages"])
         assert system == cfg.evidence.item_prompt.replace("{id}", iid).replace("{text}", text)
@@ -473,6 +526,22 @@ async def test_independent_calls_never_see_the_draft_or_the_ledger(cfg, fake):
         assert DRAFT not in system + user and SETTLED not in system + user and "Draft answer" not in user
         assert "response_format" not in body and "chat_template_kwargs" not in body  # thinking on, no JSON mode
         assert body["temperature"] == cfg.model_backend.temperature  # the model's default request
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field, item_request", [
+    ("thinking_budget_tokens", {}), ("", {}), ("thinking_budget_tokens", {"max_tokens": 6000}),
+], ids=["budget-field", "no-field", "item-request-wins"])
+async def test_independent_calls_have_room_after_the_thinking(cfg, fake, field, item_request):
+    tb = cfg.reasoning_policy.thinking_budget
+    tb.field, cfg.evidence.item_request, cfg.evidence.independent = field, item_request, True
+    fake.scripts = [[content(SETTLED)], *AGREE]
+    await settle_run(evidence(cfg, fake))
+    room = tb.max_tokens + cfg.evidence.item_answer_tokens if field else cfg.model_backend.max_tokens  # 4096 + 1024
+    want = item_request.get("max_tokens", room)  # without the field (the old setup): the model's max_tokens
+    for body in fake.bodies[1:]:  # after the ledger call: one per item
+        assert body["max_tokens"] == want and body.get("thinking_budget_tokens") == (tb.max_tokens if field else None)
+    assert len(fake.bodies) == 4 and fake.bodies[0]["max_tokens"] == cfg.evidence.ledger_request["max_tokens"]
 
 
 @pytest.mark.anyio
@@ -486,6 +555,21 @@ async def test_an_unreadable_or_failed_independent_reply_is_ignored(cfg, fake):
     led = report["ledger"]
     assert [i["independent"] for i in led["items"]] == [None, None, None] and led["disagreements"] == 0
     assert led["independent_calls"] == 3
+
+
+@pytest.mark.anyio
+async def test_an_item_unverified_in_the_ledger_gets_no_independent_call(cfg, fake):
+    # R-f can only make an item unverified, so judging one that already is can change nothing: no call for C2
+    first = ledger(item("C1", "established", support=("given",)), item("C2", "unverified"),
+                   item("C3", "contradicted", "computed", against=("computation",)))
+    fake.scripts = [[content(DRAFT)], [content(first)], AGREE[0], AGREE[2]]
+    answer, trace, report, _ = await run_independent(cfg, fake)
+    assert answer == DRAFT and len(fake.requests) == 4  # draft, ledger, C1 and C3; nothing changed, no writer
+    assert ("- C2: unverified in the ledger already, which no independent judgment can change; the ledger's judgment"
+            " stays\nIndependent judgment: 2 items, one call each\n") in trace
+    assert [b["messages"][0]["content"].split(":")[0][-2:] for b in fake.bodies[2:]] == ["C1", "C3"]
+    led = report["ledger"]
+    assert led["independent_calls"] == 2 and [i["independent"] is None for i in led["items"]] == [False, True, False]
 
 
 @pytest.mark.anyio
@@ -533,6 +617,35 @@ async def test_independent_ids_in_russian(cfg, fake):
     led = report["ledger"]
     assert [i["id"] for i in led["items"]] == ["У1", "У2", "У3"] and led["disagreements"] == 1
     assert led["items"][1]["independent"] == {"status": "contradicted", "claimed": "established", "rule": "R-b"}
+
+
+# The shape of user case 6 (LESSONS §4.13): claims as `Claim N — Title` headers with the text below, then the
+# numbered audit tasks. The ledger and the independent check judge the claims; the tasks stay the draft's to-do list.
+AUDIT = ("Act as an independent reviewer and audit the report.\nReport to audit\n"
+         "Claim 1 — Sample composition\nThe sample holds 1.50 × 0.900 = 1.35 g of CaCO₃.\n"
+         "Claim 2 — Limiting reagent\nSince 0.0300 mol > 0.01349 mol, HCl is in excess.\n"
+         "Claim 3 — Yield\nThe yield is (0.01368 / 0.01349) × 100 = 101.4 %.\n"
+         "Claim 4 — Conclusion\nThe sample is exactly 90.0 % CaCO₃.\n\nRequired audit\n"
+         "1. Evaluate all four claims independently.\n2. Recalculate the mass of CaCO₃.\n"
+         "3. Correct the pressure for water vapour.\n4. Explain recovery vs yield.\n5. Propose deterministic checks.")
+
+
+@pytest.mark.anyio
+async def test_audit_claim_headers_are_the_items_not_the_tasks(cfg, fake):
+    claims = [f"Claim {n}" for n in (1, 2, 3, 4)]
+    given = {"support": ("given",)}  # established on both sides: each claim gets its call, nothing changes
+    first = ledger(*(item(c, "established", **given) for c in claims))
+    fake.scripts = [[content("Claim 1 is true. …")], [content(first)],
+                    *(judged(c, "established", **given) for c in claims)]
+    answer, trace, report, _ = await run_independent(cfg, fake, AUDIT)
+    assert answer == "Claim 1 is true. …" and len(fake.requests) == 6  # draft, ledger, one call per claim
+    assert "Evidence ledger: 4 listed items" in trace and "Independent judgment: 4 items, one call each" in trace
+    assert ("Items listed in the last message:\nClaim 1: Sample composition: The sample holds 1.50 × 0.900 = 1.35 g of "
+            "CaCO₃.\nClaim 2: Limiting reagent: ") in fake.bodies[1]["messages"][1]["content"]
+    for n, c in enumerate(claims, 2):
+        assert fake.bodies[n]["messages"][0]["content"].startswith(f"Judge one item of the user's last message, {c}: ")
+    assert "Evaluate all four" not in "".join(fake.bodies[n]["messages"][0]["content"] for n in (2, 3, 4, 5))
+    assert [i["id"] for i in report["ledger"]["items"]] == claims
 
 
 def test_parse_entry():

@@ -39,32 +39,57 @@ TOO_LONG = "too long for the context"
 # Markdown emphasis or one word: `Claim A:`), or a bulleted line without one (`- …`, `* …`, `• …`).
 _ID = r"\d{1,2}|[^\W\d_]{1,2}\d{1,2}|[^\W\d_]"
 _LISTED = re.compile(rf"^[ \t>]*(?:[-*•][ \t]+)?[*_]*(?:\((?P<p>{_ID})\)|(?:(?P<word>[^\W\d_]+)[ \t]+)?"
-                     rf"(?P<id>{_ID})[*_]*[.):：])[*_]*[ \t]+(?P<text>\S.*)$", re.M)
+                     rf"(?P<id>{_ID})[*_]*(?P<sep>[.):：]))[*_]*[ \t]+(?P<text>\S.*)$", re.M)
 _BULLET = re.compile(r"^[ \t>]*[-*•][ \t]+(?P<text>\S.*)$", re.M)
+# A header item: one word and an id, then a dash and an optional title (`Claim 1 — Reaction equation`,
+# `Claim 2 - …`) or `:` and nothing else (`### Claim 3:`); its text goes on over the lines below (`_body`). The word
+# starts with a capital letter, so a wrapped line of prose (`is 3:`, `was 5 – 6 hours`) is not a header.
+_HEADER = re.compile(rf"^[ \t>#]*(?:[-*•][ \t]+)?[*_]*(?P<word>[^\W\d_]+)[ \t]+(?P<id>{_ID})[*_]*"
+                     rf"(?:[ \t]*[—–][ \t]*|[ \t]+-[ \t]+|[ \t]*[:：][*_]*[ \t]*$)[*_]*(?P<text>.*?)[*_]*[ \t]*$", re.M)
 _TEMPLATE = re.compile(r"<[^<>]*>[.,;]?")  # a line that is only a placeholder to fill in
 _LOOKALIKE = str.maketrans("АВСЕНКМОРТХавсенкмортх", "ABCEHKMOPTXabcehkmoptx")  # Cyrillic for Latin in ids
 
 
-def listed_items(text: str) -> list[tuple[str, str]]:
+def listed_items(text: str, least: int) -> list[tuple[str, str]]:
     """(id as the message writes it, text) of every item the message lists, first occurrence of each id. Lines
-    with an id win; without any, bulleted lines are numbered 1, 2, … in order. With a word before the id
-    (`Claim A:`), the id has a digit or is one capital letter, so `Mass m: 5 g` is not an item."""
-    found = []
-    for m in _LISTED.finditer(text):
-        iid = m["p"] or m["id"]
-        if m["word"] and not (re.search(r"\d", iid) or (len(iid) == 1 and iid.isupper())):
+    with an id and header lines win; without any, bulleted lines are numbered 1, 2, … in order. With a word before
+    the id (`Claim A:`), the id has a digit or is one capital letter, so `Mass m: 5 g` is not an item, and a
+    capital letter ends in `:` or `)`, so an initial (`An E. coli culture`, `Dr J. Smith`) is not one either. When
+    at least `least` items are named (`Claim 1`, `C1`, `У3`), only those count: the bare ones (`1.`, `a)`) are then
+    the request's instructions or data."""
+    heads = [m for m in _HEADER.finditer(text) if m["word"][0].isupper()]
+    lines = list(_LISTED.finditer(text))
+    starts, found = [m.start() for m in lines + heads], []
+    for m in sorted(lines + heads, key=lambda m: m.start()):
+        word, iid = m["word"], m.groupdict().get("p") or m["id"]
+        letter = len(iid) == 1 and iid.isupper() and m.groupdict().get("sep") != "."
+        if word and not (re.search(r"\d", iid) or letter):
             continue
-        if _TEMPLATE.fullmatch(m["text"].strip()):  # `A1: <your verdict>`: a form to fill in, not an item to judge
+        t = m["text"].strip()
+        if m.re is _HEADER:
+            t = ": ".join(filter(None, (t, _body(text, m.end(), starts))))
+        if not t or _TEMPLATE.fullmatch(t):  # `A1: <your verdict>`: a form to fill in, not an item to judge
             continue
-        found.append((f"{m['word']} {iid}" if m["word"] else iid, m["text"].strip()))
+        named = bool(word or (re.search(r"\d", iid) and not iid.isdigit()))
+        found.append((f"{word} {iid}" if word else iid, t, named))
     if not found:
-        found = [(str(n), m["text"].strip()) for n, m in enumerate(_BULLET.finditer(text), 1)]
+        found = [(str(n), m["text"].strip(), False) for n, m in enumerate(_BULLET.finditer(text), 1)]
+    if len(named := [f for f in found if f[2]]) >= least:
+        found = named
     seen, items = set(), []
-    for iid, t in found:
+    for iid, t, _ in found:
         if (k := key(iid)) not in seen:
             seen.add(k)
             items.append((iid, t))
     return items
+
+
+def _body(text: str, end: int, starts: list[int]) -> str:
+    """The lines after a header (from `end`), up to the next item line or the first blank line after some text,
+    as one line."""
+    stop = min((s for s in starts if s > end), default=len(text))
+    para = re.split(r"\n[ \t]*\n", text[end:stop].strip(), maxsplit=1)[0]
+    return " ".join(line.strip() for line in para.splitlines() if line.strip())
 
 
 def key(value: Any) -> str:
@@ -89,6 +114,7 @@ class Entry:
     reason: str = ""
     rule: str = ""  # the rule that changed the status (R-a … R-e), with why
     why: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)  # the item as the model wrote it, for offline replays
 
 
 def parse_ledger(text: str, listed: list[tuple[str, str]]) -> tuple[list[Entry], list[str]] | None:
@@ -133,7 +159,7 @@ def _entry(raw: dict[str, Any], ids: dict[str, str]) -> Entry | None:
         assumptions=_strings(raw.get("assumptions")), gaps=_strings(raw.get("gaps")),
         depends_on=[_id(d, ids) for d in _strings(raw.get("depends_on"))],
         strong_enough=raw.get("strong_enough") is True, status=status, claimed=status,
-        reason=str(raw.get("reason") or ""),
+        reason=str(raw.get("reason") or ""), raw=raw,
     )
 
 
@@ -183,7 +209,9 @@ def wrong_computations(entries: list[Entry], rel_tol: float, prefixes: bool = Tr
 def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     """Settle each status from the recorded evidence, first rule that applies (R-a … R-d), then R-e to a fixed
     point; return the entries whose status changed. Only R-g makes anything established.
-    - R-a: evidence against from the given material, a source or a computation → contradicted.
+    - R-a: evidence against from a computation → contradicted; from the given material or a source, only when the
+      model said established or contradicted: its unverified or hypothesis stands (code cannot check a quoted
+      passage, and a gap filed as evidence against must not make a claim false).
     - R-b: a claim of proof (`asserts: proof`, or a proof word in the statement) without evidence for its full
       strength: when the material it refers to is not here (gaps) → unverified; else, with evidence for it that
       cannot give what it claims → contradicted.
@@ -193,9 +221,12 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     - R-c: contradicted with nothing against it → unverified (not shown is not false).
     - R-d: established with nothing for it → unverified; resting only on assumptions → hypothesis; without
       evidence for its full strength → unverified.
-    - R-e: established but built on an item that is not established → unverified."""
+    - R-e: established but built on an item that is not established → unverified, unless its own computation
+      settles it (R-g's test): a premise's flawed reasoning does not undo a result computed at full strength."""
     for e in entries:
-        hard = next((a["from"] for a in e.against if a["from"] in HARD), None)
+        firm = e.status in (ESTABLISHED, CONTRADICTED)  # the model's own verdict was not "not settled"
+        hard = next((a["from"] for a in e.against if a["from"] == "computation" or (firm and a["from"] in HARD)),
+                    None)
         proof = (e.asserts == PROOF or strong_word(e.statement, strong_words)) and not e.strong_enough
         if hard:
             _set(e, CONTRADICTED, "R-a", f"evidence against it from {_FROM[hard]}")
@@ -203,8 +234,7 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
             _set(e, UNVERIFIED, "R-b", "claim of proof; the material it refers to is not here")
         elif proof and e.support:
             _set(e, CONTRADICTED, "R-b", "claim of proof the evidence can't give")
-        elif (e.status in (UNVERIFIED, CONTRADICTED) and e.asserts in ("fact", "computed") and e.strong_enough
-              and not (e.against or e.gaps or e.assumptions) and any(s["from"] == "computation" for s in e.support)):
+        elif e.status in (UNVERIFIED, CONTRADICTED) and computed_in_full(e):
             _set(e, ESTABLISHED, "R-g", "a computation settles it at full strength and nothing is against it")
         elif e.status == CONTRADICTED and not e.against:
             _set(e, UNVERIFIED, "R-c", "nothing against it: not shown is not false")
@@ -218,8 +248,17 @@ def settle(entries: list[Entry], strong_words: list[str]) -> list[Entry]:
     return [e for e in entries if e.status != e.claimed]
 
 
+def computed_in_full(e: Entry) -> bool:
+    """A plain fact or computed value that a computation supports at full strength, with nothing against it, no
+    gaps and no assumptions: settled by its own numbers (R-g establishes it; R-e leaves it established)."""
+    return (e.asserts in ("fact", "computed") and e.strong_enough and not (e.against or e.gaps or e.assumptions)
+            and any(s["from"] == "computation" for s in e.support))
+
+
 def propagate(entries: list[Entry]) -> None:
-    """R-e to a fixed point: an established entry built on an entry that is not established → unverified."""
+    """R-e to a fixed point: an established entry built on an entry that is not established → unverified, unless
+    its own computation settles it (u-06: Claim 4's theoretical CO₂, computed in full, was lowered because Claim 3,
+    which it builds on, was contradicted for its reasoning while its conclusion held)."""
     by_key = {key(e.id): e for e in entries}
     changed = True
     while changed:  # only lowers established, so it ends
@@ -227,7 +266,7 @@ def propagate(entries: list[Entry]) -> None:
         for e in entries:
             weak = [d for d in e.depends_on if (k := key(d)) != key(e.id) and k in by_key
                     and by_key[k].status != ESTABLISHED]
-            if e.status == ESTABLISHED and weak:
+            if e.status == ESTABLISHED and weak and not computed_in_full(e):
                 d = by_key[key(weak[0])]
                 _set(e, UNVERIFIED, "R-e", f"it depends on {d.id}, which is {d.status}")
                 changed = True
@@ -327,12 +366,14 @@ def _report(entries: list[Entry], skipped: list[str], gone: list[str], written: 
             ind: _Independent | None = None) -> dict:
     items = [{"id": e.id, "asserts": e.asserts, "claimed": e.claimed, "status": e.status, "rule": e.rule}
              for e in entries]
-    report = {"items": items, "skipped": skipped, "missing": gone, "written": written, "fallback": fallback}
+    report = {"items": items, "entries": [e.raw for e in entries], "skipped": skipped, "missing": gone,
+              "written": written, "fallback": fallback}  # entries: as the model wrote them, so rules can be replayed
     if ind is not None:
         for e, item in zip(entries, items):
             o = ind.own.get(key(e.id))
             item["independent"] = {"status": o.status, "claimed": o.claimed, "rule": o.rule} if o else None
-        report |= {"disagreements": ind.disagreements, "independent_calls": ind.calls}
+        report |= {"disagreements": ind.disagreements, "independent_calls": ind.calls,
+                   "independent_entries": [o.raw for o in ind.own.values()]}
     return report
 
 
@@ -351,10 +392,13 @@ class Evidence:
         self.context = cfg.context_tokens
         self.max_tokens = cfg.model_backend.max_tokens
         self.chars_per_token = cfg.model_backend.chars_per_token
+        tb = cfg.reasoning_policy.thinking_budget  # an item call thinks up to the cap, then has room for its JSON;
+        room = {tb.field: tb.max_tokens, "max_tokens": tb.max_tokens + self.cfg.item_answer_tokens} if tb.field else {}
+        self.item_request = {**room, **self.cfg.item_request}  # without the field: the old setup, model's max_tokens
 
     def triggered(self, question: str) -> list[tuple[str, str]]:
         """The items the last user message lists, when there are enough to run the ledger; else []."""
-        items = listed_items(question)
+        items = listed_items(question, self.cfg.min_items)
         return items if len(items) >= self.cfg.min_items else []
 
     def _fits(self, messages: list[dict[str, Any]], request: dict[str, Any]) -> bool:
@@ -411,7 +455,7 @@ class Evidence:
         changed, ind, added = settle(entries, self.cfg.strong_words), None, []
         if self.cfg.independent:
             ind = _Independent()
-            async for line in self._independent(conversation, items, skipped, tools, ind):
+            async for line in self._independent(conversation, items, skipped, entries, tools, ind):
                 yield line
             ind.disagreements, added = compare(entries, ind.own)
             gone = [i for i in gone if key(i) not in ind.own]
@@ -450,13 +494,18 @@ class Evidence:
                 yield _say("".join(lines))
         yield Settled(answer, _report(entries, skipped, gone, True, ind=ind))
 
-    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str], tools: str,
-                           ind: _Independent) -> AsyncIterator[dict]:
-        """Judge each listed item the ledger did not skip (up to `independent_max_items`) in its own call, from
-        the conversation and the tool results only (never the draft or the ledger); settle the entries by the
-        same rules into `ind.own`. An unreadable or failed reply leaves that item out."""
+    async def _independent(self, conversation: str, items: list[tuple[str, str]], skipped: list[str],
+                           entries: list[Entry], tools: str, ind: _Independent) -> AsyncIterator[dict]:
+        """Judge each listed item the ledger did not skip or settle as unverified (up to `independent_max_items`)
+        in its own call, from the conversation and the tool results only (never the draft or the ledger); settle
+        the entries by the same rules into `ind.own`. An unreadable or failed reply leaves that item out. An item
+        already unverified ends unverified whatever its judgment says (R-f), so it gets no call."""
+        status = {key(e.id): e.status for e in entries}
         done, cap = {key(s) for s in skipped}, self.cfg.independent_max_items
-        todo = [i for i in items if key(i[0]) not in done]
+        todo = [i for i in items if key(i[0]) not in done and status.get(key(i[0])) != UNVERIFIED]
+        if already := [i for i, _ in items if key(i) not in done and status.get(key(i)) == UNVERIFIED]:
+            yield _say(f"- {', '.join(already)}: unverified in the ledger already, which no independent judgment"
+                       " can change; the ledger's judgment stays\n")
         yield _say(f"Independent judgment: {len(todo[:cap])} items, one call each\n")
         if rest := todo[cap:]:
             yield _say(f"- {', '.join(i for i, _ in rest)}: over the limit of {cap}; the ledger's judgment stays\n")
@@ -465,12 +514,12 @@ class Evidence:
         for item in todo[:cap]:
             prompt = self.cfg.item_prompt.replace("{id}", item[0]).replace("{text}", item[1])
             messages = [{"role": "system", "content": prompt}, {"role": "user", "content": full}]
-            if tools and not self._fits(messages, self.cfg.item_request):
+            if tools and not self._fits(messages, self.item_request):
                 messages[1]["content"] = material
                 if not dropped:
                     dropped = True
                     yield _say("- tool results left out (context budget)\n")
-            reply, problem = await self._ask(messages, self.cfg.item_request)
+            reply, problem = await self._ask(messages, self.item_request)
             if problem != TOO_LONG:
                 ind.calls += 1
             if (e := parse_entry(reply, item, items) if reply is not None else None) is None:

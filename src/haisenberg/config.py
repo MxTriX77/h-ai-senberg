@@ -325,6 +325,7 @@ class EvidenceConfig(_Section):
     independent: bool  # also one judgment per listed item in its own call, without the draft or the ledger
     independent_max_items: PositiveInt  # at most this many items get one
     item_prompt: str  # {id}, {text}: the item to judge
+    item_answer_tokens: PositiveInt  # room for an item's answer after its thinking: max_tokens = thinking cap + this
     ledger_request: dict[str, Any] = {}  # fields merged into the ledger and repair calls
     writer_request: dict[str, Any] = {}  # fields merged into the writer call
     item_request: dict[str, Any] = {}  # fields merged into each independent judgment call
@@ -424,6 +425,18 @@ class Config(_Section):
                 raise ValueError(f"llama_server.flags.{CAP_FLAG}: {cap!r} is not a whole number") from None
             if 0 <= cap < tb.max_tokens:  # -1: no cap
                 raise ValueError(f"{top} exceeds the server cap llama_server.flags.{CAP_FLAG} ({cap})")
+        return self
+
+    @model_validator(mode="after")
+    def _items_fit(self) -> Config:
+        """An independent item call (the thinking cap plus its answer room) leaves room for its prompt; without the
+        budget field (the old setup) item calls keep the model's max_tokens and this is not checked."""
+        ev, tb = self.evidence, self.reasoning_policy.thinking_budget
+        cap = tb.max_tokens
+        if tb.field and ev.enabled and ev.independent and cap + ev.item_answer_tokens >= self.context_tokens:
+            raise ValueError(f"reasoning_policy.thinking_budget.max_tokens ({cap}) + evidence.item_answer_tokens"
+                             f" ({ev.item_answer_tokens}) leaves no room for an item's prompt in the context"
+                             f" ({self.context_tokens} tokens)")
         return self
 
 
