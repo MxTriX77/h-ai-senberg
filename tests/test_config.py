@@ -260,13 +260,13 @@ def test_evidence_settings(tmp_path):
 
 def test_independent_settings(tmp_path):
     ev = load_config(write(tmp_path)).evidence
-    assert ev.independent is True and ev.independent_max_items == 10 and ev.item_answer_tokens == 1024
+    assert ev.independent is False and ev.independent_max_items == 10 and ev.item_answer_tokens == 1024  # D-046
     assert "{id}" in ev.item_prompt and "{text}" in ev.item_prompt and "response_format" not in ev.item_request
 
 
 def test_item_calls_leave_room_for_the_prompt(tmp_path):
     data = base()
-    data["evidence"]["item_answer_tokens"] = 12288  # + the 4096 thinking cap: the whole 16384 context
+    data["evidence"].update(independent=True, item_answer_tokens=12288)  # + the 4096 cap: the whole 16384 context
     with pytest.raises(ConfigError, match=r"thinking_budget\.max_tokens \(4096\) \+ evidence\.item_answer_tokens "
                                           r"\(12288\) leaves no room for an item's prompt in the context \(16384"):
         load_config(write(tmp_path, data))
