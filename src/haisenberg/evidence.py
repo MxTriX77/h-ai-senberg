@@ -89,6 +89,7 @@ class Entry:
     reason: str = ""
     rule: str = ""  # the rule that changed the status (R-a … R-e), with why
     why: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)  # the item as the model wrote it, for offline replays
 
 
 def parse_ledger(text: str, listed: list[tuple[str, str]]) -> tuple[list[Entry], list[str]] | None:
@@ -133,7 +134,7 @@ def _entry(raw: dict[str, Any], ids: dict[str, str]) -> Entry | None:
         assumptions=_strings(raw.get("assumptions")), gaps=_strings(raw.get("gaps")),
         depends_on=[_id(d, ids) for d in _strings(raw.get("depends_on"))],
         strong_enough=raw.get("strong_enough") is True, status=status, claimed=status,
-        reason=str(raw.get("reason") or ""),
+        reason=str(raw.get("reason") or ""), raw=raw,
     )
 
 
@@ -327,12 +328,14 @@ def _report(entries: list[Entry], skipped: list[str], gone: list[str], written: 
             ind: _Independent | None = None) -> dict:
     items = [{"id": e.id, "asserts": e.asserts, "claimed": e.claimed, "status": e.status, "rule": e.rule}
              for e in entries]
-    report = {"items": items, "skipped": skipped, "missing": gone, "written": written, "fallback": fallback}
+    report = {"items": items, "entries": [e.raw for e in entries], "skipped": skipped, "missing": gone,
+              "written": written, "fallback": fallback}  # entries: as the model wrote them, so rules can be replayed
     if ind is not None:
         for e, item in zip(entries, items):
             o = ind.own.get(key(e.id))
             item["independent"] = {"status": o.status, "claimed": o.claimed, "rule": o.rule} if o else None
-        report |= {"disagreements": ind.disagreements, "independent_calls": ind.calls}
+        report |= {"disagreements": ind.disagreements, "independent_calls": ind.calls,
+                   "independent_entries": [o.raw for o in ind.own.values()]}
     return report
 
 

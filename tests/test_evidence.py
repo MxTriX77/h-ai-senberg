@@ -274,6 +274,7 @@ async def test_no_change_keeps_the_draft_with_one_extra_call(cfg, fake):
         {"id": "C1", "asserts": "fact", "claimed": "established", "status": "established", "rule": ""},
         {"id": "C2", "asserts": "proof", "claimed": "contradicted", "status": "contradicted", "rule": ""},
         {"id": "C3", "asserts": "computed", "claimed": "contradicted", "status": "contradicted", "rule": ""}],
+        "entries": json.loads(SETTLED)["items"],  # as the model wrote them: a rule change can be replayed offline
         "skipped": [], "missing": [], "written": False, "fallback": ""}
 
 
