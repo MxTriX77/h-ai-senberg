@@ -20,7 +20,7 @@ def _strings(v):
         yield v
 
 
-PROFILES = sorted(p for p in (REPO / "config").glob("*.yaml") if p.stem not in {"config", "sources"})
+PROFILES = sorted((REPO / "config" / "model_cfg").glob("*.yaml"))
 
 # Variables referenced in config and profile values (comments excluded).
 VARS = sorted(
@@ -202,7 +202,7 @@ def test_machine_knobs_from_environment(tmp_path, monkeypatch):
 
 
 def write_profile(root: Path, name: str, data: dict) -> None:
-    path = root / "config" / f"{name}.yaml"
+    path = root / "config" / "model_cfg" / f"{name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
@@ -388,7 +388,7 @@ def test_robustness_settings(tmp_path):
 def test_big_profile_budget(tmp_path, monkeypatch):
     root = tmp_path / "p"
     path = write(root)
-    profile = REPO / "config" / "qwen3.5-35b-a3b-heretic.yaml"
+    profile = REPO / "config" / "model_cfg" / "qwen3.5-35b-a3b-heretic.yaml"
     write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
     monkeypatch.setenv(PROFILE_ENV, profile.stem)
     cfg = load_config(path)

@@ -24,8 +24,8 @@ from pydantic import (
 )
 
 CONFIG_ENV = "HAISENBERG_CONFIG"
-PROFILE_ENV = "MODEL_PROFILE"  # selects config/<name>.yaml, merged over config/config.yaml
-_NOT_PROFILES = {"config", "sources"}  # the other YAML files in config/
+PROFILE_ENV = "MODEL_PROFILE"  # selects config/model_cfg/<name>.yaml, merged over config/config.yaml
+PROFILES_DIR = "model_cfg"  # the folder next to config.yaml that holds only the model profiles
 CAP_FLAG = "reasoning-budget"  # llama_server.flags: the server's hard cap on thinking tokens
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -463,9 +463,9 @@ def load_config(path: Path | str | None = None) -> Config:
     source = str(path)
     profile = os.environ.get(PROFILE_ENV)
     if profile:
-        profile_path = path.parent / f"{profile}.yaml"
-        if profile in _NOT_PROFILES or not profile_path.is_file():
-            available = sorted(p.stem for p in path.parent.glob("*.yaml") if p.stem not in _NOT_PROFILES)
+        profile_path = path.parent / PROFILES_DIR / f"{profile}.yaml"
+        if not profile_path.is_file():
+            available = sorted(p.stem for p in (path.parent / PROFILES_DIR).glob("*.yaml"))
             raise ConfigError(
                 f"model profile '{profile}' not found: {profile_path} (available: {', '.join(available) or 'none'})"
             )
