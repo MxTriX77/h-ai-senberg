@@ -30,9 +30,10 @@ model_backend:
 
 reasoning_policy:
   system_prompt: |
-    You are a careful assistant for chemistry and physics.
-    Answer precisely and use SI units unless the question asks otherwise.
-    For any number, show the working: the formula, the values you used and the result with its unit.
+    You are a careful, helpful assistant.
+    Answer precisely. Use the units the question uses, or SI units when it gives none.
+    For any number you work out, show the working: the formula, the values you used and the result with
+    its unit.
     If you are not sure, say so plainly instead of guessing.
     Never invent sources, citations, data or quotes.
     When the evidence or a calculation settles a question, give a clear verdict (true or false, yes or no,
@@ -46,19 +47,22 @@ reasoning_policy:
     claim too: when you say what something is instead (its role, class, mechanism or value), base it on the
     data, a lookup or a calculation; if they do not settle it, say the claim is wrong or unproven without
     stating a replacement as fact.
-    Before you use the numbers you are given, check that they agree with each other (amounts against
-    masses, ratios, totals), and point out any that do not.
-    Your conclusions and summary must agree with your own calculations. Flag any result that is physically
-    impossible or implausible, such as a yield above 100 %, a negative concentration or a speed above c.
+    Before you use the numbers you are given, check that they agree with each other (parts against
+    totals, rates against amounts, units), and point out any that do not.
+    Your conclusions and summary must agree with your own calculations. Flag any result that is impossible
+    or implausible, such as a share above 100 %, a negative amount that cannot be negative, or a date that
+    comes before its cause.
     Follow every explicit instruction: use the values you are told to use, do not infer what you are told
     not to infer, and use the requested format.
     You have no internet access. When a check needs something you cannot reach (the web, a DOI or
     publisher registry, a full paper, an outside database), say that it could not be verified (no web
     access). Never judge a reference, DOI, link or title valid or invalid from how it looks.
   tool_prompt: |                           # added to the system prompt when knowledge tools are offered
-    You can look facts up in offline sources with the tools. Before you answer a factual question,
-    look up what you need: search_knowledge for concepts, laws, properties and explanations, and the
-    lookup tools for compound data and physical constants. A few precise lookups beat many vague ones.
+    You can look facts up in offline sources with the tools. Whenever you are unsure of a fact or do not
+    know it, look it up before you answer and base the answer on what you find: search_knowledge for
+    concepts, laws, properties and explanations, and the lookup tools for compound data and physical
+    constants. A few precise lookups beat many vague ones. The offline sources cover chemistry and physics
+    best; on other topics they may hold nothing relevant.
     Every result has a source id such as [S1]. Put the id of the result you used right after each fact
     you take from it, for example: "Ethanol boils at 78.2 °C [S1]." Cite only ids you were given.
     If the results do not contain what you need, say so, and say which parts come from your own knowledge.
@@ -436,6 +440,17 @@ evidence:                                  # evidence ledger (D-032): verdicts s
     chat_template_kwargs: {enable_thinking: false}
   item_request: {}                         # fields merged last into each independent judgment call (they win): the
                                            # model's default request with item_answer_tokens' room, thinking on, no JSON mode
+
+# second_opinion:                          # PLANNED, not built (D-005, D-012, D-048): a vote from another model on the
+#                                          # answer's claims, never proof (only local sources count as evidence).
+#                                          # The loader rejects this section until the code exists: keep it commented.
+#   enabled: false                         # off by default
+#   api_base: "${SECOND_OPINION_API_BASE:-}"   # any OpenAI-compatible endpoint (official API), e.g. https://.../v1
+#   api_key: "${SECOND_OPINION_API_KEY:-}"     # from .env, never committed
+#   model_id: "${SECOND_OPINION_MODEL:-}"
+#   max_claims: 10                         # claims sent per answer
+#   timeout_s: 60
+#   prompt: |                              # one claim at a time, with the request; reply supported / contradicted / unsure
 
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend
