@@ -2,7 +2,6 @@
 answer's code against the item's tests in a child process, and the reference value found in the free text."""
 
 import os
-import sys
 import time
 
 import pytest
@@ -98,16 +97,28 @@ def test_a_child_that_ends_early_is_an_error():
     assert r["status"] == "error" and "ended without a result (exit code 7)" in r["detail"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups")
-def test_endless_loop_is_killed(tmp_path):
-    pid_file = tmp_path / "pid"
-    loop = f"import os\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\ndef merge(x):\n    while True:\n        pass\n"
-    started = time.monotonic()
+def _checks_running():
+    """The check processes running now, from the Linux process list."""
+    found = set()
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/cmdline", "rb") as f:
+                    if b"driver.py" in f.read():
+                        found.add(int(entry))
+            except OSError:
+                pass
+    return found
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="process list from /proc")
+def test_endless_loop_is_killed():
+    loop = "def merge(x):\n    while True:\n        pass\n"
+    before, started = _checks_running(), time.monotonic()
     r = check(block(loop), timeout_s=1.5)
     assert r["status"] == "timeout" and r["detail"] == "no result within 1.5 s" and time.monotonic() - started < 10
     time.sleep(0.2)
-    with pytest.raises(ProcessLookupError):
-        os.kill(int(pid_file.read_text()), 0)  # nothing is left running
+    assert not _checks_running() - before  # nothing is left running
 
 
 def test_no_network():
@@ -116,6 +127,30 @@ def test_no_network():
     spec = {**CHECK, "tests": "assert merge([]) == 'offline', merge([])\n"}
     r = check(block(probe), spec)
     assert r["status"] == "passed" and r["network"] in ("namespace", "guard")
+
+
+def test_files_outside_the_temp_folder_stay(tmp_path):
+    target = tmp_path / "keep.txt"
+    target.write_text("mine", encoding="utf-8")
+    probe = (f"import os, shutil\nPATH = {str(target)!r}\n\ndef merge(x):\n    out = []\n"
+             "    for act in (lambda: open(PATH, 'w'), lambda: os.remove(PATH), lambda: os.rename(PATH, PATH + '.x'),\n"
+             "                lambda: shutil.rmtree(os.path.dirname(PATH)), lambda: open('inside.txt', 'w').write('ok')):\n"
+             "        try:\n            act()\n            out.append('done')\n"
+             "        except PermissionError:\n            out.append('refused')\n    return out\n")
+    spec = {**CHECK, "tests": "assert merge([]) == ['refused'] * 4 + ['done'], merge([])\n"}
+    r = check(block(probe), spec)
+    assert r["status"] == "passed", r["detail"]
+    assert target.read_text(encoding="utf-8") == "mine" and sorted(p.name for p in tmp_path.iterdir()) == ["keep.txt"]
+
+
+def test_no_new_processes():
+    probe = ("import os, subprocess\n\ndef merge(x):\n    out = []\n"
+             "    for act in (lambda: subprocess.run(['true']), lambda: os.system('true')):\n"
+             "        try:\n            act()\n            out.append('ran')\n"
+             "        except PermissionError:\n            out.append('refused')\n    return out\n")
+    spec = {**CHECK, "tests": "assert merge([]) == ['refused', 'refused'], merge([])\n"}
+    r = check(block(probe), spec)
+    assert r["status"] == "passed", r["detail"]
 
 
 def test_sql_with_the_wrong_query_quoted():

@@ -72,6 +72,49 @@ except Exception:
 
     socket.socket, socket.create_connection, socket.getaddrinfo = _NoSocket, _blocked, _blocked
 
+# Files and processes: while the answer's code and the tests run, an audit hook refuses any write, delete, rename
+# or permission change outside this temp folder (the eval machine's own files stay as they are, e.g. /mnt/c in
+# WSL) and any new or signalled process. A guard against accidents, not a jail: code that means to escape can.
+sys.dont_write_bytecode = True
+ROOT = os.path.realpath(os.getcwd())
+GUARD = {"on": False}
+WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+PATH_EVENTS = {"os.remove": (0,), "os.rmdir": (0,), "os.mkdir": (0,), "os.chmod": (0,), "os.chown": (0,),
+               "os.truncate": (0,), "os.utime": (0,), "os.rename": (0, 1), "os.link": (1,), "os.symlink": (1,),
+               "shutil.rmtree": (0,), "shutil.move": (0, 1), "shutil.copyfile": (1,), "shutil.copytree": (1,),
+               "sqlite3.connect": (0,)}
+PROCESS_EVENTS = {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty",
+                  "os.kill", "os.killpg", "os.startfile"}
+
+
+def _inside(path):
+    if isinstance(path, int) or path in (os.devnull, ":memory:", ""):
+        return True  # an open file descriptor (checked when it was opened), the null device, an in-memory database
+    try:
+        full = os.path.realpath(os.fsdecode(path))
+    except Exception:
+        return False
+    return full == ROOT or full.startswith(ROOT + os.sep)
+
+
+def _guard(event, args):
+    if not GUARD["on"]:
+        return
+    if event == "open":
+        path, mode, flags = (tuple(args) + (None, None, None))[:3]
+        writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            isinstance(flags, int) and flags & WRITE_FLAGS)
+        if writes and not _inside(path):
+            raise PermissionError(f"the checked code may write only in its own temp folder, not {path!r}")
+    elif event in PATH_EVENTS:
+        if any(i < len(args) and not _inside(args[i]) for i in PATH_EVENTS[event]):
+            raise PermissionError(f"the checked code may change files only in its own temp folder ({event})")
+    elif event in PROCESS_EVENTS:
+        raise PermissionError(f"the checked code may not start or signal processes ({event})")
+
+
+sys.addaudithook(_guard)
+
 
 def tests_pass(namespace):
     try:
@@ -85,6 +128,7 @@ def tests_pass(namespace):
         return False
 
 
+GUARD["on"] = True
 if payload["language"] == "sql":
     passed = any(tests_pass({"__name__": "tests", "sql": block}) for block in payload["blocks"])
 else:
@@ -95,6 +139,7 @@ else:
         except BaseException:  # an example that shows an error, a snippet that is not code, sys.exit()
             result["skipped"] += 1
     passed = tests_pass(namespace)
+GUARD["on"] = False
 result["status"] = "passed" if passed else "failed"
 if passed:
     result["detail"] = ""
