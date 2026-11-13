@@ -1,12 +1,19 @@
-"""Run the eval sets through the real pipeline (tools, tool loop, verifier) and score them.
+"""Run eval items through the real pipeline (tools, tool loop, verifier), or through the bare model, and measure.
 
-    uv run python -m evals.run [--set facts|reasoning|all] [--holdout] [--authored DIR ...] [--split SPLIT]
-                               [--sets S3,S4] [--mode A|B|C|D] [--run-id ID] [--retry-errors]
-                               [--limit N] [--ids ID,ID] [--questions FILE] [--problems FILE]
+    uv run python -m evals.run [--items PATH ...] [--category C,C] [--request-type T,T] [--lang L,L] [--probe P,P]
+                               [--mode bare|A|B|C|D] [--plus LAYER,LAYER] [--minus LAYER,LAYER] [--list-layers]
+                               [--set facts|reasoning|all] [--holdout] [--authored DIR ...] [--split SPLIT]
+                               [--sets S3,S4] [--run-id ID] [--retry-errors] [--limit N] [--ids ID,ID]
+                               [--questions FILE] [--problems FILE]
 
-Sets: S1 fact questions (evals/questions.yaml), S2 multi-step reasoning problems (evals/reasoning.yaml, scored on
-their labelled answer lines; held-out problems run only with --holdout) and authored items (S3-S6, U) from batch
-folders (--authored, README "Evals"). --mode switches pipeline components off in-process (evals/modes.yaml).
+Items: the general schema (--items: free-form requests of any category, evals/items.py), and the older sets: S1
+fact questions (evals/questions.yaml), S2 multi-step reasoning problems (evals/reasoning.yaml, scored on their
+labelled answer lines; held-out problems run only with --holdout) and authored items (S3-S6, U) from batch folders
+(--authored, README "Evals").
+Arms: without an option the suite as configured (mode `config`); --mode bare is the model alone, one plain call
+per item (evals/bare.py); --minus and --plus switch layers of the suite off and on, from the configured suite or
+with --mode bare from every layer off (evals/layers.py; --list-layers shows them); --mode A-D are the older
+component modes (evals/modes.yaml; A is not the bare model).
 The backend, store and settings come from the config and environment, exactly as for the chat (`API_BASE_URL`,
 `DATA_DIR`, `MODEL_PROFILE`, ...). A run is a folder ${DATA_DIR:-data}/evals/<run-id>/: manifest.json, one log
 per item in items/ (written when the item is done, so an interrupted run resumes with the same --run-id) and
@@ -35,8 +42,14 @@ import httpx
 import yaml
 from dotenv import load_dotenv
 
+from evals import layers
+from evals.bare import Bare, bare_request
+from evals.checks import run_check
+from evals.items import is_general, keep, load_general, load_paths, pick_proportional
+from evals.measure import SIGNALS, item_fields, review_summary_general, summary_blocks
+from haisenberg import stages
 from haisenberg.agent import DRAFT_MARK, Agent
-from haisenberg.config import PROFILE_ENV, Config, ConfigError, load_config
+from haisenberg.config import CAP_FLAG, PROFILE_ENV, Config, ConfigError, load_config
 from haisenberg.l1.text import to_hill
 from haisenberg.llm import LLMClient, UpstreamError
 from haisenberg.tools import Knowledge
@@ -182,11 +195,14 @@ def load_authored(folder: Path) -> list[dict[str, Any]]:
 
 
 def load_file(path: Path) -> list[dict[str, Any]]:
-    """The items of any eval file: fact questions, reasoning problems or authored items."""
+    """The items of any eval file: fact questions, reasoning problems, authored items or items of the general
+    schema."""
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if "questions" in data:
         return load_questions(path)[1]
-    return load_problems(path) if "problems" in data else load_items(path)
+    if "problems" in data:
+        return load_problems(path)
+    return load_general(path) if is_general(data) else load_items(path)
 
 
 def key_of(item: dict[str, Any]) -> dict[str, Any]:
@@ -392,12 +408,15 @@ def choose(items: list[dict], split: str | None = None, sets: list[str] | None =
 
 def pick(questions: list[dict], ids: list[str] | None = None, limit: int | None = None) -> list[dict]:
     """By id; or `limit` items shared out evenly between the groups (source/domain for facts, set/domain for
-    the others) and spread evenly over each group (a small run still covers every kind)."""
+    the others) and spread evenly over each group (a small run still covers every kind). Items of the general
+    schema alone: each category gets its share of the limit (items.pick_proportional)."""
     if ids:
         wanted = set(ids)
         return [q for q in questions if q["id"] in wanted]
     if not limit or limit >= len(questions):
         return questions
+    if all("category" in q for q in questions):
+        return pick_proportional(questions, limit)
     groups: dict[str, list[dict]] = {}
     for q in questions:
         groups.setdefault(f"{q.get('source') or q.get('set')}/{q.get('domain')}", []).append(q)
@@ -522,10 +541,17 @@ def store_identity(path: Path) -> dict[str, Any]:
             "mtime": datetime.fromtimestamp(max(s.st_mtime for s in stats)).isoformat(timespec="seconds")}
 
 
-def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path) -> dict[str, Any]:
+def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[str], cache: Path,
+             arm: dict[str, Any] | None = None, knowledge: Knowledge | None = None) -> dict[str, Any]:
     """What a run depends on: code, config after the mode, model file, knowledge setting and stores (see
-    store_identities), eval files, GPU, sampling."""
+    store_identities), eval files, GPU, sampling; and what ran: the arm (`arm`: base, plus and minus; None for
+    the modes A to D), every layer on or off (layers.effective; all off for the bare call), the tools offered
+    (`knowledge`: the tools as built), the thinking settings, the bare request of a bare arm and the eval
+    settings."""
     backend, model = cfg.model_backend, served_model(cfg)
+    tb = cfg.reasoning_policy.thinking_budget
+    bare = arm is not None and arm["base"] == layers.BARE
+    acts = dict.fromkeys(layers.switches(cfg), False) if bare and not arm["plus"] else layers.effective(cfg, knowledge)
     return {
         "run_id": run_id,
         "git": _git(cfg.root),
@@ -545,6 +571,14 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "sampling": {"temperature": backend.temperature, "max_tokens": backend.max_tokens, "seed": backend.seed,
                      **backend.extra_body},
         "args": args,
+        "arm": arm,
+        "layers": acts,
+        "tools": [t["function"]["name"] for t in knowledge.tools] if knowledge is not None else [],
+        "thinking": {"field": tb.field, "enabled": tb.enabled, "min_tokens": tb.min_tokens,
+                     "max_tokens": tb.max_tokens, "answer_tokens": tb.answer_tokens,
+                     "server_cap": cfg.llama_server.flags.get(CAP_FLAG)},
+        "bare": bare_request(cfg) if bare else None,
+        "evals": cfg.evals.model_dump(),
     }
 
 
@@ -621,28 +655,33 @@ def log_scores(answer: str, draft: str, q: dict[str, Any], error: str | None, re
             "unmarked_contradiction": error is None and bool(final) and not final["correct"] and all_supported}
 
 
-async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict[str, Any]:
+async def run_one(agent: Agent | Bare, q: dict[str, Any], mode: str = "config", settings: Any = None) -> dict[str, Any]:
+    """Run one item and return its log. `agent`: the suite's agent or the bare arm; `settings`: the config's
+    `evals` section (budgets, science tools, the code check); without it those measurements are left out."""
     messages = [*q.get("turns", []), {"role": "user", "content": q["question"]}]
     t0, calls = time.monotonic(), agent.llm.calls
     answer = draft = trace = ""
     report: dict[str, Any] = {}
     timings: dict[str, float] = {}
-    error = None
-    try:
-        async for item in agent.run(messages):
-            if text := item.get("reasoning_content"):
-                at = round(time.monotonic() - t0, 2)
-                timings.setdefault("first_reasoning_s", at)
-                if text == DRAFT_MARK:  # the model's first answer token follows
-                    timings.setdefault("first_answer_s", at)
-                trace += text
-            answer += item.get("content", "")
-            draft = item.get("draft", draft)
-            report = item.get("verification", report)
-    except (UpstreamError, httpx.HTTPError) as e:
-        error = str(e)
+    error = finish = None
+    with stages.recording() as stage_log:  # every model call, tool call and check of this answer
+        try:
+            async for item in agent.run(messages):
+                if text := item.get("reasoning_content"):
+                    at = round(time.monotonic() - t0, 2)
+                    timings.setdefault("first_reasoning_s", at)
+                    if text == DRAFT_MARK:  # the model's first answer token follows
+                        timings.setdefault("first_answer_s", at)
+                    trace += text
+                answer += item.get("content", "")
+                draft = item.get("draft", draft)
+                report = item.get("verification", report)
+                finish = item.get("finish_reason", finish)
+        except (UpstreamError, httpx.HTTPError) as e:
+            error = str(e)
     timings["total_s"] = round(time.monotonic() - t0, 2)
     found = artefacts(answer)
+    check = None if error else run_check(q, answer, draft, settings.python_tests if settings else None)
     log = {
         "id": q["id"],
         "set": q["set"],
@@ -658,7 +697,14 @@ async def run_one(agent: Agent, q: dict[str, Any], mode: str = "config") -> dict
         "error": error,
         **log_scores(answer, draft, q, error, report),
         "artefacts": found,
+        "finish_reason": finish,
+        "stages": stage_log,
+        **item_fields(q, stage_log, timings["total_s"], settings),
     }
+    if "category" in q:  # the general schema: its code check, or the quick signal of its reference value
+        log["check"] = check
+        if check:
+            log["correct"] = check["final"]["passed"]
     if conv := (q.get("key") or {}).get("conversation"):  # S6
         log["conversation"] = {"artefact_free": not found, "max_chars": len(answer) <= conv["max_chars"],
                                "max_latency": timings["total_s"] <= conv["max_latency_s"]}
@@ -717,6 +763,7 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
         "consistency_fixes": sum(len(r["verification"].get("consistency", [])) for r in logs),
         "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in logs),
         "check_fixes": sum(c["fixed"] is not None for r in logs for c in r["verification"].get("checks", [])),
+        **summary_blocks(logs),  # stages, request types, drift and code checks, for logs that have them
     }
     if conv := [r["conversation"] for r in logs if "conversation" in r]:
         summary["conversation"] = {"items": len(conv), **{k: sum(c[k] for c in conv) for k in conv[0]}}
@@ -752,8 +799,19 @@ def write_summary(folder: Path, mode: str) -> dict[str, Any]:
     sets = sorted(set(set_of.values()))
     summary = {"run_id": folder.name, "mode": mode, "all": summarize(logs),
                "sets": {s: summarize([r for r in logs if r["set"] == s]) for s in sets}}
-    if (path := folder / "reviews.json").is_file():
-        reviews, items = json.loads(path.read_text(encoding="utf-8")), run_items(folder)
+    if logs and all(r.get("category") for r in logs):
+        summary["general"] = True  # every item is of the general schema: no answer-line metrics to show
+    reviews = json.loads(path.read_text(encoding="utf-8")) if (path := folder / "reviews.json").is_file() else None
+    if reviews and all(rv.get("format") == 2 for rv in reviews.values()):  # reviews of a format 2 pack
+        man = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        science = set((man.get("evals") or {}).get("science_categories") or [])
+        by_id = {r["id"]: r for r in logs}
+        rows2 = [(rv, by_id[iid]) for iid, rv in reviews.items() if iid in by_id]
+        summary["review"] = {"all": review_summary_general(rows2, science),
+                             "sets": {s: review_summary_general([row for row in rows2 if row[1]["set"] == s], science)
+                                      for s in sorted({log["set"] for _, log in rows2})}}
+    elif reviews is not None:
+        items = run_items(folder)
         rows = [(rv, key_of(items[iid]), set_of[iid]) for iid, rv in reviews.items() if iid in set_of]
         summary["review"] = {"all": review_summary([(rv, k) for rv, k, _ in rows]),
                              "sets": {s: review_summary([(rv, k) for rv, k, x in rows if x == s])
@@ -766,21 +824,24 @@ def _done(log: Path, retry_errors: bool) -> bool:
     return log.is_file() and not (retry_errors and json.loads(log.read_text(encoding="utf-8"))["error"])
 
 
-async def run_eval(agent: Agent, items: list[dict], folder: Path, mode: str = "config",
-                   retry_errors: bool = False) -> dict[str, Any]:
+async def run_eval(agent: Agent | Bare, items: list[dict], folder: Path, mode: str = "config",
+                   retry_errors: bool = False, settings: Any = None) -> dict[str, Any]:
     """Run the items without a log in the folder (with retry_errors also those whose log has an error), writing
-    each log when its item is done; then write and return the summary of every log in the folder."""
+    each log when its item is done; then write and return the summary of every log in the folder. `settings`: the
+    config's `evals` section (see run_one)."""
     (folder / "items").mkdir(parents=True, exist_ok=True)
     todo = [q for q in items if not _done(folder / "items" / f"{q['id']}.json", retry_errors)]
     if len(todo) < len(items):
         print(f"{len(items) - len(todo)} items already done", flush=True)
     try:
         for i, q in enumerate(todo, 1):
-            r = await run_one(agent, q, mode)
+            r = await run_one(agent, q, mode, settings)
             (folder / "items" / f"{q['id']}.json").write_text(json.dumps(r, ensure_ascii=False, indent=2),
                                                                encoding="utf-8")
-            mark = "ERR  " if r["error"] else "-    " if r["correct"] is None else "ok   " if r["correct"] else "WRONG"
-            line = ""
+            check = r.get("check")
+            miss = "miss " if check and check["type"] in SIGNALS else "WRONG"  # a signal says found, not right
+            mark = "ERR  " if r["error"] else "-    " if r["correct"] is None else "ok   " if r["correct"] else miss
+            line = f" {check['type']} {check['final']['status']}" if check else ""
             if s := r["scores"]:
                 line = " parts " + "".join("+" if ok else "-" for ok in s["final"]["parts"].values())
                 if s["draft"]["parts"] != s["final"]["parts"]:
@@ -788,69 +849,153 @@ async def run_eval(agent: Agent, items: list[dict], folder: Path, mode: str = "c
             print(f"[{i}/{len(todo)}] {mark} {q['set']:<3} {q['id']:<16} {r['timings']['total_s']:6.1f}s{line}"
                   f"  claims {r['verification'].get('counts', {})}"
                   + (f"  ARTEFACTS {','.join(r['artefacts'])}" if r["artefacts"] else "")
-                  + ("  UNMARKED" if r["unmarked_contradiction"] else ""), flush=True)
+                  + ("  UNMARKED" if r["unmarked_contradiction"] else "")
+                  + (f"  OVER {r['budget_s']:g} s" if r.get("within_budget") is False else "")
+                  + ("  DRIFT" if r.get("drift_auto") else ""), flush=True)
     finally:
         summary = write_summary(folder, mode)
     return summary
+
+
+MODE_A_NOTE = ("note: mode A is not the bare model: it keeps the suite's system prompt, the scaled thinking budget and"
+               " the evidence ledger with its writer. The model alone is --mode bare.")
+
+
+def _listed(value: str | None) -> list[str]:
+    return [v.strip() for v in value.split(",") if v.strip()] if value else []
+
+
+def prepare(cfg: Config, modes: dict[str, dict[str, dict[str, Any]]], mode: str | None = None,
+            plus: list[str] | None = None, minus: list[str] | None = None) -> tuple[str, dict[str, Any] | None]:
+    """Make `cfg` the config of a run's arm, in place: (the mode's name, the arm's record for the manifest; None
+    for the modes A to D). No mode: the suite as configured (`config`); `bare`: the model alone; A to D: the
+    older overrides; `plus` and `minus`: layers switched on and off from that base (layers.apply_arm; not with
+    A to D). Without a mode and layers the config is not touched. Then the fields of `evals.request` are merged
+    into every model call, in every arm alike. Raises ValueError naming what does not fit."""
+    mode, arm = mode or layers.CONFIG, None
+    if mode in modes:
+        if plus or minus:
+            raise ValueError(f"--plus and --minus do not combine with --mode {mode} (the modes A to D are kept for"
+                             " old runs): switch layers of the configured suite, or of --mode bare")
+        apply_mode(cfg, modes[mode])
+    elif plus or minus:
+        mode, arm = layers.apply_arm(cfg, mode, plus, minus)
+    else:
+        arm = {"base": mode, "plus": [], "minus": []}
+    cfg.model_backend.extra_body = {**cfg.model_backend.extra_body, **cfg.evals.request}
+    return mode, arm
+
+
+def summary_line(name: str, s: dict[str, Any]) -> str:
+    """One line of the closing summary: the answer-line metrics when items have them, then the measurements."""
+    parts = [f"{s['items']} items", f"{s['errors']} errors"]
+    if s["scored"]:
+        parts += [f"solved {s['correct']}/{s['scored']}", f"parts {s['parts_right']}/{s['parts_total']}",
+                  f"{s['missing_lines']} missing lines",
+                  f"{s['false_corrections']} false / {s['true_corrections']} true corrections"]
+    if "no_answer" in s:
+        parts.append(f"{s['no_answer']} without an answer")
+    if drift := s.get("drift"):
+        parts.append(f"drift {drift['auto']}/{drift['items']}")
+    if tests := s.get("python_tests"):
+        parts.append(f"python tests {tests['passed']}/{tests['items']}")
+    parts += [f"{kind} found {v['found']}/{v['items']}" for kind, v in (s.get("reference_values") or {}).items()]
+    parts += [f"{s['with_artefacts']} with artefacts ({s['tool_call_leaks']} tool-call leaks)",
+              f"median {s['latency_median_s']} s"]
+    return f"{name}: " + ", ".join(parts)
+
+
+def budget_line(kind: str, t: dict[str, Any]) -> str:
+    """One request type of the closing summary: its seconds against its budget."""
+    budget = "no budget" if t["budget_s"] is None else (
+        f"budget {t['budget_s']:g} s: median {'within' if t['median_within_budget'] else 'OVER'},"
+        f" {t['within_budget']}/{t['items']} items within")
+    return f"  {kind}: median {t['median_s']:g} s, p90 {t['p90_s']:g} s, {budget}"
 
 
 def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     modes = load_modes()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--set", choices=SETS, help="S1/S2: facts, reasoning or all (default: all; none with --authored)")
+    parser.add_argument("--items", type=Path, action="append",
+                        help="items of the general schema: a folder (every *.yaml) or one file (repeatable)")
+    parser.add_argument("--category", help="general items of these categories only (comma-separated)")
+    parser.add_argument("--request-type", help="general items of these request types only (comma-separated)")
+    parser.add_argument("--lang", help="general items in these languages only (comma-separated)")
+    parser.add_argument("--probe", help="general items with one of these probes only (comma-separated)")
+    parser.add_argument("--set", choices=SETS, help="S1/S2: facts, reasoning or all (default: all; none with"
+                                                    " --authored or --items)")
     parser.add_argument("--holdout", action="store_true", help="run only the held-out reasoning problems")
     parser.add_argument("--authored", type=Path, action="append", help="batch folder of authored items (repeatable)")
-    parser.add_argument("--split", choices=SPLITS, help="authored items of this split only")
-    parser.add_argument("--sets", help="comma-separated sets to keep, e.g. S3,S4 (S1 facts, S2 reasoning)")
-    parser.add_argument("--mode", choices=sorted(modes), help="pipeline mode (evals/modes.yaml); default: as configured")
+    parser.add_argument("--split", choices=SPLITS, help="authored and general items of this split only")
+    parser.add_argument("--sets", help="comma-separated sets to keep, e.g. S3,S4 (S1 facts, S2 reasoning; a general"
+                                       " item's set is its category)")
+    parser.add_argument("--mode", choices=[layers.BARE, *sorted(modes)],
+                        help="bare: the model alone, one plain call per item; A-D: the older component modes"
+                             " (evals/modes.yaml; A is not the bare model); default: the suite as configured")
+    parser.add_argument("--plus", help="layers to switch on (comma-separated): on top of the configured suite, or"
+                                       " with --mode bare on top of the bare model")
+    parser.add_argument("--minus", help="layers of the configured suite to switch off (comma-separated)")
+    parser.add_argument("--list-layers", action="store_true",
+                        help="print every layer with its state in the arm the other options name (default: the"
+                             " configured suite), and exit")
     parser.add_argument("--run-id", help="run folder under ${DATA_DIR:-data}/evals (default <yyyymmdd-hhmm>-<mode>);"
                                          " an existing run is resumed: items with a log are skipped")
     parser.add_argument("--retry-errors", action="store_true", help="when resuming, run the items that failed again")
     parser.add_argument("--ids", help="comma-separated item ids")
-    parser.add_argument("--limit", type=int, help="run N items, taken in turn from each group")
+    parser.add_argument("--limit", type=int, help="run N items: taken in turn from each group, or for general"
+                                                  " items a share of each category in proportion to its size")
     parser.add_argument("--questions", type=Path, default=QUESTIONS)
     parser.add_argument("--problems", type=Path, default=PROBLEMS)
     args = parser.parse_args(argv)
-    mode = args.mode or "config"
     try:
         cfg = load_config()
-        apply_mode(cfg, modes.get(mode, {}))
+        mode, arm = prepare(cfg, modes, args.mode, _listed(args.plus), _listed(args.minus))
+        if args.list_layers:  # what the arm named by the other options would run, without running anything
+            print(f"arm: {mode}\n{layers.table(cfg, bare=mode == layers.BARE)}")
+            return 0
         _, facts = load_questions(args.questions)
-        items = select(facts, load_problems(args.problems), args.set or (None if args.authored else "all"), args.holdout)
+        other = args.authored or args.items
+        items = select(facts, load_problems(args.problems), args.set or (None if other else "all"), args.holdout)
         for folder in args.authored or []:
             items += load_authored(folder)
+        items += load_paths(args.items) if args.items else []
         items = choose(items, args.split, args.sets.split(",") if args.sets else None)
+        items = keep(items, _listed(args.category), _listed(args.request_type), _listed(args.lang), _listed(args.probe))
         chosen = pick(items, args.ids.split(",") if args.ids else None, args.limit)
         if dupes := sorted(i for i, n in Counter(q["id"] for q in chosen).items() if n > 1):
             raise ValueError(f"duplicate item ids {dupes}")
         run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{mode}"
         folder = runs_dir() / run_id
         files = sorted({q["file"] for q in chosen})
-        knowledge = Knowledge.open(cfg)  # before the run folder: a missing literature store leaves nothing behind
+        # Before the run folder: a missing literature store leaves nothing behind. The bare call opens no store.
+        knowledge = None if mode == layers.BARE else Knowledge.open(cfg)
+        if arm and (arm["plus"] or arm["minus"]) and (problems := layers.runtime_problems(cfg, knowledge)):
+            raise ValueError("; ".join(problems))  # an arm must never run with less than its name says
         open_run(folder, manifest(cfg, run_id, mode, files, sys.argv[1:] if argv is None else argv,
-                                  runs_dir() / ".sha-cache.json"))
+                                  runs_dir() / ".sha-cache.json", arm, knowledge))
     except (ConfigError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    if not knowledge.tools and cfg.reasoning_policy.max_search_depth:
+    if args.mode == "A":
+        print(MODE_A_NOTE, file=sys.stderr)
+    if knowledge is not None and not knowledge.available and cfg.reasoning_policy.max_search_depth:
         print("warning: no knowledge tools (store missing?): answers are neither grounded nor verified", file=sys.stderr)
 
     async def go() -> dict:
         llm = LLMClient(cfg.model_backend)
         try:
-            return await run_eval(Agent(cfg, llm, knowledge), chosen, folder, mode, args.retry_errors)
+            runner = Bare(cfg, llm) if knowledge is None else Agent(cfg, llm, knowledge)
+            return await run_eval(runner, chosen, folder, mode, args.retry_errors, cfg.evals)
         finally:
             await llm.aclose()
 
     summary = asyncio.run(go())
     print()
     for name, s in [("all", summary["all"]), *summary["sets"].items()]:
-        print(f"{name}: {s['items']} items, {s['errors']} errors, solved {s['correct']}/{s['scored']},"
-              f" parts {s['parts_right']}/{s['parts_total']}, {s['missing_lines']} missing lines,"
-              f" {s['false_corrections']} false / {s['true_corrections']} true corrections,"
-              f" {s['with_artefacts']} with artefacts ({s['tool_call_leaks']} tool-call leaks),"
-              f" median {s['latency_median_s']} s")
+        print(summary_line(name, s))
+    for kind, t in (summary["all"].get("request_types") or {}).items():
+        print(budget_line(kind, t))
     print(f"run: {folder}  (uv run python -m evals.report {run_id})")
     return 0
 

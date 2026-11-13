@@ -7,6 +7,9 @@ against the run's eval files as they are now (correct, scores, unmarked_contradi
 rescore keeps the previous scores as `scores_before_rescore`; then summary.json is rewritten. A log whose item is
 gone or whose prompt differs from the item's current one stays as it was. Prints per run the
 parts right before → after (and the line-only total) and how many verdict parts were read from the answer body.
+An item of the general schema gets its code check again (`check`: the python tests, run again when the config
+allows them, and the reference value signals; the first rescore keeps the previous one as `check_before_rescore`),
+and the line then also gives the checks passed before → after.
 --dry-run prints the same and writes nothing.
 """
 
@@ -18,7 +21,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from evals.checks import run_check
 from evals.run import log_scores, read_logs, run_dir, run_items, write_summary
+from haisenberg.config import ConfigError, load_config
 
 
 def _parts(scores: dict[str, Any] | None, key: str = "parts") -> list[bool]:
@@ -30,11 +35,18 @@ def _body(scores: dict[str, Any] | None) -> int:
     return sum(s == "body" for s in scores["final"].get("sources", {}).values()) if scores else 0
 
 
-def rescore(folder: Path, write: bool = True) -> dict[str, int]:
-    """Rescore every item log of a run whose item is in its eval files; returns the counts the line prints."""
+def _passed(check: dict[str, Any] | None) -> int:
+    return int(bool(check and check["final"]["passed"]))
+
+
+def rescore(folder: Path, write: bool = True, python: Any = None) -> dict[str, int]:
+    """Rescore every item log of a run whose item is in its eval files; returns the counts the line prints.
+    `python`: the config's `evals.python_tests` settings; without them a python_tests check stays as stored (the
+    reference value signals are computed again either way)."""
     man = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     items = run_items(folder)
-    counts = {"items": 0, "skipped": 0, "before": 0, "after": 0, "line_only": 0, "total": 0, "body": 0}
+    counts = {"items": 0, "skipped": 0, "before": 0, "after": 0, "line_only": 0, "total": 0, "body": 0,
+              "checks": 0, "checks_before": 0, "checks_after": 0}
     for log in read_logs(folder):
         item = items.get(log["id"])
         if item is None or log["messages"][-1]["content"] != item["question"]:
@@ -48,6 +60,16 @@ def rescore(folder: Path, write: bool = True) -> dict[str, int]:
         counts["line_only"] += sum(_parts(new["scores"], "line_parts"))
         counts["total"] += len(_parts(new["scores"]))
         counts["body"] += _body(new["scores"])
+        if "category" in item and not log["error"]:  # the general schema: its code check, on the stored texts
+            kind = item["reference"]["check"]["type"]
+            stored = log.get("check")
+            check = stored if kind == "python_tests" and python is None else \
+                run_check(item, log["answer"], log["draft"], python)
+            counts["checks"] += check is not None
+            counts["checks_before"] += _passed(log.get("check_before_rescore", stored))
+            counts["checks_after"] += _passed(check)
+            new = {**new, "check": check, "check_before_rescore": log.get("check_before_rescore", stored),
+                   "correct": check["final"]["passed"] if check else None}
         if write:
             log = {**log, "scores_before_rescore": before, **new}
             (folder / "items" / f"{log['id']}.json").write_text(json.dumps(log, ensure_ascii=False, indent=2),
@@ -60,6 +82,8 @@ def rescore(folder: Path, write: bool = True) -> dict[str, int]:
 def line(name: str, c: dict[str, int]) -> str:
     return (f"{name}: parts {c['before']} → {c['after']} of {c['total']} (line-only {c['line_only']}),"
             f" {c['body']} verdict parts read from the body, {c['items']} items"
+            + (f", code checks passed {c['checks_before']} → {c['checks_after']} of {c['checks']}"
+               if c.get("checks") else "")
             + (f", {c['skipped']} skipped (item gone or prompt changed)" if c["skipped"] else ""))
 
 
@@ -71,8 +95,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     total: dict[str, int] = {}
     try:
+        python = load_config().evals.python_tests  # the limits of the python tests, when they are to run again
+    except ConfigError as e:
+        python = None
+        print(f"note: no config ({e}): python tests are not run again", file=sys.stderr)
+    try:
         for run in args.runs:
-            c = rescore(run_dir(run), write=not args.dry_run)
+            c = rescore(run_dir(run), write=not args.dry_run, python=python)
             print(line(run_dir(run).name, c), flush=True)
             total = {k: total.get(k, 0) + v for k, v in c.items()}
     except (OSError, ValueError, KeyError) as e:

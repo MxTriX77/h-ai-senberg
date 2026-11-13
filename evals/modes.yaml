@@ -1,7 +1,10 @@
-# Pipeline modes for component runs: `uv run python -m evals.run --mode A|B|C|D` overrides these config fields
-# in-process before the agent is built. Prompts and sampling stay as configured (mode A also drops the tool
+# Pipeline modes of the older component runs: `uv run python -m evals.run --mode A|B|C|D` overrides these config
+# fields in-process before the agent is built. Prompts and sampling stay as configured (mode A also drops the tool
 # prompt, since it offers no tools). Without --mode the config applies as it is (mode `config`).
-A:  # the model alone: no tools, no checks
+# None of these modes is the bare model: each keeps the suite's system prompt, the scaled thinking budget and the
+# evidence ledger with its writer. The model alone is `--mode bare` (evals/bare.py); single layers are switched
+# off and on with `--minus` and `--plus` (evals/layers.py).
+A:  # no tools, no verifier checks (not the bare model, see above)
   reasoning_policy: {max_search_depth: 0, enable_multi_hop_verification: false}
   verifier: {arithmetic_check: false, checkers: [], consistency_check: false}
 B:  # + tools (lookups and the calculator)
