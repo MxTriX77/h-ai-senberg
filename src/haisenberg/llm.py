@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import numpy as np
 
+from . import stages
 from .config import EmbeddingConfig, ModelBackendConfig
 
 
@@ -50,13 +51,16 @@ class LLMClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def stream_chat(self, messages: list[dict[str, Any]], **fields: Any) -> AsyncIterator[dict[str, Any]]:
+    async def stream_chat(self, messages: list[dict[str, Any]], *, stage: str = stages.MODEL,
+                          **fields: Any) -> AsyncIterator[dict[str, Any]]:
         """Yield parsed `chat.completion.chunk` dicts until `[DONE]`.
 
         `fields` (e.g. tools, tool_choice, sampling) are merged into the body last and win.
         Raises UpstreamError before the first chunk if the call fails; a refused connection or a 503
         (model loading, server restarting) is retried until `wait_s` has passed. Closing the
-        iteration early closes the upstream connection.
+        iteration early closes the upstream connection. `stage` names the call in an open stage log
+        (haisenberg.stages) and is never sent: the record gets the seconds, the tokens of the stream's
+        `usage` (when the backend sends one), the characters received and the call's own fields.
         """
         cfg = self.cfg
         self.calls += 1
@@ -72,21 +76,30 @@ class LLMClient:
         }
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         url = cfg.api_base.rstrip("/") + "/chat/completions"
-        response = await self._send(lambda: self._http.build_request("POST", url, json=body, headers=headers))
-        try:
-            if not response.is_success:
-                await response.aread()
-                raise UpstreamError(_error_message(response), response.status_code)
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                if data:
-                    yield json.loads(data)
-        finally:
-            await response.aclose()
+        with stages.stage(stage, stages.MODEL) as record:
+            started = time.monotonic()
+            if record is not None:
+                record.update(first_s=None, prompt_tokens=None, completion_tokens=None, reasoning_chars=0,
+                              answer_chars=0, finish_reason=None, tools=len(fields.get("tools") or []),
+                              fields={k: v for k, v in fields.items() if k != "tools"})
+            response = await self._send(lambda: self._http.build_request("POST", url, json=body, headers=headers))
+            try:
+                if not response.is_success:
+                    await response.aread()
+                    raise UpstreamError(_error_message(response), response.status_code)
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    if data:
+                        chunk = json.loads(data)
+                        if record is not None:
+                            _note(record, chunk, started)
+                        yield chunk
+            finally:
+                await response.aclose()
 
     async def _send(self, build) -> httpx.Response:
         """Send until the backend answers with anything but 503, retrying refusals until `wait_s` is over.
@@ -135,6 +148,19 @@ class EmbeddingClient:
         rows = sorted(response.json()["data"], key=lambda d: d["index"])
         vectors = np.asarray([r["embedding"] for r in rows], dtype=np.float32)
         return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+
+
+def _note(record: dict[str, Any], chunk: dict[str, Any], started: float) -> None:
+    """Add one chunk of a stream to its call's stage record."""
+    if record["first_s"] is None:
+        record["first_s"] = round(time.monotonic() - started, 3)
+    if isinstance(usage := chunk.get("usage"), dict):  # OpenAI: in the last chunk, when the request asked for it
+        record.update(prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"))
+    for choice in chunk.get("choices") or []:
+        delta = choice.get("delta") or {}
+        record["reasoning_chars"] += len(delta.get("reasoning_content") or "")
+        record["answer_chars"] += len(delta.get("content") or "")
+        record["finish_reason"] = choice.get("finish_reason") or record["finish_reason"]
 
 
 def _error_message(response: httpx.Response) -> str:

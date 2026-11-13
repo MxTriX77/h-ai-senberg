@@ -231,6 +231,67 @@ The fact questions are set S1 and the reasoning problems set S2 in the logs.
 
 `EVAL_SEED=<n>` (an integer ≥ 0, `model_backend.seed`) sends that sampling seed with every model call and records it in the manifest's `sampling`: with the same seed in both arms of an A/B (llama-server `--parallel 1`), an answer the change does not touch comes out the same. Unset or empty, no seed is sent.
 
+### General items
+
+`--items PATH` (repeatable; a folder, of which every `*.yaml` is read, or one file) runs free-form items of any category: everyday reasoning, writing, coding, math, facts, conversation, science. They have no answer lines and nothing is added to a prompt for the sake of scoring; a reference is kept for the reviewer. With `--items` only these items run unless `--set` or `--authored` is given too.
+
+```yaml
+items:
+  - id: reasoning-dev-001
+    split: dev                   # dev | holdout | monitor
+    category: reasoning          # any text; in logs and summaries the item's set is its category
+    lang: en                     # en | ru
+    request_type: analytic       # chat | factual | analytic | audit
+    turns: []                    # earlier turns [{role: user|assistant, content: ...}], sent before the prompt
+    prompt: "the user's request"
+    reference:                   # never sent to the model; shown to the blind reviewer
+      answer: "the correct answer or the expected behaviour"
+      key_points: ["what a good answer contains"]
+      check: {type: none}        # none | exact {value} | numeric {value, tolerance} | python_tests {tests, entry_point}
+      sources: ["URL or reference"]
+    must_not: ["a confident falsehood to watch for"]   # hints for the reviewer, not a checklist
+    offline_base: n/a            # yes | likely | partial | no | n/a: does the offline base hold the needed facts
+    probes: []                   # e.g. drift_bait, needless_idk, honest_uncertainty, false_premise, multi_turn
+    notes: ""
+```
+
+A malformed item stops the run with the file, the item and the field. `--split`, `--category`, `--request-type`, `--lang` and `--probe` (comma-separated) keep the items that match, `--ids` picks by id, and `--limit N` takes from every category a share in proportion to its size, spread over language and request type (the same items every time).
+
+```bash
+uv run python -m evals.run --items data/evals/general/dev --mode bare --run-id base-bare-s7     # the model alone
+uv run python -m evals.run --items data/evals/general/dev --run-id base-suite-s7               # the suite as configured
+uv run python -m evals.run --items data/evals/general/dev --limit 60 --minus review            # the suite without one layer
+uv run python -m evals.run --items data/evals/general/dev --category coding,math --lang ru
+```
+
+### Arms: the bare model, the suite and its layers
+
+- **The bare model**, `--mode bare`: one plain request per item to the same backend, with the model's own chat template: the item's earlier turns and its prompt, the configured sampling and seed, and `max_tokens` large enough to think up to the server's cap and still answer (`thinking_budget.max_tokens + answer_tokens`, the room a suite call gets with a full budget; `model_backend.max_tokens` for a backend without a budget field). No suite prompt (an optional neutral line: `reasoning_policy.bare_system_prompt`, empty by default), no tools, no thinking budget per call, no retry, no check, no ledger. The reply is the answer.
+- **The suite**, no option: the pipeline as configured (mode `config`).
+- **Layers.** Everything the suite adds to that plain call is a layer with its own config switch. `uv run python -m evals.run --list-layers` prints them with their state (with `--mode`, `--plus` or `--minus`: in that arm, without running it):
+
+| layer | switch | needs |
+|---|---|---|
+| `system_prompt` | `reasoning_policy.use_system_prompt` (off: `bare_system_prompt`) | |
+| `tool_prompt` | `reasoning_policy.use_tool_prompt` | a tool |
+| `tool.search_knowledge`, `tool.lookup_<kind>`, `tool.calculate` | not in `reasoning_policy.tools_off` | the store |
+| `tool.compute` (with its prompt) | `reasoning_policy.compute_tool` | the store |
+| `thinking_budget` | `reasoning_policy.thinking_budget.enabled` | |
+| `text_tool_calls`, `answer_retry`, `written_calculations` | `text_tool_calls`, `empty_answer_retry`, `run_written_calculations` | the last one: `text_tool_calls` and `tool.calculate` |
+| `weak_hit_filter` | `retrieval.min_term_share` above 0 | the search tool or `research` |
+| `arithmetic`, `carry_forward` | `verifier.arithmetic_check`, `carry_fixes_forward` | the store; `carry_forward`: `arithmetic` |
+| `checker.<name>` | in `verifier.checkers` | the store |
+| `record_check` | `verifier.record_check` | a knowledge tool |
+| `judge` | `verifier.claim_judge` | a knowledge tool or `research` |
+| `research` | `verifier.max_research` above 0 | `judge` |
+| `review` | `verifier.consistency_check` | the store |
+| `ledger`, `writer`, `independent` | `evidence.enabled`, `evidence.writer`, `evidence.independent` | `writer` and `independent`: `ledger` |
+| `cite_stripping` | `verifier.strip_source_ids` | |
+
+`--minus LAYER[,LAYER]` runs the configured suite without those layers (mode `config-minus-review`), `--plus` with layers that are off by default, and `--mode bare --plus LAYER[,LAYER]` runs every layer off except those (mode `bare-plus-arithmetic`); a group name (`tool`, `checker`) stands for all its layers. A layer cannot be on without what it needs: the run stops and names what to switch as well, so the arm's name lists everything that differs from its base. It also stops, before its folder exists, when a tool it should offer is missing or when a check of the verifier is on without an open knowledge store (the verifier runs only with the store). With every layer off, the agent sends exactly the bare request; a test compares the two.
+
+Run every arm of a comparison against the same llama-server (the thinking cap is the server's), with the same `EVAL_SEED`, and more than once per item: arms send different prompts, so a seed makes a run repeatable, not two arms alike.
+
 ### Authored items
 
 Further items are written as YAML files in batch folders (git-ignored, under `data/`). `--authored DIR` (repeatable) loads every `*.yaml` in the folder; then only the authored items are run unless `--set` is given too. `--split dev|holdout|monitor` keeps the authored items of one split, `--sets S3,S4,...` keeps the items of those sets (S1 and S2 included). One file holds a list of items:
@@ -267,7 +328,7 @@ A verdict part tied to one item the task lists (`C1.`, `У3)`, `S4:` at a line s
 
 ### Modes
 
-`--mode A|B|C|D` switches pipeline components off in-process, before the agent is built (`evals/modes.yaml`); prompts and sampling stay the same. Without `--mode` the config applies as it is (mode `config`).
+`--mode A|B|C|D` are the component modes of older runs: they switch pipeline components off in-process, before the agent is built (`evals/modes.yaml`); prompts and sampling stay the same. Without `--mode` the config applies as it is (mode `config`). None of them is the bare model: mode A offers no tools and runs no verifier checks, but keeps the suite's system prompt, the scaled thinking budget and the evidence ledger with its writer (the runner says so). For the model alone use `--mode bare`, for single layers `--minus` and `--plus` (above).
 
 | Mode | Tools (`max_search_depth`) | Claim verification | Arithmetic recheck, checkers | Consistency review |
 |---|---|---|---|---|
@@ -284,9 +345,24 @@ Each run writes `${DATA_DIR:-data}/evals/<run-id>/` in the data folder (default 
 - `items/<id>.json`, written as soon as the item is done: set, mode, the messages sent, the draft, the final answer, the reasoning trace, the verification report, timings (first reasoning token, first answer token, total), model calls, character counts, error, code scores of the final answer and of the draft, and the protocol artefacts found in the final answer.
 - `summary.json`: the metrics for all items and per set.
 
+The manifest also records what ran: `arm` (base `config` or `bare`, the layers switched on and off), `layers` (every layer on or off; a layer counts as on only with what it needs), `tools` (the tools offered), `thinking` (the budget settings and the server cap the config assumes), `bare` (the system line and `max_tokens` of the bare call, `--mode bare` alone; null for a `bare-plus-…` arm, which runs through the agent with its layers on) and `evals` (the eval settings).
+
+Every item log also has `stages`: one record per model call (`reasoner`, `answer_retry`, `judge`, `research_judge`, `review`, `ledger`, `ledger_repair`, `writer`, `independent`, `bare`), per tool call (`tool`: called by the model, `research`: the verifier's re-search) and per code check (`arithmetic`, `carry_forward`, `checkers`, `claims`), each with its start, its seconds and, for a model call, the seconds to the first chunk, the tokens of the backend's `usage`, the characters received, the finish reason and the call's own request fields. The token counts need `usage` in the stream: `evals.request` in the config (shipped: `stream_options: {include_usage: true}`) is merged into every model call of an eval run, in every arm alike. A log of a general item also has its category, request type, language, probes and `offline_base`; `budget_s` and `within_budget` (`evals.budgets_s`: chat 15 s, factual 120 s, audit 600 s; a type without a budget is timed, not judged); `science_calls` (the model's own calls of a tool listed in `evals.science_tools`), `science_research` (the verifier's re-searches with one: they check claims and are no drift) and `drift_auto` (true when an item outside `evals.science_categories` has a science call; null for a science item); and `check`, its code check on the final answer and on the draft.
+
 Run again with the same `--run-id` to resume: items with a log are skipped, and with `--retry-errors` the failed ones run again. A run is resumed only when nothing that defines it changed: mode, config, commit, dirty flag and uncommitted changes, model file sha256, every store's path, size and mtime, and sampling; each eval file it uses must be in the manifest with the same sha256 (fewer files are fine). Anything else is refused with the names of the fields that differ: use a new `--run-id`. A reviewed run keeps its review metrics.
 
+Measurements (per set, for runs with a stage log): `no_answer`, `truncated` (cut at the token limit), `total_s`, `stages` (records, seconds and tokens per stage), `request_types` (median and 90th percentile seconds against the budget), `drift` (non-science items with a science call of the model, their science calls and the verifier's science re-searches) and the code checks below.
+
 Code metrics (per set): items, errors, empty answers, solved items, fact questions right strictly and loosely, parts right (and right on their lines only), verdict parts right (and how many were read from the body), missing answer lines, false corrections (a part right in the draft and wrong in the final answer) and true corrections, answers with protocol artefacts (`[S#]` ids, the draft marker, verification or consistency headings, outcome labels, raw tool-call markup; tool-call leaks are also counted on their own), the S6 checks (no artefacts, at most `max_chars`, at most `max_latency_s`), latency median and 90th percentile, model calls, and the claim outcomes and fixes of the verifier (supported claims, unmarked contradictions, consistency, arithmetic and checker fixes).
+
+### Code checks of general items
+
+Two kinds, both on the final answer and on the draft, so a check of the suite that breaks an answer shows (`broken`, `lost`):
+
+- `python_tests`: the answer's code is run against the item's tests. **This executes model-written code on your machine**, in a child process with a temp folder, a clean environment, limits on time (`evals.python_tests.timeout_s`), memory and file size, and no network (its own network namespace where the system allows one, else sockets are disabled in the child). While the code and the tests run, an audit hook refuses any write, delete, rename or permission change outside the temp folder (your own files, `/mnt/c` in WSL included, stay as they are) and any new or signalled process. It is a guard against accidents, not a jail: code that means to escape can, with your rights. `evals.python_tests.enabled: false` switches it off. The code is every fenced block tagged `python` (without one: an untagged block, or the whole answer, that defines the item's `entry_point`); the blocks run in order in one namespace, a block that fails is skipped (an example that shows an error must not hide the function above it), then the tests run. With `language: sql` the last SQL blocks are tried as the variable `sql`. Result: `passed`, `failed`, `no_code`, `timeout` or `error`.
+- `exact` and `numeric`: quick signals. The reference value is looked for anywhere in the free text: a number within the tolerance (digit groups, decimal commas, powers of ten, fractions, percentages and scale words such as `80k` or `80 тыс.` are read), or the text as a whole token, ignoring case. It says `found` or `missing`, never right or wrong; the review decides.
+
+`uv run python -m evals.rescore RUN` computes both again from the stored answers, without a model.
 
 ### Report
 
@@ -295,7 +371,9 @@ uv run python -m evals.report 20261023-1400-A 20261023-1500-B             # one 
 uv run python -m evals.report 20261023-1500-B --base 20261023-1400-A      # plus paired deltas on the same items
 ```
 
-It prints markdown tables: code metrics per set and mode (with the fact questions' strict and loose scores, `strict / loose of n`, the parts right line-only next to the body-first parts, and the verdict parts read from the body; `–` for runs scored before body reading), review metrics when the run was reviewed, and with `--base` the change on the items both runs have (solved, parts right, items better and worse, artefacts, latency, review score).
+For runs with a stage log it prints the measurement tables: answers not given, automatic drift and the code checks per set; seconds by request type against the budget; time and tokens per stage with their share of the run; the review metrics of general items; and with `--base` the paired changes of general items (drift, code checks, answers not given, latency, confident falsehoods, review score). Runs of general items alone are left out of the answer-line table.
+
+For the older sets it prints markdown tables: code metrics per set and mode (with the fact questions' strict and loose scores, `strict / loose of n`, the parts right line-only next to the body-first parts, and the verdict parts read from the body; `–` for runs scored before body reading), review metrics when the run was reviewed, and with `--base` the change on the items both runs have (solved, parts right, items better and worse, artefacts, latency, review score).
 
 ### Blind review
 
@@ -324,3 +402,28 @@ uv run python -m evals.review merge data/evals/review-01
 ```
 
 `merge` checks the file (every blind id reviewed once, score 0-10, counts whole numbers, defect and verdict ids from the key, each falsehood tagged and counted) and lists every problem it finds. It then writes `reviews.json` into each run folder and adds the review metrics to its `summary.json`: confident falsehoods per answer and by tag (reviews that carry the count), mean score, share of planted defects found, verdicts right, omissions, unsupported additions, unsupported statements presented as verified, final-vs-analysis contradictions, must-not violations and new errors by tag.
+
+For runs of general items the pack has format 2:
+
+```bash
+uv run python -m evals.review pack --runs bare=base-bare-s7 bare=base-bare-s8 suite=base-suite-s7 suite=base-suite-s8 \
+    --out data/evals/review-02 --parts 4 [--seed N]
+uv run python -m evals.review merge data/evals/review-02
+uv run python -m evals.review stats data/evals/review-02 --base bare
+```
+
+`ARM=RUN` puts a run into an arm; the runs of one arm are its repeats, in the order given (a run without a name is its own arm). Every answer of one item goes to the same part (`part01.md`, ...; `pack.md` for one part), so one reviewer grades all arms of an item, and the answers are shuffled inside the part. A block shows the item's category, request type, language, `offline_base` and probes, the earlier turns and the request, the reference (answer, key points, the reference value or the result of the code check, sources, notes), the `must_not` entries as hints and the answer; an answer the model did not give reads `(no answer)` in every arm. `brief.md` in the pack is the reviewer's brief (`evals/reviewer-brief.md`). The mapping (blind id to run, arm and item) is written next to the pack folder, not in it (`data/evals/review-02.mapping.json`), so the folder can be handed to reviewers as it is; `merge` and `stats` read it from there. The reviewer writes `reviews-part01.yaml` (and so on), one block per answer:
+
+```yaml
+- blind_id: R001
+  score: 7                       # overall, 1-10
+  confident_falsehoods: 1        # = entries under falsehoods: statements asserted as fact that are false
+  falsehoods: [{kind: false_fact, central: true, what: "..."}]   # kind: false_fact | invented | invalid_inference | self_contradiction
+  domain_drift: false            # a non-science request answered in chemistry or physics terms
+  needless_idk: false            # "I don't know" although the offline base holds the facts (offline_base yes | likely)
+  needless_doubts: 0             # = entries under doubts: caveats or flags put on right statements
+  doubts: []
+  notes: "one line"
+```
+
+`merge` reads every `reviews*.yaml` of the folder, lists every problem it finds (unknown or repeated blind ids, a missing review, a score outside 1-10, counts that differ from their lists, drift marked on a science item, a needless "I don't know" on an item whose base does not hold the facts) and then writes `reviews.json` and the review metrics into each run. `stats` prints the metrics per arm (in the order of `--runs`) and, for every other arm against the base arm (`--base`, default the first arm of `--runs`), the paired comparison item by item, in total and by category, request type, language and probe. An item is one pair: each arm's falsehoods and score on it are averaged over its repeats (repeats of one item are not independent). It shows the items and answers, confident falsehoods, the items with fewer, more and the same falsehoods (with the two-sided sign test of fewer against more), the mean score, the items with a higher, lower and the same mean score (with its sign test), domain drift, needless "I don't know" and needless doubts.

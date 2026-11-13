@@ -16,6 +16,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +24,7 @@ import httpx
 
 from .config import Config
 from .llm import LLMClient, UpstreamError, estimate_tokens
+from .stages import CHECK, stage
 from .verifier import _say, complete, fix_arithmetic, run_checkers
 
 log = logging.getLogger(__name__)
@@ -393,7 +395,9 @@ class Evidence:
         self.max_tokens = cfg.model_backend.max_tokens
         self.chars_per_token = cfg.model_backend.chars_per_token
         tb = cfg.reasoning_policy.thinking_budget  # an item call thinks up to the cap, then has room for its JSON;
-        room = {tb.field: tb.max_tokens, "max_tokens": tb.max_tokens + self.cfg.item_answer_tokens} if tb.field else {}
+        room = {"max_tokens": tb.max_tokens + self.cfg.item_answer_tokens} if tb.field else {}
+        if tb.field and tb.enabled:  # the budget itself is sent only while the thinking budget is switched on
+            room = {tb.field: tb.max_tokens, **room}
         self.item_request = {**room, **self.cfg.item_request}  # without the field: the old setup, model's max_tokens
 
     def triggered(self, question: str) -> list[tuple[str, str]]:
@@ -405,12 +409,14 @@ class Evidence:
         return estimate_tokens(messages, self.chars_per_token) <= self.context - (
             request.get("max_tokens") or self.max_tokens)
 
-    async def _ask(self, messages: list[dict[str, Any]], request: dict[str, Any]) -> tuple[str | None, str]:
-        """(reply, problem): the reply text, or None and why there is none."""
+    async def _ask(self, messages: list[dict[str, Any]], request: dict[str, Any],
+                   stage_name: str) -> tuple[str | None, str]:
+        """(reply, problem): the reply text, or None and why there is none. `stage_name` names the call in an
+        open stage log."""
         if not self._fits(messages, request):
             return None, TOO_LONG
         try:
-            return await complete(self.llm, messages, request), ""
+            return await complete(self.llm, messages, request, stage_name), ""
         except (UpstreamError, httpx.HTTPError) as e:
             log.error("evidence ledger call failed: %s", e)
             return None, f"failed: {e}"
@@ -429,7 +435,7 @@ class Evidence:
         if tools and not self._fits(messages, self.cfg.ledger_request):
             messages[1]["content"] = head + f"Draft answer:\n{draft}"
             yield _say("- tool results left out (context budget)\n")
-        reply, problem = await self._ask(messages, self.cfg.ledger_request)
+        reply, problem = await self._ask(messages, self.cfg.ledger_request, "ledger")
         parsed = parse_ledger(reply, items) if reply is not None else None
         if parsed is None:
             why = f"no readable ledger ({problem or 'not valid JSON'})"
@@ -441,7 +447,7 @@ class Evidence:
             yield _say(f"- no entry for {', '.join(gone)}; asking again\n")
             messages += [{"role": "assistant", "content": reply},
                          {"role": "user", "content": self.cfg.repair_prompt.replace("{missing}", ", ".join(gone))}]
-            more, _ = await self._ask(messages, self.cfg.ledger_request)
+            more, _ = await self._ask(messages, self.cfg.ledger_request, "ledger_repair")
             wanted = {key(i) for i in gone}
             if more and (extra := parse_ledger(more, items)):
                 entries += [e for e in extra[0] if key(e.id) in wanted]
@@ -468,11 +474,15 @@ class Evidence:
             yield _say(f"- {len(entries)} items, no status changed: the answer stays as drafted\n")
             yield Settled(draft, _report(entries, skipped, gone, False, ind=ind))
             return
+        if not self.cfg.writer:  # the ledger only reports: the answer stays the checked draft
+            yield _say("- writer off: the answer stays as drafted\n")
+            yield Settled(draft, _report(entries, skipped, gone, False, "writer off", ind))
+            return
 
         messages = [{"role": "system", "content": self.cfg.writer_prompt},
                     {"role": "user", "content": f"Request:\n{question}\n\nSettled ledger:\n"
                                                 f"{render(entries, skipped, gone)}\n\nDraft answer:\n{draft}"}]
-        written, problem = await self._ask(messages, self.cfg.writer_request)
+        written, problem = await self._ask(messages, self.cfg.writer_request, "writer")
         answer = (written or "").strip()
         if not answer:
             why = f"no answer written ({problem or 'empty reply'})"
@@ -483,12 +493,14 @@ class Evidence:
         if self.checks:
             lines, v = [], self.verifier
             if v.arithmetic_check:
-                answer, fixed, _ = fix_arithmetic(answer, v.arithmetic_rel_tol, v.arithmetic_prefixes,
-                                                  question if v.keep_quotes else "", v.arithmetic_strict_parse,
-                                                  v.arithmetic_max_change)
+                with stage("arithmetic", CHECK):
+                    answer, fixed, _ = fix_arithmetic(answer, v.arithmetic_rel_tol, v.arithmetic_prefixes,
+                                                      question if v.keep_quotes else "", v.arithmetic_strict_parse,
+                                                      v.arithmetic_max_change)
                 lines += [f"- arithmetic: {a['expression']} = {a['stated']} → {a['fixed']}\n"
                           for a in fixed if "note" not in a]
-            answer, found = run_checkers(answer, v.checkers, question, v.keep_quotes, v.checkers_clear_only)
+            with stage("checkers", CHECK) if v.checkers else nullcontext():
+                answer, found = run_checkers(answer, v.checkers, question, v.keep_quotes, v.checkers_clear_only)
             lines += [f"- {c['checker']}: {c['text']!r} → {c['fixed']!r}\n" for c in found if c["fixed"] is not None]
             if lines:
                 yield _say("".join(lines))
@@ -519,7 +531,7 @@ class Evidence:
                 if not dropped:
                     dropped = True
                     yield _say("- tool results left out (context budget)\n")
-            reply, problem = await self._ask(messages, self.item_request)
+            reply, problem = await self._ask(messages, self.item_request, "independent")
             if problem != TOO_LONG:
                 ind.calls += 1
             if (e := parse_entry(reply, item, items) if reply is not None else None) is None:

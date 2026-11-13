@@ -25,6 +25,7 @@ from .l1.store import STOPWORDS, Value
 from .l1.text import parse_formula, to_hill
 from .l1.units import parse_unit, read_unit, same_unit
 from .llm import LLMClient, UpstreamError, estimate_tokens
+from .stages import CHECK, MODEL, stage
 from .tools import SEARCH, Knowledge, Source, Sources, term_share
 
 log = logging.getLogger(__name__)
@@ -887,16 +888,18 @@ class Verifier:
         args = (self.cfg.arithmetic_rel_tol, self.cfg.arithmetic_prefixes, task, self.cfg.arithmetic_strict_parse,
                 self.cfg.arithmetic_max_change)
         if self.cfg.arithmetic_check:
-            draft, arithmetic, checked = fix_arithmetic(draft, *args)
+            with stage("arithmetic", CHECK):
+                draft, arithmetic, checked = fix_arithmetic(draft, *args)
         kept = [a for a in arithmetic if "note" in a]  # quoted from the task: only in the trace
         arithmetic = [a for a in arithmetic if "note" not in a]
         first = len(arithmetic)
         if self.cfg.carry_fixes_forward and arithmetic:
-            draft, carried = carry_forward(draft, arithmetic, question, task, self.cfg.arithmetic_strict_parse)
-            if any(a["carried"] for a in arithmetic):  # once more: a later computation may have used an old value
-                draft, again, _ = fix_arithmetic(draft, *args)
-                arithmetic += [a for a in again if "note" not in a]
-                kept += [a for a in again if "note" in a and a not in kept]
+            with stage("carry_forward", CHECK):
+                draft, carried = carry_forward(draft, arithmetic, question, task, self.cfg.arithmetic_strict_parse)
+                if any(a["carried"] for a in arithmetic):  # once more: a later computation may have used an old value
+                    draft, again, _ = fix_arithmetic(draft, *args)
+                    arithmetic += [a for a in again if "note" not in a]
+                    kept += [a for a in again if "note" in a and a not in kept]
         if self.cfg.arithmetic_answer_lines and arithmetic:
             draft, lines = fix_answer_lines(draft, arithmetic)
         if checked:
@@ -910,34 +913,72 @@ class Verifier:
                        + "".join(f"- answer line: {a['stated']} → {a['fixed']} (as {a['expression']})\n"
                                  for a in lines))
         arithmetic += lines
-        draft, checks = run_checkers(draft, self.cfg.checkers, question, self.cfg.keep_quotes,
-                                     self.cfg.checkers_clear_only)
+        checks: list[dict[str, Any]] = []
+        if self.cfg.checkers:
+            with stage("checkers", CHECK):
+                draft, checks = run_checkers(draft, self.cfg.checkers, question, self.cfg.keep_quotes,
+                                             self.cfg.checkers_clear_only)
         for name in self.cfg.checkers:
             found = [c for c in checks if c["checker"] == name]
             if found:
                 yield _say(f"\n\nCheck {name}: {len(found)} finding{'s' if len(found) != 1 else ''}\n" + "".join(
                     f"- {c['text']!r} → {c['fixed']!r} ({c['note']})\n" if c["fixed"] is not None
                     else f"- {c['text']!r}: {c['note']}\n" for c in found))
-        derived = self.cfg.skip_derived_claims
-        claims = split_claims(draft, skip_labelled=derived and self.cfg.skip_labelled_claims)
-        yield _say(f"\n\nVerification: {len(claims)} claims\n")
-        pending = []
-        given, computed = [n.value for n in read_numbers(question)], results(draft)
-        mask = quoted(draft, question) if self.cfg.keep_quotes else []
-        for c in claims:
-            if is_quotation(draft, mask, c.start, c.end):  # before the code checks: they would rewrite it too
-                c.outcome, c.note = UNVERIFIED, "quoted from the task: not checked"
-                yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
-            elif found := code_check(c, sources, self.cfg.rel_tol, self.cfg.unit_checks):
-                c.outcome, c.ids, c.fixed, c.note = found
-                c.note = f"code: {c.note}"
-                yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
-            elif derived and is_computation(c, given, computed, self.cfg.rel_tol):
-                c.outcome, c.note = UNVERIFIED, "computation: checked in code, not against sources"
-                yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
-            else:
-                pending.append(c)
+        claims: list[Claim] = []
+        answer, fixes = draft, []
+        if self.cfg.record_check or self.cfg.claim_judge:  # else no claim stage: the draft goes on as it is
+            checking = self._check_claims(question, draft, sources, claims)
+            try:
+                async for line in checking:
+                    yield line
+            finally:
+                await checking.aclose()
+            answer = render(draft, claims, self.cfg.answer_style == "annotated", self.cfg.strip_source_ids)
+        if self.cfg.consistency_check:
+            review = self._consistency(question, answer)
+            try:
+                async for item in review:
+                    if isinstance(item, tuple):
+                        answer, fixes = item
+                    else:
+                        yield item
+            finally:
+                await review.aclose()
+        yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks)
 
+    async def _check_claims(self, question: str, draft: str, sources: Sources, claims: list[Claim]):
+        """The claim stage: split the draft into `claims` (filled in place), check them against the records in
+        code (verifier.record_check), judge the rest and re-search what is not supported (verifier.claim_judge).
+        Sets every claim's outcome. Yields reasoning lines."""
+        derived = self.cfg.skip_derived_claims
+        pending = []
+        with stage("claims", CHECK):
+            claims += split_claims(draft, skip_labelled=derived and self.cfg.skip_labelled_claims)
+            yield _say(f"\n\nVerification: {len(claims)} claims\n")
+            given, computed = [n.value for n in read_numbers(question)], results(draft)
+            mask = quoted(draft, question) if self.cfg.keep_quotes else []
+            for c in claims:
+                if is_quotation(draft, mask, c.start, c.end):  # before the code checks: they would rewrite it too
+                    c.outcome, c.note = UNVERIFIED, "quoted from the task: not checked"
+                    yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
+                elif self.cfg.record_check and (
+                        found := code_check(c, sources, self.cfg.rel_tol, self.cfg.unit_checks)):
+                    c.outcome, c.ids, c.fixed, c.note = found
+                    c.note = f"code: {c.note}"
+                    yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
+                elif derived and is_computation(c, given, computed, self.cfg.rel_tol):
+                    c.outcome, c.note = UNVERIFIED, "computation: checked in code, not against sources"
+                    yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
+                else:
+                    pending.append(c)
+
+        if not self.cfg.claim_judge:  # no judge call, so no re-search either: nothing could rate its results
+            for c in pending:
+                c.outcome, c.note = UNVERIFIED, "not judged: the claim judge is off"
+            if pending:
+                yield _say(f"- {len(pending)} claim{'s' if len(pending) != 1 else ''} not judged"
+                           " (the claim judge is off)\n")
+            pending = []
         cited = [s for s in sources.items if any(s.id in c.cites for c in pending)]
         if pending and cited:
             async for line in self._judge(question, pending, cited):
@@ -951,13 +992,15 @@ class Verifier:
         for c in research:
             query = plain(c.text)
             yield _say(f"\n> {SEARCH}(query={json.dumps(query, ensure_ascii=False)})  [re-search C{c.n}]\n")
-            _, lines, ids = self.knowledge.run(SEARCH, json.dumps({"query": query}), sources, self.cfg.research_k)
+            _, lines, ids = self.knowledge.run(SEARCH, json.dumps({"query": query}), sources, self.cfg.research_k,
+                                               internal=True)
             yield _say("".join(f"- {line}\n" for line in lines))
             found_for[c.n] = ids
         again = [c for c in research if found_for.get(c.n) or c.cites]
         if again:
             wanted = {i for c in again for i in [*found_for.get(c.n, []), *c.cites]}
-            async for line in self._judge(question, again, [s for s in sources.items if s.id in wanted]):
+            async for line in self._judge(question, again, [s for s in sources.items if s.id in wanted],
+                                          "research_judge"):
                 yield line
         for c in research:
             if not c.outcome:
@@ -972,18 +1015,6 @@ class Verifier:
                 yield _say(f"- C{c.n} corrected from {', '.join(c.ids)}: {plain(c.fixed or '')}\n")
             elif c.outcome == REMOVED:
                 yield _say(f"- C{c.n} removed (contradicted by {', '.join(c.ids)})\n")
-        answer, fixes = render(draft, claims, self.cfg.answer_style == "annotated"), []
-        if self.cfg.consistency_check:
-            review = self._consistency(question, answer)
-            try:
-                async for item in review:
-                    if isinstance(item, tuple):
-                        answer, fixes = item
-                    else:
-                        yield item
-            finally:
-                await review.aclose()
-        yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks)
 
     async def _consistency(self, question: str, answer: str):
         """One review call over the whole answer and the task. Yields reasoning lines, then (answer, fixes)."""
@@ -994,7 +1025,7 @@ class Verifier:
             yield answer, []
             return
         try:
-            reply = await self._complete(messages)
+            reply = await self._complete(messages, "review")
         except (UpstreamError, httpx.HTTPError) as e:
             log.error("consistency review failed: %s", e)
             yield _say(f"\n\nConsistency review failed: {e}\n")
@@ -1022,8 +1053,9 @@ class Verifier:
             yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
         yield answer, applied
 
-    async def _judge(self, question: str, claims: list[Claim], passages: list[Source]):
-        """One judge call for these claims; sets their outcome. Yields reasoning lines."""
+    async def _judge(self, question: str, claims: list[Claim], passages: list[Source], stage_name: str = "judge"):
+        """One judge call for these claims (named `stage_name` in an open stage log); sets their outcome. Yields
+        reasoning lines."""
         passages = list(passages)
         while True:  # leave passages out from the end until the call fits the context
             user = (
@@ -1038,7 +1070,7 @@ class Verifier:
             yield _say(f"- {passages.pop().id} left out of the judge call (context budget)\n")
         given = {s.id for s in passages}
         try:
-            reply = await self._complete(messages)
+            reply = await self._complete(messages, stage_name)
         except (UpstreamError, httpx.HTTPError) as e:
             log.error("judge call failed: %s", e)
             yield _say(f"- judge failed: {e}\n")
@@ -1066,15 +1098,17 @@ class Verifier:
                 c.outcome = NO_CLAIM
             yield _say(f"- C{c.n} {c.note}\n")
 
-    async def _complete(self, messages: list[dict[str, Any]]) -> str:
+    async def _complete(self, messages: list[dict[str, Any]], stage_name: str) -> str:
         """The judge's answer text; its reasoning tokens, if any, are ignored."""
-        return await complete(self.llm, messages, self.cfg.request)
+        return await complete(self.llm, messages, self.cfg.request, stage_name)
 
 
-async def complete(llm: LLMClient, messages: list[dict[str, Any]], request: dict[str, Any]) -> str:
-    """The answer text of one call with these request fields; its reasoning tokens, if any, are ignored."""
+async def complete(llm: LLMClient, messages: list[dict[str, Any]], request: dict[str, Any],
+                   stage_name: str = MODEL) -> str:
+    """The answer text of one call with these request fields (named `stage_name` in an open stage log); its
+    reasoning tokens, if any, are ignored."""
     parts: list[str] = []
-    stream = llm.stream_chat(messages, **request)
+    stream = llm.stream_chat(messages, stage=stage_name, **request)
     try:
         async for chunk in stream:
             parts.append(((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content") or "")
@@ -1091,16 +1125,17 @@ def strip_cites(text: str) -> str:
     return _CITE_MARKS.sub("", text)
 
 
-def render(draft: str, claims: list[Claim], annotated: bool = True) -> str:
+def render(draft: str, claims: list[Claim], annotated: bool = True, strip_ids: bool = True) -> str:
     """The draft with every claim rewritten by its outcome. Annotated: labels, ids and the summary line.
-    Plain: fixes applied and contradicted claims without a fix dropped, silently; no ids, no summary."""
+    Plain: fixes applied and contradicted claims without a fix dropped, silently; no summary, and no ids unless
+    `strip_ids` is off (verifier.strip_source_ids)."""
     out = draft
     for c in sorted(claims, key=lambda c: c.start, reverse=True):
         end = c.end + (1 if c.outcome == REMOVED and out[c.end : c.end + 1] == " " else 0)
         out = out[: c.start] + (_render(c) if annotated else _plain(c)) + out[end:]
     out = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]*(?:\r?\n|$)", "", out)  # list items left empty by removals
     if not annotated:
-        return strip_cites(out).rstrip()
+        return (strip_cites(out) if strip_ids else out).rstrip()
     counted = [c for c in claims if c.outcome != NO_CLAIM]
     if not counted:
         return f"{out.rstrip()}\n\n*Verification: no checkable claims.*"
