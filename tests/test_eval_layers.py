@@ -401,6 +401,7 @@ def test_main_runs_a_layer_arm_and_names_it(cli, fake, capsys):
     man = read(runs / "p1", "manifest.json")
     assert man["arm"] == {"base": "bare", "plus": ["arithmetic"], "minus": []} and man["tools"] == []
     assert [n for n, state in man["layers"].items() if state] == ["arithmetic"]
+    assert man["bare"] is None  # the agent ran it, with a layer on: not the bare call
     assert all("tools" not in b and "thinking_budget_tokens" not in b for b in fake.bodies)
 
 

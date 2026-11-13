@@ -180,6 +180,15 @@ async def test_marker_like_text_is_kept_when_the_switch_is_off(cfg, fake, strip,
     assert answer == expected
 
 
+@pytest.mark.parametrize("strip, expected", [(False, "Caffeine is a stimulant found in coffee [S1]. It is bitter."),
+                                             (True, "Caffeine is a stimulant found in coffee. It is bitter.")])
+async def test_the_switch_holds_after_the_claim_check(cfg, fake, store, strip, expected):
+    cfg.verifier.strip_source_ids, cfg.verifier.claim_judge = strip, False
+    fake.scripts = [LOOKUP, [content("Caffeine is a stimulant found in coffee [S1]. It is bitter.")]]
+    answer, trace, report = await run(agent(cfg, fake, store))
+    assert answer == expected and "Verification: 2 claims" in trace and len(report["claims"]) == 2
+
+
 # --- verifier: the store, the record check, the claim judge -------------------------------------------
 
 

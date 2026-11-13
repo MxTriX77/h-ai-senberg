@@ -19,17 +19,20 @@ def item_fields(q: dict[str, Any], stage_log: list[dict[str, Any]], total_s: flo
     """The measurement fields of an item log. `settings`: the config's `evals` section (None: no budgets and no
     drift, e.g. when the runner is used without a config). An item of the general schema carries its category,
     request type, language, probes, `offline_base` and split into the log; `budget_s` and `within_budget` follow
-    its request type; `science_calls` counts the tool records (the model's calls and the verifier's re-searches)
-    of a science tool, and `drift_auto` says whether an item outside the science categories has any (None for an
-    item of a science category or without a category: drift does not apply)."""
+    its request type; `science_calls` counts the model's own calls of a science tool (stage `tool`) and
+    `science_research` the verifier's re-searches with one (stage `research`: they check claims, they are no
+    drift); `drift_auto` says whether an item outside the science categories has a science call (None for an item
+    of a science category or without a category: drift does not apply)."""
     general = "category" in q
     fields: dict[str, Any] = {k: q[k] for k in ITEM_FIELDS} if general else {}
     if settings is None:
-        return {**fields, "science_calls": None, "drift_auto": None,
+        return {**fields, "science_calls": None, "science_research": None, "drift_auto": None,
                 **({"budget_s": None, "within_budget": None} if general else {})}
-    calls = sum(s["kind"] == "tool" and s.get("tool") in settings.science_tools for s in stage_log)
+    science = Counter(s["stage"] for s in stage_log if s["kind"] == "tool" and s.get("tool") in settings.science_tools)
+    calls = science["tool"]
     outside = general and q["category"] not in settings.science_categories
-    fields |= {"science_calls": calls, "drift_auto": calls > 0 if outside else None}
+    fields |= {"science_calls": calls, "science_research": science["research"],
+               "drift_auto": calls > 0 if outside else None}
     if general:
         budget = settings.budgets_s.get(q["request_type"])
         fields |= {"budget_s": budget, "within_budget": None if budget is None else total_s <= budget}
@@ -79,7 +82,8 @@ def summary_blocks(logs: list[dict[str, Any]]) -> dict[str, Any]:
         blocks["request_types"] = types
     if outside := [r for r in ok if r.get("drift_auto") is not None]:  # the items outside the science categories
         blocks["drift"] = {"items": len(outside), "auto": sum(r["drift_auto"] for r in outside),
-                           "science_calls": sum(r["science_calls"] for r in outside)}
+                           "science_calls": sum(r["science_calls"] for r in outside),
+                           "science_research": sum(r["science_research"] for r in outside)}
     checked = [r for r in ok if r.get("check")]
     tests = [r["check"] for r in checked if r["check"]["type"] == "python_tests"]
     if tests:

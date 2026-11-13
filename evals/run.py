@@ -546,12 +546,12 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
     """What a run depends on: code, config after the mode, model file, knowledge setting and stores (see
     store_identities), eval files, GPU, sampling; and what ran: the arm (`arm`: base, plus and minus; None for
     the modes A to D), every layer on or off (layers.effective; all off for the bare call), the tools offered
-    (`knowledge`: the tools as built), the thinking settings, the bare request of a bare arm and the eval
-    settings."""
+    (`knowledge`: the tools as built), the thinking settings, the request of the bare call (--mode bare alone; a
+    bare-plus arm runs through the agent, so it has none) and the eval settings."""
     backend, model = cfg.model_backend, served_model(cfg)
     tb = cfg.reasoning_policy.thinking_budget
-    bare = arm is not None and arm["base"] == layers.BARE
-    acts = dict.fromkeys(layers.switches(cfg), False) if bare and not arm["plus"] else layers.effective(cfg, knowledge)
+    bare = arm is not None and arm["base"] == layers.BARE and not arm["plus"]  # the bare call, not the agent
+    acts = dict.fromkeys(layers.switches(cfg), False) if bare else layers.effective(cfg, knowledge)
     return {
         "run_id": run_id,
         "git": _git(cfg.root),

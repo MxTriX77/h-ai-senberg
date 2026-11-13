@@ -56,21 +56,33 @@ def test_item_fields_carry_the_items_attributes(cfg):
         "category": "facts", "request_type": "factual", "lang": "ru", "probes": ["drift_bait"], "offline_base": "no",
         "split": "dev"}
     old = item_fields({"id": "f1", "set": "S1", "question": "q"}, [tool("search_knowledge")], 1.0, cfg.evals)
-    assert old == {"science_calls": 1, "drift_auto": None}  # an item of an older set: counted, never judged
+    assert old == {"science_calls": 1, "science_research": 0, "drift_auto": None}  # an older set: counted, never judged
     assert item_fields(q, [tool("search_knowledge")], 1.0, None) == {
         **{k: q[k] for k in ("category", "request_type", "lang", "probes", "offline_base", "split")},
-        "science_calls": None, "drift_auto": None, "budget_s": None, "within_budget": None}
+        "science_calls": None, "science_research": None, "drift_auto": None, "budget_s": None, "within_budget": None}
 
 
-def test_drift_is_a_science_call_on_a_non_science_item(cfg):
+def test_drift_is_a_science_call_of_the_model_on_a_non_science_item(cfg):
     calls = [tool("search_knowledge"), tool("search_knowledge", "research"), tool("search_knowledge", "research"),
              tool("calculate"), model("reasoner", 1.0)]
     coding = item_fields(ready(item("coding-dev-001")), calls, 1.0, cfg.evals)
-    assert (coding["science_calls"], coding["drift_auto"]) == (3, True)
+    assert (coding["science_calls"], coding["science_research"], coding["drift_auto"]) == (1, 2, True)
+    checked = item_fields(ready(item("coding-dev-002")), calls[1:], 1.0, cfg.evals)
+    assert (checked["science_calls"], checked["science_research"], checked["drift_auto"]) == (0, 2, False)
     science = item_fields(ready(item("science-dev-001")), [tool("lookup_constant")], 1.0, cfg.evals)
     assert (science["science_calls"], science["drift_auto"]) == (1, None)  # expected there: drift does not apply
     math = item_fields(ready(item("math-dev-001")), [tool("calculate"), tool("compute")], 1.0, cfg.evals)
-    assert (math["science_calls"], math["drift_auto"]) == (0, False)
+    assert (math["science_calls"], math["science_research"], math["drift_auto"]) == (0, 0, False)
+
+
+@pytest.mark.anyio
+async def test_the_verifiers_re_search_is_no_drift(cfg, fake, built_store):
+    q = ready(item("coding-dev-001", request_type="chat", prompt="Where does a Python list start?"))
+    fake.scripts = [[content("A Python list starts at index 0, so the third element is at index 2."), finish("stop")]]
+    agent = Agent(cfg, fake.client(cfg.model_backend), Knowledge(L1Store(built_store), cfg))
+    log = await run_one(agent, q, "config", cfg.evals)
+    assert [s["stage"] for s in log["stages"] if s["kind"] == "tool"] == ["research"]  # the model called no tool
+    assert log["drift_auto"] is False and (log["science_calls"], log["science_research"]) == (0, 1)
 
 
 @pytest.mark.anyio
@@ -141,7 +153,7 @@ def test_drift_and_check_blocks():
     passed, failed = {"status": "passed", "passed": True}, {"status": "failed", "passed": False}
     found, missing = {"status": "found", "passed": True}, {"status": "missing", "passed": False}
     logs = [
-        general_log(item("coding-dev-001"), drift_auto=True, science_calls=3,
+        general_log(item("coding-dev-001"), drift_auto=True, science_calls=3, science_research=4,
                     check={"type": "python_tests", "final": failed, "draft": passed}),
         general_log(item("coding-dev-002"), check={"type": "python_tests", "final": passed, "draft": passed}),
         general_log(item("coding-dev-003"), check={"type": "python_tests", "final": {"status": "no_code", "passed": False},
@@ -151,7 +163,7 @@ def test_drift_and_check_blocks():
         general_log(item("facts-dev-001"), check={"type": "exact", "final": found, "draft": missing}),
     ]
     s = summarize(logs)
-    assert s["drift"] == {"items": 5, "auto": 1, "science_calls": 3}  # the science item is not judged on drift
+    assert s["drift"] == {"items": 5, "auto": 1, "science_calls": 3, "science_research": 4}  # science: not judged
     assert s["python_tests"] == {"items": 3, "passed": 1, "failed": 1, "no_code": 1, "timeout": 0, "error": 0,
                                  "draft_passed": 2, "broken": 1, "repaired": 0}
     assert s["reference_values"] == {"exact": {"items": 1, "found": 1, "draft_found": 0, "lost": 0, "gained": 1},

@@ -933,7 +933,7 @@ class Verifier:
                     yield line
             finally:
                 await checking.aclose()
-            answer = render(draft, claims, self.cfg.answer_style == "annotated")
+            answer = render(draft, claims, self.cfg.answer_style == "annotated", self.cfg.strip_source_ids)
         if self.cfg.consistency_check:
             review = self._consistency(question, answer)
             try:
@@ -1125,16 +1125,17 @@ def strip_cites(text: str) -> str:
     return _CITE_MARKS.sub("", text)
 
 
-def render(draft: str, claims: list[Claim], annotated: bool = True) -> str:
+def render(draft: str, claims: list[Claim], annotated: bool = True, strip_ids: bool = True) -> str:
     """The draft with every claim rewritten by its outcome. Annotated: labels, ids and the summary line.
-    Plain: fixes applied and contradicted claims without a fix dropped, silently; no ids, no summary."""
+    Plain: fixes applied and contradicted claims without a fix dropped, silently; no summary, and no ids unless
+    `strip_ids` is off (verifier.strip_source_ids)."""
     out = draft
     for c in sorted(claims, key=lambda c: c.start, reverse=True):
         end = c.end + (1 if c.outcome == REMOVED and out[c.end : c.end + 1] == " " else 0)
         out = out[: c.start] + (_render(c) if annotated else _plain(c)) + out[end:]
     out = re.sub(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]*(?:\r?\n|$)", "", out)  # list items left empty by removals
     if not annotated:
-        return strip_cites(out).rstrip()
+        return (strip_cites(out) if strip_ids else out).rstrip()
     counted = [c for c in claims if c.outcome != NO_CLAIM]
     if not counted:
         return f"{out.rstrip()}\n\n*Verification: no checkable claims.*"

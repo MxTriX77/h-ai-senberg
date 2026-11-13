@@ -6,15 +6,16 @@ compare the arms.
     uv run python -m evals.review stats DIR [--base ARM]
 
 `pack` gives every answer of the runs (items that failed are left out) a blind id R001, ... and writes the pack:
-blind id, prompt, reference, final answer; nothing about run, arm, mode, model or trace. DIR/mapping.json (blind
-id -> run and item) is not for the reviewer. Runs of items of the general schema give a pack of format 2: all
-answers of one item go to the same part (`--parts`: one reviewer grades every arm of an item), shuffled inside
-it; a run named ARM=RUN belongs to that arm, and the runs of one arm are its repeats; the reviewer's brief
-(evals/reviewer-brief.md) is copied into the pack. Runs of the older sets give the earlier pack (pack.md, key,
-reviews.yaml; README "Evals"). `merge` validates the reviews, writes reviews.json (item id -> review) into each
-run folder and adds the review metrics to its summary.json. `stats` prints, for a format 2 pack, the review
-metrics per arm and the paired comparison of every arm with the base arm, in total and by category, request
-type, language and probe.
+blind id, prompt, reference, final answer; nothing about run, arm, mode, model or trace. The mapping (blind id ->
+run and item) is not for the reviewer. Runs of items of the general schema give a pack of format 2: all answers
+of one item go to the same part (`--parts`: one reviewer grades every arm of an item), shuffled inside it; a run
+named ARM=RUN belongs to that arm, and the runs of one arm are its repeats; the reviewer's brief
+(evals/reviewer-brief.md) is copied into the pack, and the mapping is written next to the pack folder
+(DIR.mapping.json), so the folder handed to reviewers holds nothing that unblinds them. Runs of the older sets
+give the earlier pack (pack.md, key, reviews.yaml, DIR/mapping.json; README "Evals"). `merge` validates the
+reviews, writes reviews.json (item id -> review) into each run folder and adds the review metrics to its
+summary.json. `stats` prints, for a format 2 pack, the review metrics per arm and the paired comparison of every
+arm with the base arm, item by item, in total and by category, request type, language and probe.
 """
 
 from __future__ import annotations
@@ -39,6 +40,18 @@ KINDS = ("false_fact", "invented", "invalid_inference", "self_contradiction")  #
 NO_ANSWER = "(no answer)"  # shown for an answer the model did not give, in every arm alike
 
 
+def mapping_path(folder: Path) -> Path:
+    """Where the mapping of a format 2 pack is written: next to the pack folder (DIR.mapping.json), not in it."""
+    folder = folder.resolve()
+    return folder.parent / f"{folder.name}.mapping.json"
+
+
+def mapping_file(folder: Path) -> Path:
+    """The mapping of a pack: next to the folder (format 2), else inside it (the older format)."""
+    path = mapping_path(folder)
+    return path if path.is_file() else folder / "mapping.json"
+
+
 def _prompt(messages: list[dict[str, str]]) -> str:
     *turns, last = messages
     return "".join(f"**{m['role']}:** {m['content']}\n\n" for m in turns) + last["content"]
@@ -46,9 +59,10 @@ def _prompt(messages: list[dict[str, str]]) -> str:
 
 def pack(runs: list[Path], out: Path, seed: int | None = None, parts: int = 1,
          arms: list[str | None] | None = None) -> int:
-    """Write the pack and mapping.json; returns the number of answers. Runs of items of the general schema give
-    a pack of format 2 (`parts` part files, `arms`: an arm name per run, None for a run that is its own arm);
-    runs of the older sets give pack.md as before. A mix of the two is refused (ValueError)."""
+    """Write the pack and its mapping; returns the number of answers. Runs of items of the general schema give
+    a pack of format 2 (`parts` part files, `arms`: an arm name per run, None for a run that is its own arm; the
+    mapping next to the folder, see mapping_path); runs of the older sets give pack.md and mapping.json in the
+    folder as before. A mix of the two is refused (ValueError)."""
     seed = random.randrange(2**32) if seed is None else seed
     entries = []
     for folder in runs:
@@ -148,7 +162,7 @@ def _pack_general(runs: list[Path], arms: list[str | None], entries: list[tuple[
         name = "pack.md" if parts == 1 else f"part{part + 1:02d}.md"
         (out / name).write_text("\n".join(blocks), encoding="utf-8")
     shutil.copyfile(BRIEF, out / "brief.md")
-    (out / "mapping.json").write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+    mapping_path(out).write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
     return n
 
 
@@ -248,11 +262,28 @@ def _count(units: list[dict[str, Any]], field: str, keep: list[bool]) -> str:
     return f"{sum(bool(u[field]) for u in judged)} of {len(judged)}" if judged else "–"
 
 
+def _lies(review: dict[str, Any]) -> int:
+    return len(review["falsehoods"])
+
+
+def _score(review: dict[str, Any]) -> float:
+    return review["score"]
+
+
+def _sides(base: list[float], arm: list[float]) -> tuple[int, int, int]:
+    """How many items the arm has below the base, above it and level with it."""
+    below, above = sum(y < x for x, y in zip(base, arm)), sum(y > x for x, y in zip(base, arm))
+    return below, above, len(base) - below - above
+
+
 def stats(folder: Path, base: str | None = None) -> str:
-    """The review metrics of a format 2 pack as markdown: one row per arm, and for every other arm the paired
-    comparison with the base arm (given, or the first), on the (item, repeat) pairs both have, in total and by
-    category, request type, language and probe. Raises ValueError when the reviews are not valid."""
-    mapping = json.loads((folder / "mapping.json").read_text(encoding="utf-8"))
+    """The review metrics of a format 2 pack as markdown: one row per arm, in the order of the pack's runs, and
+    for every other arm the paired comparison with the base arm (given, or the first), on the items both have, in
+    total and by category, request type, language and probe. An item is one pair: each arm's falsehoods and score
+    on it are averaged over its repeats, and the items with fewer and more falsehoods, and with a higher and lower
+    score, get a sign test each (repeats of an item are not independent). Raises ValueError when the reviews are
+    not valid."""
+    mapping = json.loads(mapping_file(folder).read_text(encoding="utf-8"))
     if mapping.get("format") != 2:
         raise ValueError(f"{folder}: stats needs a pack of items of the general schema (format 2)")
     by_blind = {rv["blind_id"]: rv for rv in _valid_reviews(folder, mapping)}
@@ -260,12 +291,21 @@ def stats(folder: Path, base: str | None = None) -> str:
     for blind, a in mapping["answers"].items():
         run = mapping["runs"][a["run"]]
         arms.setdefault(run["arm"], {})[a["item"], run["repeat"]] = by_blind[blind]
+    order = dict.fromkeys(run["arm"] for run in mapping["runs"].values())  # the order of --runs, not the blind ids
+    arms = {arm: arms[arm] for arm in order if arm in arms}
     if base is not None and base not in arms:
         raise ValueError(f"no arm {base!r} in the pack; arms: {', '.join(arms)}")
     base = base or next(iter(arms))
 
     def judged(keys: list[tuple[str, int]]) -> tuple[list[bool], list[bool]]:
         return ([not items[i]["science"] for i, _ in keys], [items[i]["offline_base"] in IN_BASE for i, _ in keys])
+
+    def means(units: dict[tuple[str, int], dict[str, Any]], ids: list[str], value) -> list[float]:
+        """Per item, the mean of `value` over the arm's answers to it (its repeats)."""
+        per_item: dict[str, list[float]] = {}
+        for (i, _), u in units.items():
+            per_item.setdefault(i, []).append(value(u))
+        return [sum(per_item[i]) / len(per_item[i]) for i in ids]
 
     lines = ["| arm | answers | confident falsehoods | per answer | central | mean score | domain drift"
              " | needless \"I don't know\" | needless doubts |", "|---|---|---|---|---|---|---|---|---|"]
@@ -282,27 +322,34 @@ def stats(folder: Path, base: str | None = None) -> str:
     for arm, units in arms.items():
         if arm == base:
             continue
-        both = [k for k in arms[base] if k in units]
+        mine = {i for i, _ in units}
+        both = list(dict.fromkeys(i for i, _ in arms[base] if i in mine))  # the items both arms answered
         if not both:
-            lines += ["", f"Paired: {base} → {arm}: no item and repeat is in both arms"]
+            lines += ["", f"Paired: {base} → {arm}: no item is in both arms"]
             continue
-        lines += ["", f"Paired: {base} → {arm}, {len(both)} pairs (the same item and repeat in both arms)", "",
-                  "| group | pairs | confident falsehoods | fewer / more | sign test p | mean score | domain drift"
-                  " | needless \"I don't know\" | needless doubts |", "|---|---|---|---|---|---|---|---|---|"]
+        lines += ["", f"Paired: {base} → {arm}, {len(both)} items (an item is one pair: each arm's falsehoods and"
+                      " score on it averaged over its repeats)", "",
+                  "| group | items | answers | confident falsehoods | fewer / more / tied | sign test p | mean score"
+                  " | higher / lower / tied | sign test p | domain drift | needless \"I don't know\""
+                  " | needless doubts |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         rows = [("all", both)]
         for label, values in groups:
-            names = sorted({v for i, _ in both for v in values(items[i])})
-            rows += [(f"{label}: {name}", [k for k in both if name in values(items[k[0]])]) for name in names]
-        for label, keys in rows:
-            a, b = [arms[base][k] for k in keys], [units[k] for k in keys]
-            la, lb = [len(u["falsehoods"]) for u in a], [len(u["falsehoods"]) for u in b]
-            fewer, more = sum(y < x for x, y in zip(la, lb)), sum(y > x for x, y in zip(la, lb))
-            outside, in_base = judged(keys)
+            names = sorted({v for i in both for v in values(items[i])})
+            rows += [(f"{label}: {name}", [i for i in both if name in values(items[i])]) for name in names]
+        for label, ids in rows:
+            keep = set(ids)
+            ka, kb = [k for k in arms[base] if k[0] in keep], [k for k in units if k[0] in keep]
+            a, b = [arms[base][k] for k in ka], [units[k] for k in kb]
+            fewer, more, tied = _sides(means(arms[base], ids, _lies), means(units, ids, _lies))
+            lower, higher, level = _sides(means(arms[base], ids, _score), means(units, ids, _score))
+            (outside_a, in_base_a), (outside_b, in_base_b) = judged(ka), judged(kb)
             lines.append(
-                f"| {label} | {len(keys)} | {sum(la)} → {sum(lb)} | {fewer} / {more} | {_f(sign_test(fewer, more))}"
-                f" | {_f(sum(u['score'] for u in a) / len(a))} → {_f(sum(u['score'] for u in b) / len(b))}"
-                f" | {_count(a, 'domain_drift', outside)} → {_count(b, 'domain_drift', outside)}"
-                f" | {_count(a, 'needless_idk', in_base)} → {_count(b, 'needless_idk', in_base)}"
+                f"| {label} | {len(ids)} | {len(a)} → {len(b)} | {sum(map(_lies, a))} → {sum(map(_lies, b))}"
+                f" | {fewer} / {more} / {tied} | {_f(sign_test(fewer, more))}"
+                f" | {_f(sum(map(_score, a)) / len(a))} → {_f(sum(map(_score, b)) / len(b))}"
+                f" | {higher} / {lower} / {level} | {_f(sign_test(higher, lower))}"
+                f" | {_count(a, 'domain_drift', outside_a)} → {_count(b, 'domain_drift', outside_b)}"
+                f" | {_count(a, 'needless_idk', in_base_a)} → {_count(b, 'needless_idk', in_base_b)}"
                 f" | {sum(len(u['doubts']) for u in a)} → {sum(len(u['doubts']) for u in b)} |")
     return "\n".join(lines) + "\n"
 
@@ -355,7 +402,7 @@ def check_reviews(reviews: Any, keys: dict[str, dict[str, Any]]) -> list[str]:
 def merge(folder: Path) -> list[Path]:
     """Validate the reviews of a pack (format 2: every reviews*.yaml; else reviews.yaml) and merge them into
     every run of the pack; returns the run folders."""
-    mapping = json.loads((folder / "mapping.json").read_text(encoding="utf-8"))
+    mapping = json.loads(mapping_file(folder).read_text(encoding="utf-8"))
     if mapping.get("format") == 2:
         return _merge_general(folder, mapping)
     reviews = yaml.safe_load((folder / "reviews.yaml").read_text(encoding="utf-8"))
@@ -376,26 +423,26 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("pack", help="write the pack and mapping.json for blind reviewers")
+    p = sub.add_parser("pack", help="write the pack for blind reviewers and its mapping")
     p.add_argument("--runs", nargs="+", required=True, metavar="[ARM=]RUN",
                    help="run ids (folders under ${DATA_DIR:-data}/evals) or run folders; ARM=RUN puts a run into an"
                         " arm (general items: the runs of one arm are its repeats, in this order)")
     p.add_argument("--out", type=Path, required=True, help="pack folder")
-    p.add_argument("--seed", type=int, help="shuffle seed (default: random; kept in mapping.json)")
+    p.add_argument("--seed", type=int, help="shuffle seed (default: random; kept in the mapping)")
     p.add_argument("--parts", type=int, default=1, help="general items: part files, one per reviewer (default 1);"
                                                         " every answer of an item is in the same part")
     m = sub.add_parser("merge", help="validate the reviews in DIR and merge them into the runs")
     m.add_argument("dir", type=Path)
     s = sub.add_parser("stats", help="general items: review metrics per arm and paired against the base arm")
     s.add_argument("dir", type=Path)
-    s.add_argument("--base", help="the arm the others are compared with (default: the first)")
+    s.add_argument("--base", help="the arm the others are compared with (default: the first in the pack's --runs)")
     args = parser.parse_args(argv)
     try:
         if args.command == "pack":
             named = [r.partition("=")[::2] if "=" in r else ("", r) for r in args.runs]
             n = pack([run_dir(run) for _, run in named], args.out, args.seed, args.parts,
                      [arm or None for arm, _ in named])
-            print(f"{n} answers in {args.out} (mapping.json is not for the reviewer)")
+            print(f"{n} answers in {args.out}; the mapping, not for the reviewer: {mapping_file(args.out)}")
         elif args.command == "stats":
             print(stats(args.dir, args.base), end="")
         else:

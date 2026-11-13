@@ -53,7 +53,7 @@ def general_log(it: dict, answer: str = "About 1,370 books.", mode: str = "confi
            "chars": {}, "error": None, "correct": None, "scores": None, "artefacts": [],
            "unmarked_contradiction": False, "finish_reason": "stop", "stages": [],
            **{k: it[k] for k in ("category", "request_type", "lang", "probes", "offline_base", "split")},
-           "science_calls": 0, "drift_auto": None if it["category"] == "science" else False,
+           "science_calls": 0, "science_research": 0, "drift_auto": None if it["category"] == "science" else False,
            "budget_s": None, "within_budget": None, "check": None}
     return log | over
 

@@ -486,8 +486,8 @@ evals:                                     # the measuring tools (python -m eval
     factual: 120
     audit: 600
   science_categories: [science]            # item categories in which a call of a science tool is expected
-  science_tools: [search_knowledge, lookup_compound, lookup_constant]   # a call of one of these, by the model or by the
-                                           # verifier's re-search, on an item of another category counts as domain drift
+  science_tools: [search_knowledge, lookup_compound, lookup_constant]   # a call of one of these by the model on an item
+                                           # of another category is domain drift (not the verifier's re-searches)
   request:                                 # fields merged into every model call of an eval run, in every arm alike
     stream_options: {include_usage: true}  # OpenAI: the last chunk of a stream carries the token counts (logged per call)
   python_tests:                            # the one code check of the general items (reference.check.type: python_tests)

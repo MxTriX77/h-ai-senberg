@@ -49,7 +49,8 @@ def parts_text(folder):
 
 
 def mapping_of(folder):
-    return json.loads((folder / "mapping.json").read_text(encoding="utf-8"))
+    """The mapping of a format 2 pack: next to the pack folder, not in it."""
+    return json.loads((folder.parent / f"{folder.name}.mapping.json").read_text(encoding="utf-8"))
 
 
 # --- pack ----------------------------------------------------------------------------------------------
@@ -61,6 +62,8 @@ def test_pack_is_blind(two_arms, tmp_path):
     for leak in ("20261113", "bare", "suite", "config", "mode", "secret-model", "SECRET-TRACE", "coding-dev", "-dev-0",
                  "stages", "layers"):
         assert leak not in text, leak
+    for path in (tmp_path / "pack").iterdir():  # nothing in the folder the reviewer gets names a run or an item
+        assert "20261113" not in path.read_text(encoding="utf-8") and "dev-0" not in path.read_text(encoding="utf-8")
     assert (mapping["format"], mapping["seed"], mapping["parts"]) == (2, 7, 1)
     assert sorted(mapping["answers"]) == [f"R{n:03d}" for n in range(1, 11)]
     assert {(a["run"], a["item"]) for a in mapping["answers"].values()} == {
@@ -119,7 +122,7 @@ def test_every_answer_of_an_item_is_in_the_same_part(tmp_path):
         assert part_of.setdefault(a["item"], a["part"]) == a["part"]
     assert Counter(part_of.values()) == {1: 4, 2: 3, 3: 3}
     files = sorted(p.name for p in (tmp_path / "pack").iterdir())
-    assert files == ["brief.md", "mapping.json", "part01.md", "part02.md", "part03.md"]
+    assert files == ["brief.md", "part01.md", "part02.md", "part03.md"]
     first = (tmp_path / "pack" / "part01.md").read_text(encoding="utf-8")
     assert first.count("\n## R") == 8 and "to reviews-part01.yaml." in first
     in_first = [b for b, a in mapping["answers"].items() if a["part"] == 1]
@@ -136,7 +139,8 @@ def test_older_items_keep_their_pack_and_a_mix_is_refused(two_arms, tmp_path):
     items.write_text(yaml.safe_dump(ITEMS), encoding="utf-8")
     old = write_run(tmp_path / "old-run", "D", [item_log("b1-s3-01", {"A1": True})], items)
     assert pack([old], tmp_path / "old-pack", seed=1) == 1
-    assert "format" not in mapping_of(tmp_path / "old-pack") and not (tmp_path / "old-pack" / "brief.md").exists()
+    old_mapping = json.loads((tmp_path / "old-pack" / "mapping.json").read_text(encoding="utf-8"))  # as before
+    assert "format" not in old_mapping and not (tmp_path / "old-pack" / "brief.md").exists()
     with pytest.raises(ValueError, match="mix items of the general schema with older sets"):
         pack([old, two_arms[0]], tmp_path / "mixed", seed=1)
     with pytest.raises(ValueError, match="--parts must be at least 1"):
@@ -282,22 +286,37 @@ def test_stats_compare_the_arms(two_arms, tmp_path):
     text = stats(folder)
     assert "| 20261113-bare | 5 | 4 | 0.8 | 2 | 5 | 0 of 4 | 0 of 1 | 0 |" in text
     assert "| 20261113-suite | 5 | 3 | 0.6 | 2 | 7 | 1 of 4 | 1 of 1 | 0 |" in text
-    assert "Paired: 20261113-bare → 20261113-suite, 5 pairs" in text
+    assert "Paired: 20261113-bare → 20261113-suite, 5 items" in text
     rows = rows_of(text, "Paired: 20261113-bare → 20261113-suite")
-    assert rows["all"] == ["5", "4 → 3", "1 / 1", "1", "5 → 7", "0 of 4 → 1 of 4", "0 of 1 → 1 of 1", "0 → 0"]
-    assert rows["category: coding"][:3] == ["2", "3 → 1", "1 / 0"] and rows["category: coding"][3] == "1"
-    assert rows["category: facts"][:3] == ["1", "1 → 2", "0 / 1"]
+    assert rows["all"] == ["5", "5 → 5", "4 → 3", "1 / 1 / 3", "1", "5 → 7", "5 / 0 / 0", "0.06",
+                           "0 of 4 → 1 of 4", "0 of 1 → 1 of 1", "0 → 0"]
+    assert rows["category: coding"][:5] == ["2", "2 → 2", "3 → 1", "1 / 0 / 1", "1"]
+    assert rows["category: facts"][:4] == ["1", "1 → 1", "1 → 2", "0 / 1 / 0"]
     assert rows["request type: factual"][0] == "2" and rows["request type: chat"][0] == "1"
-    assert rows["language: ru"][:2] == ["1", "0 → 0"] and rows["language: en"][0] == "4"
-    assert rows["probe: drift_bait"][0] == "2" and rows["probe: drift_bait"][5] == "0 of 2 → 1 of 2"
-    assert rows["probe: needless_idk"][6] == "0 of 1 → 1 of 1" and rows["probe: multi_turn"][0] == "1"
+    assert rows["language: ru"][:3] == ["1", "1 → 1", "0 → 0"] and rows["language: en"][0] == "4"
+    assert rows["probe: drift_bait"][0] == "2" and rows["probe: drift_bait"][8] == "0 of 2 → 1 of 2"
+    assert rows["probe: needless_idk"][9] == "0 of 1 → 1 of 1" and rows["probe: multi_turn"][0] == "1"
     assert set(rows) == {"all", "category: chat", "category: coding", "category: facts", "category: science",
                          "request type: analytic", "request type: chat", "request type: factual", "language: en",
                          "language: ru", "probe: drift_bait", "probe: multi_turn", "probe: needless_idk"}
     other = stats(folder, base="20261113-suite")  # the other way round
-    assert rows_of(other, "Paired: 20261113-suite → 20261113-bare")["all"][1] == "3 → 4"
+    assert rows_of(other, "Paired: 20261113-suite → 20261113-bare")["all"][2] == "3 → 4"
     with pytest.raises(ValueError, match="no arm 'x' in the pack; arms: 20261113-bare, 20261113-suite"):
         stats(folder, base="x")
+
+
+def test_stats_take_the_arms_in_the_order_of_the_runs(two_arms, tmp_path):
+    first = set()
+    for seed in range(8):
+        folder = tmp_path / f"pack{seed}"
+        pack(two_arms, folder, seed=seed)
+        mapping = mapping_of(folder)
+        first.add(mapping["answers"]["R001"]["run"])
+        write_reviews(folder, [review(b) for b in mapping["answers"]])
+        text = stats(folder)
+        assert "Paired: 20261113-bare → 20261113-suite" in text, seed  # the default base: the first run given
+        assert text.index("| 20261113-bare |") < text.index("| 20261113-suite |"), seed
+    assert first == {"20261113-bare", "20261113-suite"}  # the blind ids start with either run
 
 
 def test_stats_pool_the_repeats_of_an_arm(tmp_path, capsys):
@@ -317,10 +336,30 @@ def test_stats_pool_the_repeats_of_an_arm(tmp_path, capsys):
     assert main(["stats", str(folder), "--base", "bare"]) == 0
     out = capsys.readouterr().out
     assert "| bare | 10 | 5 | 0.5 |" in out and "| suite | 10 | 0 | 0 |" in out
-    assert "Paired: bare → suite, 10 pairs" in out  # two repeats of five items: first with first, second with second
-    assert rows_of(out, "Paired: bare → suite")["all"][:4] == ["10", "5 → 0", "5 / 0", "0.06"]
+    assert "Paired: bare → suite, 5 items" in out  # two repeats of five items: an item is one pair
+    assert rows_of(out, "Paired: bare → suite")["all"][:5] == ["5", "10 → 10", "5 → 0", "5 / 0 / 0", "0.06"]
     assert main(["merge", str(folder)]) == 0 and (runs[1] / "reviews.json").is_file()
     assert main(["stats", str(tmp_path / "nothing")]) == 1
+
+
+def test_stats_pair_items_not_repeats(tmp_path):
+    path = write_items(tmp_path / "items.yaml", *ITEMS2)
+    names = [("bare-s7", "bare"), ("bare-s8", "bare"), ("suite-s7", "config"), ("suite-s8", "config")]
+    runs = [make_run(tmp_path, name, mode, path=path) for name, mode in names]
+    folder = tmp_path / "pack"
+    pack(runs, folder, seed=5, arms=["bare", "bare", "suite", "suite"])
+    mapping = mapping_of(folder)
+
+    def score(run, item_id):  # bare: 5 and 9 on every item (mean 7); suite: 7, and 8 on the chat item
+        return {"bare-s7": 5, "bare-s8": 9}.get(run, 8 if item_id == "chat-dev-001" else 7)
+
+    blocks = [review(b, score=score(a["run"], a["item"]), confident_falsehoods=int(a["run"].startswith("bare")),
+                     falsehoods=[lie()] * int(a["run"].startswith("bare"))) for b, a in mapping["answers"].items()]
+    write_reviews(folder, blocks)
+    rows = rows_of(stats(folder), "Paired: bare → suite")
+    # one falsehood in each bare answer: five items with fewer (not ten pairs); the mean scores differ on one item
+    assert rows["all"][:8] == ["5", "10 → 10", "10 → 0", "5 / 0 / 0", "0.06", "7 → 7.2", "1 / 0 / 4", "1"]
+    assert rows["category: chat"][:8] == ["1", "2 → 2", "2 → 0", "1 / 0 / 0", "1", "7 → 8", "1 / 0 / 0", "1"]
 
 
 def test_stats_need_valid_reviews_of_a_general_pack(two_arms, tmp_path):
