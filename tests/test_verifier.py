@@ -1357,6 +1357,7 @@ async def test_report_lists_arithmetic_fixes(cfg, fake, knowledge):
 
 
 def test_checker_fixes_the_answer_silently(cfg, fake, knowledge):
+    cfg.verifier.checkers = ["element_balance"]  # off in the shipped config (D-051)
     fake.chunks = [content("C1: not_said")]
     fake.scripts = [[content("Water forms as H2 + O2 → H2O in a flame.")]]
     with TestClient(create_app(cfg, fake.client(cfg.model_backend), knowledge)) as c:
@@ -1367,6 +1368,7 @@ def test_checker_fixes_the_answer_silently(cfg, fake, knowledge):
 
 @pytest.mark.anyio
 async def test_checker_findings_in_the_report_and_off_switch(cfg, fake, knowledge):
+    cfg.verifier.checkers = ["element_balance"]  # off in the shipped config (D-051)
     fake.chunks = [content("C1: not_said")]
     fake.scripts = [[content("It is NaCl → Na2O here.")]]
     items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run([{"role": "user", "content": "q"}])]
@@ -1389,6 +1391,7 @@ def test_doubtful_fix_reported(clear_only, out):
 @pytest.mark.anyio
 @pytest.mark.parametrize("keep", [True, False])
 async def test_task_labels_reach_the_checker(cfg, fake, knowledge, keep):
+    cfg.verifier.checkers = ["element_balance"]  # off in the shipped config (D-051)
     cfg.verifier.keep_quotes = keep
     fake.chunks = [content("C1: not_said")]
     fake.scripts = [[content("So S5 → S6.")]]
@@ -1438,6 +1441,7 @@ def test_quoted_equation_kept(task, draft, fixed):
 
 @pytest.mark.parametrize("keep", [True, False])
 def test_quoted_equation_kept_in_the_answer(cfg, fake, knowledge, keep):
+    cfg.verifier.checkers = ["element_balance"]  # off in the shipped config (D-051)
     cfg.verifier.keep_quotes = keep
     fake.chunks = [content("C1: not_said")]
     fake.scripts = [[content(EQ_DRAFT)]]
