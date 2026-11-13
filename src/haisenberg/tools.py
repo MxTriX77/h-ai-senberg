@@ -24,6 +24,7 @@ from .l2.dense import DenseIndex, DensePassageRecord, Embed, HybridSearch
 from .l2.store import L2Error, L2Store, PassageRecord
 from .launcher import LauncherError, Supervisor, embedding_view
 from .llm import EmbeddingClient, UpstreamError
+from .stages import TOOL, stage
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ CALCULATE = "calculate"  # built-in arithmetic tool, offered next to the knowled
 COMPUTE = "compute"  # built-in procedures tool (dates, lists, schedules), offered right after the calculator
 CALC_TOOLS = (CALCULATE, COMPUTE)  # their rounds are calculator rounds (reasoning_policy.max_calc_rounds)
 TEXT = "text"  # the kind searched by SEARCH
+ARG_CHARS = 300  # most characters of a call's arguments kept in its stage record
 _CITE = re.compile(r"\[S(\d+)\]")
 
 
@@ -86,7 +88,8 @@ class Knowledge:
     (enabled by the knowledge setting), searches also return up to retrieval.literature_k of its passages, ranked
     by BM25, or with a dense literature store too, by BM25 and embeddings fused (HybridSearch). With a dense
     encyclopedia store, the encyclopedia records of a query with a non-Latin word are ranked by BM25 and embeddings
-    fused (DenseEncyclopedia)."""
+    fused (DenseEncyclopedia). A tool named in reasoning_policy.tools_off is not offered to the model; `available`
+    says whether the store offers knowledge at all, whatever is offered."""
 
     def __init__(self, store: L1Store | None, cfg: Config, literature: L2Store | HybridSearch | None = None,
                  dense_encyclopedia: DenseEncyclopedia | None = None):
@@ -101,18 +104,25 @@ class Knowledge:
         labelled = literature is not None and cfg.retrieval.label_sources  # base: no labels, no extra tool text
         self.labels = cfg.retrieval.source_labels if labelled else None
         kinds = store.kinds() if store is not None and cfg.reasoning_policy.max_search_depth > 0 else {}
+        self.available = bool(kinds)  # the store offers knowledge: what the verifier needs, not an offered tool
+        off = set(cfg.reasoning_policy.tools_off)
         self.domains = kinds.get(TEXT, [])
-        self._kind_of: dict[str, str] = {}  # tool name -> kind
+        self._kind_of: dict[str, str] = {}  # offered tool name -> kind
+        self._stored: dict[str, str] = {}  # every knowledge tool the store has -> kind (the verifier's own searches)
         self.tools: list[dict[str, Any]] = []
         for kind in sorted(kinds, key=lambda k: (k != TEXT, k)):
             name = SEARCH if kind == TEXT else f"lookup_{kind}"
-            self._kind_of[name] = kind
-            self.tools.append(_tool(name, self.domains if kind == TEXT else None, cfg, literature=labelled))
-        self.calculator = bool(self.tools) and CALCULATE in cfg.tools  # built in, next to the knowledge tools
+            self._stored[name] = kind
+            if name not in off:
+                self._kind_of[name] = kind
+                self.tools.append(_tool(name, self.domains if kind == TEXT else None, cfg, literature=labelled))
+        built_in = self.available and CALCULATE in cfg.tools  # built in, next to the knowledge the store offers
+        self.calculator = built_in and CALCULATE not in off
         if self.calculator:
             self.tools.append(_tool(CALCULATE, None, cfg, param="expressions",
                                     schema={"type": "array", "items": {"type": "string"}}))
-        self.computer = self.calculator and cfg.reasoning_policy.compute_tool  # switch; its texts are then required
+        # switch; its texts are then required
+        self.computer = built_in and cfg.reasoning_policy.compute_tool and COMPUTE not in off
         if self.computer:
             self.tools.append(_tool(COMPUTE, None, cfg, param="operations",
                                     schema={"type": "array", "items": {"type": "string"}}))
@@ -138,15 +148,26 @@ class Knowledge:
             dense = _dense_encyclopedia(cfg, store, path)
         return cls(store, cfg, literature, dense)
 
-    def run(self, name: str, arguments: str, sources: Sources, k: int | None = None) -> tuple[str, list[str], list[str]]:
+    def run(self, name: str, arguments: str, sources: Sources, k: int | None = None,
+            internal: bool = False) -> tuple[str, list[str], list[str]]:
         """Run one tool call returning at most k records (default retrieval.top_k_proofs):
-        (result text for the model, one line per result for the reasoning, the records' source ids)."""
+        (result text for the model, one line per result for the reasoning, the records' source ids). `internal`: the
+        verifier's own call, which may use a knowledge tool the store has but the model is not offered. An open
+        stage log gets one record per call: stage `tool`, or `research` for an internal one."""
+        with stage("research" if internal else "tool", TOOL, tool=name, arguments=arguments[:ARG_CHARS]) as record:
+            result, lines, ids = self._run(name, arguments, sources, k, internal)
+            if record is not None:
+                record["results"] = len(ids)
+            return result, lines, ids
+
+    def _run(self, name: str, arguments: str, sources: Sources, k: int | None,
+             internal: bool) -> tuple[str, list[str], list[str]]:
         if name == CALCULATE and self.calculator:
             return (*_each(arguments, "expressions", lambda e: calc.run_tool(json.dumps({"expression": e}))[0]), [])
         if name == COMPUTE and self.computer:
             return (*_each(arguments, "operations", compute.run), [])
         try:
-            kind, query, records = self._call(name, arguments, k or self.top_k)
+            kind, query, records = self._call(name, arguments, k or self.top_k, internal)
         except _BadCall as e:
             return f"Error: {e}", [f"error: {e}"], []
         if not records:
@@ -176,8 +197,8 @@ class Knowledge:
             ids.append(src.id)
         return "\n\n".join(blocks), lines + weak, ids
 
-    def _call(self, name: str, arguments: str, k: int) -> tuple[str, str, list[Record]]:
-        kind = self._kind_of.get(name)
+    def _call(self, name: str, arguments: str, k: int, internal: bool = False) -> tuple[str, str, list[Record]]:
+        kind = (self._stored if internal else self._kind_of).get(name)
         if kind is None:
             raise _BadCall(f"unknown tool {name!r}; available: {', '.join(self._kind_of) or 'none'}")
         try:

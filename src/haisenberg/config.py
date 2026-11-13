@@ -103,6 +103,7 @@ class ThinkingBudgetConfig(_Section):
     """Thinking tokens per reasoner call: min_tokens + (max_tokens - min_tokens) x the question's share (0-1)."""
 
     field: str  # request field the backend reads per call (llama-server: thinking_budget_tokens); "" = send none
+    enabled: bool  # false: no budget is sent and a reasoner call gets the room of a full one (max + answer tokens)
     min_tokens: PositiveInt
     max_tokens: PositiveInt
     answer_tokens: PositiveInt  # room for the answer: such a call's max_tokens is its budget plus this
@@ -129,9 +130,13 @@ class ThinkingBudgetConfig(_Section):
 
 class ReasoningPolicyConfig(_Section):
     system_prompt: str
+    use_system_prompt: bool  # false: bare_system_prompt replaces system_prompt (layer switch)
+    bare_system_prompt: str  # the system line without the suite's rules; empty = no system message
     tool_prompt: str
+    use_tool_prompt: bool  # false: tools are offered without tool_prompt (layer switch)
     enable_multi_hop_verification: bool
     max_search_depth: NonNegativeInt
+    tools_off: list[str]  # tools not offered although the store has them, by name as under `tools` (layer switch)
     max_calc_rounds: NonNegativeInt  # rounds of calculator calls only, not counted in max_search_depth; 0 = counted
     compute_tool: bool  # offer the compute tool (procedures) next to the calculator, with compute_prompt
     compute_prompt: str  # added after the tool prompt when the compute tool is offered
@@ -270,6 +275,8 @@ class VerifierConfig(_Section):
     judge_prompt: str
     rel_tol: NonNegativeFloat
     unit_checks: bool  # code checks compare a number with a record value only as the same quantity (unit, property)
+    record_check: bool  # numbers and formulas of a claim are checked in code against the retrieved records
+    claim_judge: bool  # one judge call rates the remaining claims (and re-searched ones); false: neither
     arithmetic_check: bool  # recompute "a × b = c" in the draft and fix wrong results
     checkers: list[str] = []  # domain checker plug-ins run on every draft (haisenberg.checkers), e.g. element_balance
     checkers_clear_only: bool  # a checker's fix that the checker doubts (maybe not its subject) is only reported
@@ -288,6 +295,7 @@ class VerifierConfig(_Section):
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
     answer_style: Literal["plain", "annotated"]  # plain chat answer, or labels + ids + sources (debugging)
+    strip_source_ids: bool  # plain style: [S#] markers are removed from the final answer
     consistency_check: bool  # one review call over the whole answer and the task (conclusions vs calculations...)
     consistency_prompt: str
     consistency_quotes: bool  # a review fix needs a quoted conflicting passage of the answer that it agrees with
@@ -322,6 +330,7 @@ class EvidenceConfig(_Section):
     ledger_prompt: str
     repair_prompt: str  # {missing}: the listed ids without an entry
     writer_prompt: str
+    writer: bool  # the answer is rewritten from a ledger whose statuses changed; false: the ledger only reports
     independent: bool  # also one judgment per listed item in its own call, without the draft or the ledger
     independent_max_items: PositiveInt  # at most this many items get one
     item_prompt: str  # {id}, {text}: the item to judge
@@ -378,6 +387,24 @@ class EmbeddingConfig(_Section):
     server: LlamaServerConfig
 
 
+class PythonTestsConfig(_Section):
+    """The one code check of the eval's general items: the answer's code against the item's tests."""
+
+    enabled: bool  # false: nothing is executed
+    timeout_s: PositiveFloat  # wall-clock limit per run
+    memory_mb: NonNegativeInt  # address-space limit where the system has one; 0 = none
+
+
+class EvalsConfig(_Section):
+    """Settings of the measuring tools (evals.run, evals.review); the chat never reads them."""
+
+    budgets_s: dict[str, PositiveFloat]  # request type -> median seconds per answer; a type without one is not judged
+    science_categories: list[str]  # item categories in which a call of a science tool is expected
+    science_tools: list[str]  # a call of one of these on an item of another category counts as domain drift
+    request: dict[str, Any] = {}  # fields merged into every model call of an eval run, in every arm alike
+    python_tests: PythonTestsConfig
+
+
 class UiConfig(_Section):
     dist_dir: Path
     settings: dict[str, Any] = {}
@@ -391,6 +418,7 @@ class Config(_Section):
     tools: dict[str, ToolText]
     verifier: VerifierConfig
     evidence: EvidenceConfig
+    evals: EvalsConfig
     llama_server: LlamaServerConfig
     embedding: EmbeddingConfig
     ui: UiConfig
@@ -406,6 +434,13 @@ class Config(_Section):
     def context_tokens(self) -> int:
         """The backend's context size in tokens: model_backend.context_tokens, else llama_server.ctx_size."""
         return self.model_backend.context_tokens or self.llama_server.ctx_size
+
+    @model_validator(mode="after")
+    def _tools_off_known(self) -> Config:
+        """A tool switched off by name has texts under `tools` (a typo would leave the tool on)."""
+        if unknown := [n for n in self.reasoning_policy.tools_off if n not in self.tools]:
+            raise ValueError(f"reasoning_policy.tools_off: unknown tool {unknown}; known: {sorted(self.tools)}")
+        return self
 
     @model_validator(mode="after")
     def _thinking_fits(self) -> Config:

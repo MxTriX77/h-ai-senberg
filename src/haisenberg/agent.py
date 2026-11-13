@@ -7,6 +7,9 @@ so any backend with tool support works. As a safety net, tool calls a chat templ
 configured patterns (`reasoning_policy.tool_call_markup`), and an empty or tool-call-only answer is asked for again once
 (written calculations are run first); an answer cut off where a call was removed gives way to the most complete one.
 With `evidence.enabled`, a message that lists items to judge then goes through the evidence ledger (evidence.py).
+Every part the loop adds to a plain model call has a config switch (the system prompt, the tool prompt, each tool,
+the thinking budget, the checks, the removal of [S#] markers): with all of them off, the request is the
+conversation with the model's sampling, and the answer is the reply.
 """
 
 from __future__ import annotations
@@ -45,6 +48,18 @@ def thinking_budget(question: str, tb: ThinkingBudgetConfig) -> int:
               (tb.items, len(re.findall(tb.item_pattern, question))))
     share = min(1.0, sum(signal.weight * signal.level(n) for signal, n in counts))
     return round(tb.min_tokens + (tb.max_tokens - tb.min_tokens) * share)
+
+
+def unscaled_room(tb: ThinkingBudgetConfig, max_tokens: int) -> int:
+    """`max_tokens` of a reasoner call that carries no thinking budget: the room of a full budget when the backend
+    takes budgets (a field is configured: thinking then runs up to the backend's own cap and the answer keeps its
+    room), else the model's `max_tokens` (the old setup). The eval's bare arm sends the same."""
+    return tb.max_tokens + tb.answer_tokens if tb.field else max_tokens
+
+
+def _joined(base: str, separator: str, more: str) -> str:
+    """`more` after `base`; an empty base leaves no separator behind."""
+    return f"{base.rstrip()}{separator}{more}" if base.strip() else more
 
 
 @dataclass
@@ -111,9 +126,10 @@ class Agent:
         self.policy = cfg.reasoning_policy
         self.llm = llm
         self.knowledge = knowledge
-        verify = self.policy.enable_multi_hop_verification and knowledge.tools
+        verify = self.policy.enable_multi_hop_verification and knowledge.available  # the store, not an offered tool
         self.verifier = Verifier(cfg, llm, knowledge) if verify else None
         self.annotated = cfg.verifier.answer_style == "annotated"
+        self.strip_ids = cfg.verifier.strip_source_ids
         self.context = cfg.context_tokens
         self.max_tokens = cfg.model_backend.max_tokens  # per call without a thinking budget (and with field "")
         self.chars_per_token = cfg.model_backend.chars_per_token
@@ -145,11 +161,13 @@ class Agent:
     def _estimate(self, messages: list[dict[str, Any]]) -> int:
         return estimate_tokens(messages, self.chars_per_token, self.knowledge.tools)
 
-    def _fit_history(self, system: dict[str, Any], history: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
-        """Drop the oldest turns until system + history use at most half of the prompt budget (the rest is
-        for tool results); what remains starts with a user message, and the last message is always kept."""
+    def _fit_history(self, head: list[dict[str, Any]], history: list[dict[str, Any]],
+                     budget: int) -> list[dict[str, Any]]:
+        """Drop the oldest turns until the system message (`head`, empty without one) + history use at most half
+        of the prompt budget (the rest is for tool results); what remains starts with a user message, and the last
+        message is always kept."""
         history = list(history)
-        while len(history) > 1 and self._estimate([system, *history]) > budget // 2:
+        while len(history) > 1 and self._estimate([*head, *history]) > budget // 2:
             history.pop(0)
             while len(history) > 1 and history[0]["role"] != "user":
                 history.pop(0)
@@ -157,23 +175,26 @@ class Agent:
 
     async def run(self, history: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         tools = self.knowledge.tools
-        system = self.policy.system_prompt
-        if tools:
-            system = f"{system.rstrip()}\n\n{self.policy.tool_prompt}"
+        system = self.policy.system_prompt if self.policy.use_system_prompt else self.policy.bare_system_prompt
+        if tools and self.policy.use_tool_prompt:
+            system = _joined(system, "\n\n", self.policy.tool_prompt)
         if self.knowledge.computer:
-            system = f"{system.rstrip()}\n{self.policy.compute_prompt}"
+            system = _joined(system, "\n", self.policy.compute_prompt)
         tb = self.policy.thinking_budget  # one budget for every reasoner round; the retry and the checks get none
         thinking: dict[str, Any] = {}
         shrunk = ""
-        if tb.field:  # this answer's reasoner calls may write the budget plus the answer room
+        scaled = bool(tb.field) and tb.enabled
+        if scaled:  # this answer's reasoner calls may write the budget plus the answer room
             think = thinking_budget(_question(history), tb)
             thinking = {tb.field: think, "max_tokens": think + tb.answer_tokens}
+        elif tb.field:  # no budget sent: the backend's own cap, and the room a full budget gets
+            thinking = {"max_tokens": unscaled_room(tb, self.max_tokens)}
         budget = self.context - thinking.get("max_tokens", self.max_tokens)  # prompt tokens a reasoner call may use
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        turns = self._fit_history(messages[0], history, budget)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}] if system.strip() else []
+        turns = self._fit_history(list(messages), history, budget)
         messages += turns
         need = self._estimate(messages)
-        if thinking and need > budget:  # a long question: think less, down to min_tokens, rather than refuse it
+        if scaled and need > budget:  # a long question: think less, down to min_tokens, rather than refuse it
             fit = max(tb.min_tokens, self.context - need - tb.answer_tokens)
             if fit < thinking[tb.field]:
                 thinking, shrunk = {tb.field: fit, "max_tokens": fit + tb.answer_tokens}, " (shrunk to fit the prompt)"
@@ -199,7 +220,7 @@ class Agent:
             if (prompt := self._estimate(messages)) > budget:  # only by the few chars of a cut note
                 fields["max_tokens"] = self.context - prompt
             reply = _Reply()
-            call = self._call(messages, {**thinking, **fields}, reply)  # a lowered max_tokens wins
+            call = self._call(messages, {**thinking, **fields}, reply, "reasoner")  # a lowered max_tokens wins
             try:
                 async for delta in call:
                     yield delta
@@ -232,7 +253,7 @@ class Agent:
                 yield {"reasoning_content": shown}
             if final:
                 break
-        if thinking:  # after the rounds, so the first reasoning delta is still the model's own
+        if scaled:  # after the rounds, so the first reasoning delta is still the model's own
             yield {"reasoning_content": f"\n\n> thinking budget: {thinking[tb.field]} tokens{shrunk}\n"}
         text = reply.content.strip()
         if not text and self.policy.empty_answer_retry and not ask_again:
@@ -248,7 +269,7 @@ class Agent:
                 if fields.get("max_tokens", self.max_tokens) > room:
                     fields["max_tokens"] = room
                 retry = _Reply()
-                call = self._call(ask, fields, retry)
+                call = self._call(ask, fields, retry, "answer_retry")
                 try:
                     async for delta in call:
                         yield delta
@@ -305,13 +326,14 @@ class Agent:
         if self.annotated:
             yield {"content": answer + sources.source_list(answer)}
         else:  # a plain chat answer: the ids and the checks stay in the reasoning block
-            yield {"content": strip_cites(answer)}
+            yield {"content": strip_cites(answer) if self.strip_ids else answer}
         yield {"verification": report}  # for in-process callers (evals); the server forwards only text fields
         yield {"finish_reason": reply.finish or "stop"}
 
-    async def _call(self, messages: list[dict[str, Any]], fields: dict[str, Any], reply: _Reply):
-        """Stream one model call: reasoning and the draft go out as reasoning; tool calls are collected."""
-        stream = self.llm.stream_chat(messages, **fields)
+    async def _call(self, messages: list[dict[str, Any]], fields: dict[str, Any], reply: _Reply, stage: str):
+        """Stream one model call: reasoning and the draft go out as reasoning; tool calls are collected. `stage`
+        names the call in an open stage log."""
+        stream = self.llm.stream_chat(messages, stage=stage, **fields)
         try:
             async for chunk in stream:
                 choice = (chunk.get("choices") or [{}])[0]

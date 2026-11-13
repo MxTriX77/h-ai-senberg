@@ -57,6 +57,11 @@ reasoning_policy:
     You have no internet access. When a check needs something you cannot reach (the web, a DOI or
     publisher registry, a full paper, an outside database), say that it could not be verified (no web
     access). Never judge a reference, DOI, link or title valid or invalid from how it looks.
+  use_system_prompt: true                  # false: bare_system_prompt replaces system_prompt, i.e. the suite's rules are
+                                           # off (a layer switch, for evals and model profiles)
+  bare_system_prompt: ""                   # the system line without the suite's rules: used when use_system_prompt is
+                                           # false and by the eval's bare arm (evals.run --mode bare); empty = no system
+                                           # message at all
   tool_prompt: |                           # added to the system prompt when knowledge tools are offered
     You can look facts up in offline sources with the tools. Whenever you are unsure of a fact or do not
     know it, look it up before you answer and base the answer on what you find: search_knowledge for
@@ -70,8 +75,12 @@ reasoning_policy:
     percentages, powers, roots, logarithms, unit conversions, and also side calculations such as
     "to reach X you would need Y". Put all the calculations of a step into one calculate call (it takes
     a list of expressions). When you revise a number, recompute everything that depends on it.
+  use_tool_prompt: true                    # false: tools are offered without tool_prompt (a layer switch)
   enable_multi_hop_verification: true      # check the draft claim by claim before answering (see verifier)
   max_search_depth: 3                      # tool rounds per answer (each round may call several tools); 0 = no tools
+  tools_off: []                            # tools not offered to the model although the store has them, by their names
+                                           # under `tools` (e.g. [lookup_compound]); the verifier may still search the
+                                           # store (a layer switch)
   max_calc_rounds: 1                       # rounds of calculate calls only, on top: they use no lookup rounds; 0 = they do
                                            # (compute calls count as calculate calls)
   compute_tool: true                       # offer the built-in compute tool (tools.compute) right after calculate and add
@@ -102,6 +111,9 @@ reasoning_policy:
                                            # the judge and review calls (no thinking) get none
     field: "thinking_budget_tokens"        # request field the backend reads (llama-server b11782+); "" = send none: only
                                            # llama_server reasoning-budget caps thinking, max_tokens as model_backend, as before
+    enabled: true                          # false: no budget is sent either, but a reasoner call gets the room of a full
+                                           # budget (max_tokens + answer_tokens): it thinks up to the server's cap, as the
+                                           # eval's bare arm does (a layer switch)
     min_tokens: 1024                       # share 0: a short question (the old server cap; 1024 + 3072 = the old max_tokens)
     max_tokens: "${REASONING_BUDGET:-4096}"   # share 1; same variable as the server cap
     answer_tokens: 3072                    # room for the answer after the thinking; max_tokens + this must be < the context
@@ -215,6 +227,13 @@ verifier:                                  # claim checks on the draft; on/off: 
     C4: no_claim
     After supports or contradicts, give the ids of the passages that decide it.
   rel_tol: 0.001                           # numbers: relative tolerance on top of the claim's own rounding
+  record_check: true                       # numbers and formulas of a claim are checked in code against the retrieved
+                                           # records and corrected from them (see unit_checks); false: no claim gets a
+                                           # verdict from records (a layer switch)
+  claim_judge: true                        # one judge call rates the remaining claims against their cited passages, and
+                                           # unsupported ones are re-searched and judged once more; false: no judge call and
+                                           # no re-search. With record_check false too, claims are not split or labelled at
+                                           # all: the draft goes on as the code checks left it (a layer switch)
   unit_checks: true                        # a number is checked against a record value only as the same quantity: no
                                            # other unit after it (J s = J Hz^-1, m/s = m per second; km/h, eV s differ)
                                            # and no other property named nearest it ("boils at" is not a molar mass);
@@ -282,6 +301,9 @@ verifier:                                  # claim checks on the draft; on/off: 
   max_research: 6                          # claims re-searched per answer
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the
                                            # reasoning block); annotated: [S#], labels, summary, source list (debugging)
+  strip_source_ids: true                   # plain style: [S#] markers are removed from the final answer; false: the answer
+                                           # keeps its text as the checks left it (the pattern also matches other text,
+                                           # e.g. table[S1] in code; a layer switch)
   consistency_check: true                  # after the claim checks: one review call over the whole answer and the task
   consistency_prompt: |
     You review an answer to the user's task for one thing only: places where the answer contradicts itself,
@@ -390,6 +412,9 @@ evidence:                                  # evidence ledger (D-032): verdicts s
     - Add no evidence, numbers or sources that are not in the ledger or the draft.
     Write only the answer, in the language of the request, without the ledger, its field names, rule names or
     remarks about this rewrite.
+  writer: true                             # a changed status or a missing item makes one call rewrite the answer from the
+                                           # settled ledger; false: the ledger runs and reports, the answer stays the
+                                           # checked draft (a layer switch)
   independent: false                       # true: also judge each listed item in its own call, without the draft or
                                            # the ledger; a different settled status makes the item unverified (R-f).
                                            # Needs enabled; up to independent_max_items more thinking calls per request.
@@ -454,6 +479,22 @@ evidence:                                  # evidence ledger (D-032): verdicts s
 #   max_claims: 10                         # claims sent per answer
 #   timeout_s: 60
 #   prompt: |                              # one claim at a time, with the request; reply supported / contradicted / unsure
+
+evals:                                     # the measuring tools (python -m evals.run, evals.review); the chat never reads this
+  budgets_s:                               # median seconds per answer by request type (laptop, 9B at 20 W; scale them in a
+    chat: 15                               # model profile); a request type without a budget is timed, not judged
+    factual: 120
+    audit: 600
+  science_categories: [science]            # item categories in which a call of a science tool is expected
+  science_tools: [search_knowledge, lookup_compound, lookup_constant]   # a call of one of these, by the model or by the
+                                           # verifier's re-search, on an item of another category counts as domain drift
+  request:                                 # fields merged into every model call of an eval run, in every arm alike
+    stream_options: {include_usage: true}  # OpenAI: the last chunk of a stream carries the token counts (logged per call)
+  python_tests:                            # the one code check of the general items (reference.check.type: python_tests)
+    enabled: true                          # runs the answer's code and the item's tests in a child process (temp folder,
+                                           # time and memory limits, no network); false: nothing is executed
+    timeout_s: 20                          # wall-clock limit per run
+    memory_mb: 2048                        # address-space limit where the system has one; 0 = none
 
 llama_server:                              # local reasoner, started by `uv run haisenberg`
   enabled: "${LLAMA_SERVER_ENABLED:-true}" # false: use an already running or remote backend

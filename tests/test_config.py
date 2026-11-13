@@ -631,3 +631,68 @@ def test_thinking_budget_off_is_the_old_setup(tmp_path, monkeypatch):
     assert _arg(build_command(cfg), "--reasoning-budget") == "1024" and cfg.model_backend.max_tokens == 4096
     data["reasoning_policy"]["thinking_budget"]["max_tokens"] = 99999  # above the cap and the context
     assert load_config(write(tmp_path, data)).reasoning_policy.thinking_budget.field == ""
+
+
+LAYER_SWITCHES = [("reasoning_policy", "use_system_prompt"), ("reasoning_policy", "bare_system_prompt"),
+                  ("reasoning_policy", "use_tool_prompt"), ("reasoning_policy", "tools_off"),
+                  ("verifier", "record_check"), ("verifier", "claim_judge"), ("verifier", "strip_source_ids"),
+                  ("evidence", "writer")]
+
+
+def test_layer_switches_ship_on(tmp_path):
+    """Every layer of the suite has a switch, and the shipped value keeps the suite as it was (measure-suite)."""
+    cfg = load_config(write(tmp_path))
+    p, v = cfg.reasoning_policy, cfg.verifier
+    assert p.use_system_prompt and p.use_tool_prompt and p.thinking_budget.enabled
+    assert p.tools_off == [] and p.bare_system_prompt == ""
+    assert v.record_check and v.claim_judge and v.strip_source_ids and cfg.evidence.writer
+
+
+@pytest.mark.parametrize("section, key", LAYER_SWITCHES)
+def test_layer_switch_missing(tmp_path, section, key):
+    data = base()
+    del data[section][key]
+    with pytest.raises(ConfigError, match=rf"{section}\.{key}"):
+        load_config(write(tmp_path, data))
+
+
+def test_thinking_budget_switch(tmp_path):
+    data = base()
+    del data["reasoning_policy"]["thinking_budget"]["enabled"]
+    with pytest.raises(ConfigError, match=r"reasoning_policy\.thinking_budget\.enabled"):
+        load_config(write(tmp_path, data))
+    data = base()
+    data["reasoning_policy"]["thinking_budget"].update(enabled=False, max_tokens=6144)  # the bounds still count
+    with pytest.raises(ConfigError, match=r"thinking_budget\.max_tokens \(6144\) exceeds the server cap"):
+        load_config(write(tmp_path, data))
+
+
+def test_tools_off_names_known_tools(tmp_path):
+    data = base()
+    data["reasoning_policy"]["tools_off"] = ["lookup_compound", "calculate"]
+    assert load_config(write(tmp_path, data)).reasoning_policy.tools_off == ["lookup_compound", "calculate"]
+    data["reasoning_policy"]["tools_off"] = ["lookup_compund"]
+    with pytest.raises(ConfigError, match=r"reasoning_policy\.tools_off: unknown tool \['lookup_compund'\]; known: "
+                                          r"\['calculate', 'compute', 'lookup_compound', 'lookup_constant', "
+                                          r"'search_knowledge'\]"):
+        load_config(write(tmp_path, data))
+
+
+def test_eval_settings(tmp_path, monkeypatch):
+    e = load_config(write(tmp_path)).evals
+    assert e.budgets_s == {"chat": 15, "factual": 120, "audit": 600}  # none for analytic: timed, not judged
+    assert e.science_categories == ["science"]
+    assert e.science_tools == ["search_knowledge", "lookup_compound", "lookup_constant"]
+    assert e.request == {"stream_options": {"include_usage": True}}
+    assert (e.python_tests.enabled, e.python_tests.timeout_s, e.python_tests.memory_mb) == (True, 20, 2048)
+    for (section, key), value, named in [(("python_tests", "timeout_s"), 0, r"evals\.python_tests\.timeout_s"),
+                                         (("budgets_s", "chat"), -1, r"evals\.budgets_s\.chat"),
+                                         (("python_tests", "retries"), 1, r"evals\.python_tests\.retries")]:
+        data = base()
+        data["evals"][section][key] = value
+        with pytest.raises(ConfigError, match=named):
+            load_config(write(tmp_path, data))
+    path = write(tmp_path)
+    write_profile(tmp_path, "fast", {"evals": {"budgets_s": {"chat": 5}}})  # a faster machine scales a budget
+    monkeypatch.setenv(PROFILE_ENV, "fast")
+    assert load_config(path).evals.budgets_s == {"chat": 5, "factual": 120, "audit": 600}
