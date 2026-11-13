@@ -269,7 +269,10 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # retrieved reference record gives another value for the same quantity (a number
                                            # with the same unit, within ×2, in a line or sentence holding half the claim's
                                            # words); nothing is rewritten; false: as before. No effect without literature
-  checkers: [element_balance]              # domain checker plug-ins run on every draft (code only); [] = none
+  checkers: []                             # domain checker plug-ins run on every draft (code only); [] = none.
+                                           # element_balance (the chemistry plug-in) is off by default: no true fix
+                                           # on record, and it rewrites non-chemistry text such as spreadsheet cells
+                                           # (D-051); it returns per topic later (D-034)
   checkers_clear_only: true                # a checker rewrites only what is clearly its subject; a fix it doubts is
                                            # only reported (element_balance: a formula with an explicit count of 1
                                            # such as P₁V₁ or S1, a written number over 20 in front such as 1000 IU,

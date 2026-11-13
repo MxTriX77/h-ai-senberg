@@ -7,9 +7,9 @@ A:  # the model alone: no tools, no checks
 B:  # + tools (lookups and the calculator)
   reasoning_policy: {max_search_depth: 3, enable_multi_hop_verification: false}
   verifier: {arithmetic_check: false, checkers: [], consistency_check: false}
-C:  # + claim verification, arithmetic recheck and domain checkers
+C:  # + claim verification and arithmetic recheck (domain checkers off, as in the shipped config: D-051)
   reasoning_policy: {max_search_depth: 3, enable_multi_hop_verification: true}
-  verifier: {arithmetic_check: true, checkers: [element_balance], consistency_check: false}
+  verifier: {arithmetic_check: true, checkers: [], consistency_check: false}
 D:  # + consistency review: the whole pipeline
   reasoning_policy: {max_search_depth: 3, enable_multi_hop_verification: true}
-  verifier: {arithmetic_check: true, checkers: [element_balance], consistency_check: true}
+  verifier: {arithmetic_check: true, checkers: [], consistency_check: true}

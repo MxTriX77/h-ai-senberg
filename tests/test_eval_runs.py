@@ -111,7 +111,7 @@ def test_modes(cfg):
     modes = load_modes()
     assert set(modes) == {"A", "B", "C", "D"}
     expected = {"A": (0, False, False, [], False), "B": (3, False, False, [], False),
-                "C": (3, True, True, ["element_balance"], False), "D": (3, True, True, ["element_balance"], True)}
+                "C": (3, True, True, [], False), "D": (3, True, True, [], True)}
     for mode, want in expected.items():
         apply_mode(cfg, modes[mode])
         p, v = cfg.reasoning_policy, cfg.verifier
