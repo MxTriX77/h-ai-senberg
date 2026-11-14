@@ -55,9 +55,9 @@ def test_every_layer_has_a_name_and_the_shipped_suite_has_them_on(shipped):
     names = [layer.name for layer in layers.registry(shipped)]
     assert names == ["system_prompt", "tool_prompt", *TOOL_LAYERS, "thinking_budget", "text_tool_calls",
                      "answer_retry", "written_calculations", "weak_hit_filter", "arithmetic", "carry_forward",
-                     "checker.element_balance", "record_check", "judge", "research", "review", "ledger", "writer",
-                     "independent", "cite_stripping"]
-    off = {"independent", "checker.element_balance"}
+                     "checker.element_balance", "record_check", "judge", "research", "support_quotes", "review",
+                     "ledger", "writer", "independent", "cite_stripping"]
+    off = {"independent", "checker.element_balance", "support_quotes"}  # the last one until its A/B
     assert on(shipped) == set(names) - off
     assert layers.effective(shipped) == {n: n not in off for n in names}
     assert layers.effective(shipped, knowledge(shipped)) == layers.effective(shipped)  # the store offers every tool
@@ -170,6 +170,14 @@ def test_a_plus_on_the_configured_suite_and_a_checker(shipped):
     assert name == "config-plus-checker.element_balance+independent-minus-writer"
     assert shipped.verifier.checkers == ["element_balance"] and shipped.evidence.independent
     assert shipped.evidence.enabled and not shipped.evidence.writer
+
+
+def test_support_quotes_is_a_layer_of_the_judge(shipped):
+    name, arm = layers.apply_arm(shipped, layers.CONFIG, plus=["support_quotes"])
+    assert name == "config-plus-support_quotes" and shipped.verifier.support_quotes
+    assert layers.effective(shipped, knowledge(shipped))["support_quotes"]
+    with pytest.raises(ValueError, match="support_quotes needs judge"):
+        layers.apply_arm(shipped, layers.CONFIG, minus=["judge", "research"])
 
 
 def test_bare_plus_one_layer_switches_everything_else_off(shipped):

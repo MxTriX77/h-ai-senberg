@@ -21,6 +21,7 @@ import httpx
 from .config import Config, VerdictWords
 from .calc import Arithmetic, computations, converted, find_arithmetic, prefixed
 from .checkers import CHECKERS
+from .l1.dense import non_latin
 from .l1.store import STOPWORDS, Value
 from .l1.text import parse_formula, to_hill
 from .l1.units import parse_unit, read_unit, same_unit
@@ -32,6 +33,13 @@ log = logging.getLogger(__name__)
 
 SUPPORTED, UNVERIFIED, CORRECTED, REMOVED, NO_CLAIM = "supported", "unverified", "corrected", "removed", "no_claim"
 OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
+# What the evidence gave for a claim (verifier.support_quotes), next to its outcome: a source states it (code found
+# the quote or the record's value), a quoted passage states a part of it, a source states another value, a passage is
+# about its subject and none states it, no passage is about its subject (or its re-search found nothing), nothing
+# compared it with a source.
+PARTLY, CONTRADICTED, NOT_STATED, NOT_FOUND, NOT_CHECKED = "partly", "contradicted", "not_stated", "not_found", "not_checked"
+STATUSES = (SUPPORTED, PARTLY, CONTRADICTED, NOT_STATED, NOT_FOUND, NOT_CHECKED)
+_OPEN = (PARTLY, NOT_STATED, NOT_FOUND, NOT_CHECKED)  # the statuses of an unsettled claim; an earlier one says more
 
 # Same-length normalisation for reading numbers and formulas, so spans stay valid in the original text.
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
@@ -55,6 +63,10 @@ _END = re.compile(r"[.!?]+(?:\s*\[S\d+(?:\s*[,;]\s*S?\d+)*\])*(?=\s|$)")
 _ABBREV = {"e.g", "i.e", "approx", "ca", "vs", "etc", "cf", "fig", "eq", "no", "al"}
 _MARKERS = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+|>\s*)*")
 _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]claim)\b(.*)$", re.I)
+# The verdicts of verifier.support_prompt (verifier.support_quotes).
+_QUOTED_VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|partly|contradicts|not[_ ]stated|not[_ ]found|no[_ ]claim)\b(.*)$",
+                             re.I)
+_BOLD_LINE = re.compile(r"(\*\*|__)((?:(?!\1).)+)\1:?")  # a line that is one bold run: a heading written as text
 # A label (an id such as A1, C or (b), maybe after one word: "Claim C", "Claim 3") and a colon starts the line.
 _LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
@@ -77,6 +89,8 @@ class Claim:
     ids: list[str] = field(default_factory=list)  # supporting (or correcting) source ids
     fixed: str | None = None  # the corrected text
     note: str = ""
+    status: str = ""  # one of STATUSES with verifier.support_quotes, else ''
+    context: str = ""  # what the judge is shown with the claim (see split_claims)
 
 
 @dataclass
@@ -88,12 +102,16 @@ class Verification:
     checks: list[dict[str, Any]] = field(default_factory=list)  # domain checker findings: checker, text, fixed, note
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)  # every source issued: label, kind, passage
     judge_calls: list[dict[str, Any]] = field(default_factory=list)  # what each judge call saw, and its reply
+    statuses: bool = False  # the claims have an evidence status (verifier.support_quotes)
 
     def report(self) -> dict[str, Any]:
         claims = [c for c in self.claims if c.outcome != NO_CLAIM]
+        status = self.statuses
         return {
-            "claims": [{"n": c.n, "text": c.text, "outcome": c.outcome, "ids": c.ids, "note": c.note} for c in claims],
+            "claims": [{"n": c.n, "text": c.text, "outcome": c.outcome, "ids": c.ids, "note": c.note,
+                        **({"status": c.status} if status else {})} for c in claims],
             "counts": {o: sum(c.outcome == o for c in claims) for o in OUTCOMES},
+            **({"statuses": {s: sum(c.status == s for c in claims) for s in STATUSES}} if status else {}),
             "consistency": self.consistency,
             "arithmetic": self.arithmetic,
             "checks": self.checks,
@@ -105,17 +123,23 @@ class Verification:
 # --- claims ---------------------------------------------------------------------------------------
 
 
-def split_claims(draft: str, skip_labelled: bool = False) -> list[Claim]:
+def split_claims(draft: str, skip_labelled: bool = False, context: int = 0) -> list[Claim]:
     """Sentences of paragraphs and list items; not headings, code, display math, tables or lead-ins, and with
-    `skip_labelled` not labelled answer or verdict lines (`A1: …`, `Claim C: Incorrect`)."""
+    `skip_labelled` not labelled answer or verdict lines (`A1: …`, `Claim C: Incorrect`). With `context` (characters:
+    verifier.context_chars) every claim also gets what the judge is shown with it, each part cut to that length: the
+    nearest heading above it (a `#` line, or a line that is one bold run) and the sentence before it under that
+    heading, as `under: Procedure; after: Heat the flask.`"""
     claims: list[Claim] = []
     pos, fence = 0, False
+    under = before = ""
     for line in draft.splitlines(keepends=True):
         start, pos = pos, pos + len(line)
         stripped = line.strip()
         if stripped.startswith("```"):
             fence = not fence
             continue
+        if not fence and stripped.startswith("#"):
+            under, before = plain(stripped.lstrip("#")), ""
         if fence or not stripped or stripped.startswith(("#", "|", "$$", "\\[", "\\]")):
             continue
         body_at = start + _MARKERS.match(line).end()
@@ -128,7 +152,12 @@ def split_claims(draft: str, skip_labelled: bool = False) -> list[Claim]:
             text = text.strip()
             if _is_claim(text):
                 at = body_at + a + lead
-                claims.append(Claim(len(claims) + 1, at, at + len(text), text, cites(text)))
+                shown = [f"{name}: {part[:context]}" for name, part in (("under", under), ("after", before)) if part]
+                claims.append(Claim(len(claims) + 1, at, at + len(text), text, cites(text),
+                                    context="; ".join(shown) if context else ""))
+            before = plain(text)
+        if heading := _BOLD_LINE.fullmatch(body.strip()):
+            under, before = plain(heading.group(2)), ""
     return claims
 
 
@@ -845,20 +874,58 @@ def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None,
     return out, ""
 
 
-def parse_verdicts(text: str, given: set[str]) -> dict[int, tuple[str, list[str], str | None]]:
-    """Claim number -> (verdict, decisive ids among `given`, correction) from the judge's reply lines."""
+def parse_verdicts(text: str, given: set[str], quotes: bool = False) -> dict[int, tuple[str, list[str], str | None]]:
+    """Claim number -> (verdict, decisive ids among `given`, what follows `|`: a correction) from the judge's reply
+    lines. With `quotes` the lines are those of verifier.support_prompt: `supports` and `partly` carry a quote after
+    `|`, and a verdict that needs a passage and names none of the given ones is not_stated (without: not_said)."""
+    pattern, unsettled = (_QUOTED_VERDICT, NOT_STATED) if quotes else (_VERDICT, "not_said")
     out: dict[int, tuple[str, list[str], str | None]] = {}
     for line in text.splitlines():
-        m = _VERDICT.match(line.strip())
+        m = pattern.match(line.strip())
         if not m:
             continue
         verdict = m.group(2).lower().replace(" ", "_")
         ids_part, _, correction = m.group(3).partition("|")
         ids = [i for i in dict.fromkeys(f"S{x}" for x in re.findall(r"S(\d+)", ids_part)) if i in given]
-        if verdict in ("supports", "contradicts") and not ids:
-            verdict = "not_said"
+        if verdict in ("supports", "partly", "contradicts") and not ids:
+            verdict = unsettled
         out.setdefault(int(m.group(1)), (verdict, ids, correction.strip() or None))
     return out
+
+
+def _numbers(text: str) -> list[Number]:
+    """The numbers of a sentence, commas between digits read as in unconfirmed (Russian text: decimal commas)."""
+    return read_numbers(_decimal_points(text, bool(re.search("[А-Яа-яЁё]", text))))
+
+
+def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min_share: float = 0.0) -> tuple[str, str]:
+    """(status, why it is not supported) of a claim the judge says `passage` supports with `quote`
+    (verifier.support_quotes). supported: the quote is in the passage as whole words (both as _quote_text reads them,
+    case and the marks around the quote aside), has at least `min_words` words or a number, and holds every number of
+    the claim, within the rounding of either. not_stated: no quote, a quote too short or not in the passage, or, with
+    `min_share`, one that holds a smaller share of the claim's content words (tools.term_share; not asked when claim
+    and quote are in different scripts). partly: the quote is in the passage and lacks a number of the claim."""
+    said = re.sub(r"^\W+|\W+$", "", _quote_text(quote)[0].casefold())
+    if not said:
+        return NOT_STATED, "no quote"
+    if len(_words(said)) < min_words and not read_numbers(said):
+        return NOT_STATED, "quote too short"
+    if not re.search(rf"(?<!\w){re.escape(said)}(?!\w)", _quote_text(passage)[0].casefold()):
+        return NOT_STATED, "quote not found"
+    if min_share and non_latin(claim) == non_latin(said) and term_share(claim, said) < min_share:
+        return NOT_STATED, f"the quote holds under {min_share:g} of the claim's words"
+    have = _numbers(quote)
+    missing = [claim[n.start : n.end] for n in _numbers(claim)
+               if not any(abs(n.value - m.value) <= max(n.half, m.half) for m in have)]
+    if missing:
+        return PARTLY, f"{' and '.join(missing)} not in the quote"
+    return SUPPORTED, ""
+
+
+def _open_status(c: Claim, status: str) -> None:
+    """Give an unsettled claim an evidence status, unless the one it has from an earlier call says more (_OPEN)."""
+    if c.status not in _OPEN or _OPEN.index(status) < _OPEN.index(c.status):
+        c.status = status
 
 
 _ECHO_RUN = 5  # words in a row shared with the judge's instructions that make a correction an echo of them
@@ -952,7 +1019,7 @@ class Verifier:
         shown = {s.id: {"label": s.record.label(), "kind": s.kind, "literature": s.literature, "passage": s.passage}
                  for s in sources.items}  # the model's lookups and the re-searches, exactly as shown
         yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks, sources=shown,
-                           judge_calls=calls)
+                           judge_calls=calls, statuses=self.cfg.support_quotes)
 
     async def _check_claims(self, question: str, draft: str, sources: Sources, claims: list[Claim],
                             calls: list[dict[str, Any]]):
@@ -962,7 +1029,7 @@ class Verifier:
         derived = self.cfg.skip_derived_claims
         pending = []
         with stage("claims", CHECK):
-            claims += split_claims(draft, skip_labelled=derived and self.cfg.skip_labelled_claims)
+            claims += self.split(draft)
             yield _say(f"\n\nVerification: {len(claims)} claims\n")
             given, computed = [n.value for n in read_numbers(question)], results(draft)
             mask = quoted(draft, question) if self.cfg.keep_quotes else []
@@ -1018,7 +1085,17 @@ class Verifier:
             for c in claims:
                 if c.outcome == SUPPORTED and (why := reference_conflict(c, sources, self.cfg.rel_tol)):
                     c.outcome, c.ids, c.note = UNVERIFIED, [], f"{c.note}; only literature supports {why}"
+                    if self.cfg.support_quotes:
+                        c.status = CONTRADICTED  # a reference record states another value
                     yield _say(f"- C{c.n} {c.outcome} (only literature supports {why})\n")
+        if self.cfg.support_quotes:  # the status of every claim no judge call gave one
+            for c in claims:
+                if c.outcome in (SUPPORTED, CORRECTED, REMOVED):  # settled in code, from a record
+                    c.status = c.status or (SUPPORTED if c.outcome == SUPPORTED else CONTRADICTED)
+                elif c.n in found_for and not (found_for[c.n] or c.cites):
+                    _open_status(c, NOT_FOUND)  # its re-search returned nothing
+                elif c.outcome != NO_CLAIM:
+                    c.status = c.status or NOT_CHECKED  # a quotation, a computation, no re-search slot, no verdict
         for c in claims:
             if c.outcome == CORRECTED:
                 yield _say(f"- C{c.n} corrected from {', '.join(c.ids)}: {plain(c.fixed or '')}\n")
@@ -1062,24 +1139,44 @@ class Verifier:
             yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
         yield answer, applied
 
+    def split(self, draft: str) -> list[Claim]:
+        """The claims of a draft, as this verifier's settings split them."""
+        return split_claims(draft, skip_labelled=self.cfg.skip_derived_claims and self.cfg.skip_labelled_claims,
+                            context=self.cfg.context_chars if self.cfg.support_quotes else 0)
+
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source], calls: list[dict[str, Any]],
                      stage_name: str = "judge"):
+        """The judge calls of one stage for these claims: one call, or with verifier.judge_batch calls of at most
+        that many claims, in their order, each with these passages (see _judge_call). Yields reasoning lines."""
+        size = self.cfg.judge_batch or len(claims) or 1
+        for i in range(0, len(claims), size):
+            async for line in self._judge_call(question, claims[i : i + size], passages, calls, stage_name):
+                yield line
+
+    async def _judge_call(self, question: str, claims: list[Claim], passages: list[Source],
+                          calls: list[dict[str, Any]], stage_name: str):
         """One judge call for these claims (named `stage_name` in an open stage log); sets their outcome and adds
-        what the call saw and its reply to `calls` (a failed call: an empty reply). Yields reasoning lines."""
+        what the call saw and its reply to `calls` (a failed call: an empty reply). With verifier.support_quotes the
+        judge follows support_prompt, a `supports` counts only as far as code finds its quote in a passage it names
+        (quoted_support), a claim without a line in the reply is not rated, and every rated claim gets its evidence
+        status. Yields reasoning lines."""
+        quotes = self.cfg.support_quotes
+        prompt = self.cfg.support_prompt if quotes else self.cfg.judge_prompt
         passages = list(passages)
         while True:  # leave passages out from the end until the call fits the context
             user = (
                 f"Question: {question}\n\nPassages:\n"
                 + "\n\n".join(f"[{s.id}] {s.record.label()}\n{s.passage}" for s in passages)
                 + "\n\nClaims:\n"
-                + "\n".join(f"C{c.n}: {plain(c.text)}" for c in claims)
+                + "\n".join(f"C{c.n}{f' [{c.context}]' if c.context else ''}: {plain(c.text)}" for c in claims)
             )
-            messages = [{"role": "system", "content": self.cfg.judge_prompt}, {"role": "user", "content": user}]
+            messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user}]
             if not passages or estimate_tokens(messages, self.chars_per_token) <= self.budget:
                 break
             yield _say(f"- {passages.pop().id} left out of the judge call (context budget)\n")
         given = {s.id for s in passages}
-        call = {"stage": stage_name, "claims": [{"n": c.n, "text": plain(c.text)} for c in claims],
+        call = {"stage": stage_name, "claims": [{"n": c.n, "text": plain(c.text),
+                                                 **({"context": c.context} if c.context else {})} for c in claims],
                 "passages": [s.id for s in passages], "reply": ""}
         calls.append(call)
         try:
@@ -1089,12 +1186,32 @@ class Verifier:
             yield _say(f"- judge failed: {e}\n")
             return
         call["reply"] = reply
-        verdicts = parse_verdicts(reply, given)
+        verdicts = parse_verdicts(reply, given, quotes)
         for c in claims:
+            if quotes and c.n not in verdicts:  # no line for it (a reply cut off, a claim left out): not rated
+                c.note = "judge: no verdict"
+                yield _say(f"- C{c.n} {c.note}\n")
+                continue
             verdict, ids, correction = verdicts.get(c.n, ("not_said", [], None))
             c.note = f"judge: {verdict}" + (f" {' '.join(ids)}" if ids else "")
+            if quotes and verdict in ("supports", "partly"):  # as far as code finds the quote in a named passage
+                (status, why), sid = min(
+                    ((quoted_support(plain(c.text), correction or "", f"{s.record.label()}\n{s.passage}",
+                                     self.cfg.quote_min_words, self.cfg.quote_min_share), s.id)
+                     for s in passages if s.id in ids), key=lambda found: STATUSES.index(found[0][0]))
+                if verdict == "partly" and status == SUPPORTED:
+                    status = PARTLY  # the judge itself says a part of the claim is not there
+                c.note += f" | {correction}" if correction else ""
+                if why:
+                    c.note += f", {why}{f' in {sid}' if why.endswith('not found') else ''}: {status}"
+                if status == SUPPORTED:
+                    c.outcome, c.ids, c.status = SUPPORTED, [sid], SUPPORTED
+                else:
+                    _open_status(c, status)
+                yield _say(f"- C{c.n} {c.note}\n")
+                continue
             if (verdict == "contradicts" and correction and self.cfg.ignore_prompt_echo
-                    and echoes(correction, self.cfg.judge_prompt)):
+                    and echoes(correction, prompt)):
                 correction, c.note = None, f"{c.note}, correction repeats the judge instructions: ignored"
             fixed, why = correction, ""
             if verdict == "contradicts" and correction and self.cfg.judge_minimal_edits:
@@ -1110,6 +1227,10 @@ class Verifier:
                 c.outcome, c.ids, c.fixed = (CORRECTED, ids, fixed) if fixed else (REMOVED, ids, None)
             elif verdict == "no_claim":
                 c.outcome = NO_CLAIM
+            if quotes and c.outcome in (CORRECTED, REMOVED):
+                c.status = CONTRADICTED
+            elif quotes and verdict != "no_claim":  # a contradiction that changed nothing counts as not stated
+                _open_status(c, verdict if verdict in (NOT_STATED, NOT_FOUND) else NOT_STATED)
             yield _say(f"- C{c.n} {c.note}\n")
 
     async def _complete(self, messages: list[dict[str, Any]], stage_name: str) -> str:

@@ -26,6 +26,7 @@ from haisenberg.verifier import (
     parse_fixes,
     parse_verdicts,
     quoted,
+    quoted_support,
     read_formulas,
     read_numbers,
     reference_conflict,
@@ -601,6 +602,236 @@ async def test_judge_leaves_out_passages_that_do_not_fit(cfg, fake, knowledge):
     assert "S3 left out of the judge call" in lines and "S2 left out of the judge call" in lines
     assert estimate_tokens(fake.bodies[0]["messages"], cfg.model_backend.chars_per_token) <= v.budget
     assert (claims[0].outcome, claims[1].outcome) == (SUPPORTED, "")  # S2 was not given: not supported
+
+
+# --- strict support: a support quotes the passage (verifier.support_quotes) -----------------------------
+
+ISOTOPE = ("Technetium-99m\nTechnetium-99m is a metastable nuclear isomer. Its half-life is 6.0066 hours,"
+           " and it emits gamma rays.")
+IODINE = "Iodine-131\nIt has a radioactive decay half-life of about eight days."
+
+
+def test_parse_quoted_verdicts():
+    reply = ('C1: supports S1 | "its half-life is 6.0066 hours"\n**C2** - partly S2 | "about eight days"\n'
+             "C3: contradicts S2 | Ethanol boils at 78.23 °C.\nC4: not_stated\nC5: not_found\nC6: no_claim\n"
+             'C7: supports S9 | "words"\nC8: not_said\nnoise')
+    v = parse_verdicts(reply, {"S1", "S2"}, quotes=True)
+    assert v[1] == ("supports", ["S1"], '"its half-life is 6.0066 hours"')
+    assert v[2] == ("partly", ["S2"], '"about eight days"')
+    assert v[3] == ("contradicts", ["S2"], "Ethanol boils at 78.23 °C.")
+    assert [v[n][0] for n in (4, 5, 6)] == ["not_stated", "not_found", "no_claim"]
+    assert v[7][0] == "not_stated" and 8 not in v  # a passage that was not given; no verdict of this prompt
+
+
+def test_a_support_needs_its_quote_in_the_passage():
+    claim = "The half-life is 6.0066 hours."
+    assert quoted_support(claim, '"its half-life is 6.0066 hours"', ISOTOPE, 3) == ("supported", "")
+    assert quoted_support(claim, '"it requires no medium"', ISOTOPE, 3) == ("not_stated", "quote not found")
+    assert quoted_support(claim, '"6.0066 hours"', ISOTOPE, 3) == ("supported", "")  # short, but it holds a number
+    assert quoted_support("It emits gamma rays.", '"gamma rays"', ISOTOPE, 3) == ("not_stated", "quote too short")
+    assert quoted_support("It emits gamma rays.", '"gamma rays"', ISOTOPE, 2) == ("supported", "")
+    assert quoted_support(claim, "", ISOTOPE, 3) == ("not_stated", "no quote")
+
+
+def test_a_quote_without_a_number_of_the_claim_supports_a_part():
+    claim = "About 29.9 MBq remains after 30 days."
+    assert quoted_support(claim, '"a radioactive decay half-life of about eight days"', IODINE, 3) == (
+        "partly", "29.9 and 30 not in the quote")
+    assert quoted_support("Its half-life is 6.01 h.", '"Its half-life is 6.0066 hours"', ISOTOPE, 3)[0] == "supported"
+    assert quoted_support("Its half-life is 6.1 h.", '"Its half-life is 6.0066 hours"', ISOTOPE, 3)[0] == "partly"
+
+
+def test_a_quote_is_read_like_a_quotation():
+    passage = "Water\nWater (H₂O) is  a polar *inorganic* compound.\nMolar mass: 18.015 g·mol⁻¹"
+    for quote in ('"WATER (H2O) IS A POLAR"', '“Water (H₂O) is a polar inorganic compound”', "is a  polar\ninorganic",
+                  "**Water** (H2O) is a polar.", "Molar mass: 18.015 g·mol-1"):
+        assert quoted_support("Water is polar.", quote, passage, 3) == ("supported", ""), quote
+    assert quoted_support("Water is polar.", "is a polar inorgan", passage, 3)[1] == "quote not found"  # a cut word
+    assert quoted_support("Water is polar.", "is a polar organic compound", passage, 3)[1] == "quote not found"
+
+
+def test_a_decimal_comma_of_the_claim_is_a_decimal_point():
+    passage = "Water\nMolar mass: 18.015 g/mol. Density: 0.99705 g/mL at 25 °C."
+    assert quoted_support("Молярная масса воды равна 18,015 г/моль.", "Molar mass: 18.015 g/mol", passage, 3)[0] == "supported"
+    assert quoted_support("Молярная масса воды равна 18,02 г/моль.", "Molar mass: 18.015 g/mol", passage, 3)[0] == "supported"
+    assert quoted_support("Плотность воды 0,99705 г/мл при 25 °C.", "Density: 0.99705 g/mL at 25 °C", passage, 3)[0] == "supported"
+    assert quoted_support("Молярная масса воды равна 18,15 г/моль.", "Molar mass: 18.015 g/mol", passage, 3) == (
+        "partly", "18,15 not in the quote")
+    assert quoted_support("It weighs 1,900 g.", "a mass of 1900 g", "X\nIt has a mass of 1900 g.", 3)[0] == "supported"
+
+
+def test_quote_share_is_a_measurement_setting():
+    passage = "Time\nTime is the continued sequence of existence and events."
+    claim, quote = "Sort the intervals by their start time.", "Time is the continued sequence of existence"
+    assert quoted_support(claim, quote, passage, 3, 0.0) == ("supported", "")
+    assert quoted_support(claim, quote, passage, 3, 0.5) == ("not_stated", "the quote holds under 0.5 of the claim's words")
+    assert quoted_support("Time is a sequence of events.", quote, passage, 3, 0.5)[0] == "supported"
+    assert quoted_support("Время есть последовательность событий.", quote, passage, 3, 0.5)[0] == "supported"  # other script
+
+
+def test_claims_carry_their_subject():
+    draft = "The proton-to-electron mass ratio is 1836.15. This is a recommended value."
+    first, second = split_claims(draft, context=160)
+    assert (first.context, second.context) == ("", "after: The proton-to-electron mass ratio is 1836.15.")
+    assert [c.context for c in split_claims(draft)] == ["", ""]  # only when asked for
+    draft = ("## 2. Procedure\nWeigh 2.0 g of the acid.\n\n**Step 2: heating**\n- Heat the flask to 80 °C [S1]."
+             " Keep it there for ten minutes.\n\n```\n# not a heading\n```\n## Notes\nThe product is white.")
+    assert [c.context for c in split_claims(draft, context=160)] == [
+        "under: 2. Procedure", "under: 2. Procedure; after: Weigh 2.0 g of the acid.", "under: Step 2: heating",
+        "under: Step 2: heating; after: Heat the flask to 80 °C.", "under: Notes"]
+    assert split_claims(draft, context=6)[3].context == "under: Step 2; after: Heat t"
+    assert [(c.n, c.text) for c in split_claims(draft, context=160)] == [(c.n, c.text) for c in split_claims(draft)]
+
+
+async def _run(cfg, fake, knowledge, question="What is ethanol?"):
+    """(the report, the reasoning, the answer) of one request through the agent."""
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(
+        [{"role": "user", "content": question}])]
+    return (next(i["verification"] for i in items if "verification" in i),
+            "".join(i.get("reasoning_content", "") for i in items), "".join(i.get("content", "") for i in items))
+
+
+def _claims(report):
+    return [(c["n"], c["outcome"], c["ids"], c["status"]) for c in report["claims"]]
+
+
+@pytest.mark.anyio
+async def test_quoted_supports_through_the_loop(cfg, fake, knowledge):
+    cfg.verifier.support_quotes = True
+    draft = ("Ethanol is a volatile, flammable, colorless liquid [S1]. It is also called ethyl alcohol [S1]."
+             " It boils at 78 °C [S1]. It mixes with water [S1].")
+    fake.scripts = [
+        SEARCH_ETHANOL,
+        [content(draft)],
+        [content('C1: supports S1 | "It is a volatile, flammable, colorless liquid"\n'
+                 'C2: supports S1 | "it requires no medium"\n'
+                 'C3: supports S1 | "It is a volatile, flammable, colorless liquid"')],  # no line for C4
+        [content("C2: not_found\nC3: not_found\nC4: not_found")],  # after the re-searches: nothing more
+    ]
+    report, steps, answer = await _run(cfg, fake, knowledge)
+    assert fake.bodies[2]["messages"][0] == {"role": "system", "content": cfg.verifier.support_prompt}
+    assert _claims(report) == [(1, "supported", ["S1"], "supported"), (2, "unverified", [], "not_stated"),
+                               (3, "unverified", [], "partly"), (4, "unverified", [], "not_found")]
+    assert report["counts"] == {"supported": 1, "unverified": 3, "corrected": 0, "removed": 0}
+    assert report["statuses"] == {"supported": 1, "partly": 1, "contradicted": 0, "not_stated": 1, "not_found": 1,
+                                  "not_checked": 0}
+    assert 'C1 judge: supports S1 | "It is a volatile, flammable, colorless liquid"\n' in steps
+    assert 'C2 judge: supports S1 | "it requires no medium", quote not found in S1: not_stated' in steps
+    assert "liquid\", 78 not in the quote: partly" in steps and "C4 judge: no verdict" in steps
+    assert answer == draft.replace(" [S1]", "")  # the text follows the outcome, as before
+
+
+@pytest.mark.anyio
+async def test_a_reply_cut_at_the_token_limit_loses_only_its_own_lines(cfg, fake, knowledge):
+    cfg.verifier.support_quotes, cfg.verifier.max_research = True, 0
+    fake.scripts = [
+        SEARCH_ETHANOL,
+        [content("Ethanol is a volatile, flammable, colorless liquid [S1]. Ethanol is an organic compound [S1]."
+                 " It is also called ethyl alcohol [S1].")],
+        [content('C1: supports S1 | "It is a volatile, flammable, colorless liquid"\n'
+                 'C2: supports S1 | "Ethanol (also called ethyl alcohol) is an organic compo'), finish("length")],
+    ]
+    report, steps, _ = await _run(cfg, fake, knowledge)
+    assert _claims(report) == [(1, "supported", ["S1"], "supported"), (2, "unverified", [], "not_stated"),
+                               (3, "unverified", [], "not_checked")]  # a cut quote is no quote; no line, no verdict
+    assert "organic compo, quote not found in S1: not_stated" in steps and "C3 judge: no verdict" in steps
+
+
+@pytest.mark.anyio
+async def test_looked_and_not_found_or_not_looked(cfg, fake, knowledge):
+    cfg.verifier.support_quotes, cfg.verifier.max_research = True, 2
+    fake.scripts = [
+        [content("Benzene boils at 80.1 °C in a vacuum. Zorblax quivers sharply. Glimmerstone hums loudly.")],
+        [content("C1: not_stated")],  # C1 against what its re-search found; the re-search of C2 found nothing
+    ]
+    report, steps, _ = await _run(cfg, fake, knowledge)
+    assert _claims(report) == [(1, "unverified", [], "not_stated"), (2, "unverified", [], "not_found"),
+                               (3, "unverified", [], "not_checked")]
+    assert [c["note"] for c in report["claims"]] == ["judge: not_stated", "not supported after re-search",
+                                                     "not supported; no re-search left"]
+    assert len(fake.requests) == 2 and steps.count("re-search C") == 2
+
+
+@pytest.mark.anyio
+async def test_status_of_claims_settled_in_code_and_of_computations(cfg, fake, knowledge):
+    cfg.verifier.support_quotes = True
+    fake.scripts = [
+        [tool_call("lookup_compound", '{"query": "caffeine"}', call_id="c1"), finish("tool_calls")],
+        [content("The molar mass of caffeine is 194.19 g/mol [S1]. So 2 mol weigh 2 × 194.19 = 388.38 g.")],
+    ]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    assert _claims(report) == [(1, "supported", ["S1"], "supported"), (2, "unverified", [], "not_checked")]
+    assert len(fake.requests) == 2  # no judge call
+
+
+@pytest.mark.anyio
+async def test_contradiction_and_partly_from_the_judge(cfg, fake, knowledge):
+    cfg.verifier.support_quotes = True
+    fake.scripts = [
+        SEARCH_ETHANOL,
+        [content("Ethanol is blue [S1]. Ethanol is a volatile liquid that boils easily [S1]. It is sweet [S1]."
+                 " Let me know more.")],
+        [content('C1: contradicts S1 | Ethanol is colorless.\nC2: partly S1 | "It is a volatile, flammable, colorless'
+                 ' liquid"\nC3: contradicts S1\nC4: no_claim')],
+        [content("C2: not_found\nC3: not_found")],
+    ]
+    report, steps, answer = await _run(cfg, fake, knowledge)
+    assert _claims(report) == [(1, "corrected", ["S1"], "contradicted"), (2, "unverified", [], "partly"),
+                               (3, "unverified", [], "not_stated")]  # C4 is no claim: not reported, as before
+    assert report["claims"][2]["note"] == "judge: contradicts S1, no correction: kept"
+    assert answer.startswith("Ethanol is colorless. Ethanol is a volatile liquid that boils easily.")
+
+
+@pytest.mark.anyio
+async def test_claims_are_sent_with_their_subject(cfg, fake, knowledge):
+    draft = "Ethanol is a colorless liquid [S1]. This is a common solvent."
+    lines = "C1: supports S1 | \"colorless liquid\"\nC2: not_stated"
+    fake.scripts = [SEARCH_ETHANOL, [content(draft)], [content("C1: supports S1\nC2: no_claim")]]
+    await _run(cfg, fake, knowledge)
+    assert fake.bodies[2]["messages"][1]["content"].endswith("C1: Ethanol is a colorless liquid.\nC2: This is a common solvent.")
+    cfg.verifier.support_quotes, cfg.verifier.quote_min_words = True, 2
+    fake.requests.clear()
+    fake.scripts = [SEARCH_ETHANOL, [content(draft)], [content(lines)], [content("C2: not_found")]]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    assert fake.bodies[2]["messages"][1]["content"].endswith(
+        "C1: Ethanol is a colorless liquid.\nC2 [after: Ethanol is a colorless liquid.]: This is a common solvent.")
+    assert report["judge_calls"][0]["claims"] == [
+        {"n": 1, "text": "Ethanol is a colorless liquid."},
+        {"n": 2, "text": "This is a common solvent.", "context": "after: Ethanol is a colorless liquid."}]
+    cfg.verifier.context_chars = 0
+    fake.requests.clear()
+    fake.scripts = [SEARCH_ETHANOL, [content(draft)], [content(lines)], [content("C2: not_found")]]
+    await _run(cfg, fake, knowledge)
+    assert fake.bodies[2]["messages"][1]["content"].endswith("C2: This is a common solvent.")
+
+
+TWELVE = " ".join(f"Ethanol has property number {i} [S1]." for i in range(1, 13))
+
+
+@pytest.mark.anyio
+async def test_judge_calls_of_a_bounded_size(cfg, fake, knowledge):
+    cfg.verifier.judge_batch = 5
+    replies = [[content("\n".join(f"C{n}: supports S1" for n in batch))] for batch in ((1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (11, 12))]
+    fake.scripts = [SEARCH_ETHANOL, [content(TWELVE)], *replies]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    assert [(c["stage"], [x["n"] for x in c["claims"]], c["passages"]) for c in report["judge_calls"]] == [
+        ("judge", [1, 2, 3, 4, 5], ["S1"]), ("judge", [6, 7, 8, 9, 10], ["S1"]), ("judge", [11, 12], ["S1"])]
+    assert report["counts"]["supported"] == 12 and len(fake.requests) == 5
+    for body, batch in zip(fake.bodies[2:], ("C1: ", "C6: ", "C11: ")):  # every call: the passages, its own claims
+        user = body["messages"][1]["content"]
+        assert "[S1] Ethanol\n" in user and user.split("\n\nClaims:\n")[1].startswith(batch)
+
+
+@pytest.mark.anyio
+async def test_a_failed_judge_call_leaves_only_its_own_claims_unrated(cfg, fake, knowledge):
+    cfg.verifier.judge_batch, cfg.verifier.max_research = 5, 0
+    fake.scripts = [SEARCH_ETHANOL, [content(TWELVE)],
+                    [content("\n".join(f"C{n}: supports S1" for n in range(1, 6)))], CONNECT_ERROR,
+                    [content("C11: supports S1\nC12: supports S1")]]
+    report, steps, _ = await _run(cfg, fake, knowledge)
+    assert [c["outcome"] for c in report["claims"]] == ["supported"] * 5 + ["unverified"] * 5 + ["supported"] * 2
+    assert [c["reply"] == "" for c in report["judge_calls"]] == [False, True, False] and "judge failed" in steps
+    assert "status" not in report["claims"][0] and "statuses" not in report  # only with support_quotes
 
 
 # --- consistency review -------------------------------------------------------------------------------

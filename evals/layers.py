@@ -133,6 +133,8 @@ def registry(cfg: Config) -> list[Layer]:
               needs=((*knowledge, "research"),), verifier=True),
         Layer("research", "re-search of unsupported claims and the second judge call", f"{v}.max_research",
               *_level(v, "max_research"), needs=(("judge",),), verifier=True),
+        Layer("support_quotes", "a support needs a quote that code finds in the passage; claims get a status",
+              f"{v}.support_quotes", *_flag(v, "support_quotes"), needs=(("judge",),), verifier=True),
         Layer("review", "the consistency review call", f"{v}.consistency_check",
               *_flag(v, "consistency_check"), verifier=True),
         Layer("ledger", "the evidence ledger call and its rules", f"{ev}.enabled", *_flag(ev, "enabled")),
