@@ -2,8 +2,9 @@
 
 A file holds `items:`; an item has an id, a split, a category (any text: no subject is required), a language, a
 request type, earlier turns, the prompt, a reference (answer, key points, sources and an optional check),
-`must_not`, `offline_base`, probes and notes (README "Evals"). There are no answer lines and no `set`: in logs and
-summaries an item's set is its category. Fields the schema does not name are kept and ignored.
+`must_not`, `offline_base`, probes and notes, and maybe a `family`, its group inside the category (README "Evals").
+There are no answer lines and no `set`: in logs and summaries an item's set is its category. Fields the schema does
+not name are kept and ignored.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ def _problem(it: dict[str, Any]) -> str:
     for field, allowed in (("split", SPLITS), ("lang", LANGS), ("request_type", REQUEST_TYPES)):
         if it.get(field) not in allowed:
             return f"{field} must be one of {'|'.join(allowed)}"
-    for field in ("category", "prompt"):
+    for field in ("category", "prompt", *(["family"] if "family" in it else [])):  # a family is optional
         if not (isinstance(it.get(field), str) and it[field].strip()):
             return f"{field} must be a non-empty text"
     turns = it.get("turns")

@@ -15,7 +15,7 @@ named ARM=RUN belongs to that arm, and the runs of one arm are its repeats; the 
 give the earlier pack (pack.md, key, reviews.yaml, DIR/mapping.json; README "Evals"). `merge` validates the
 reviews, writes reviews.json (item id -> review) into each run folder and adds the review metrics to its
 summary.json. `stats` prints, for a format 2 pack, the review metrics per arm and the paired comparison of every
-arm with the base arm, item by item, in total and by category, request type, language and probe.
+arm with the base arm, item by item, in total and by category, family, request type, language and probe.
 """
 
 from __future__ import annotations
@@ -145,7 +145,8 @@ def _pack_general(runs: list[Path], arms: list[str | None], entries: list[tuple[
         mapping["items"].setdefault(item["id"], {
             "category": item["category"], "request_type": item["request_type"], "lang": item["lang"],
             "probes": item["probes"], "offline_base": item["offline_base"],
-            "science": item["category"] in science[run]})
+            "science": item["category"] in science[run],
+            **({"family": item["family"]} if "family" in item else {})})
     out.mkdir(parents=True, exist_ok=True)
     n = 0
     for part in range(parts):
@@ -279,10 +280,10 @@ def _sides(base: list[float], arm: list[float]) -> tuple[int, int, int]:
 def stats(folder: Path, base: str | None = None) -> str:
     """The review metrics of a format 2 pack as markdown: one row per arm, in the order of the pack's runs, and
     for every other arm the paired comparison with the base arm (given, or the first), on the items both have, in
-    total and by category, request type, language and probe. An item is one pair: each arm's falsehoods and score
-    on it are averaged over its repeats, and the items with fewer and more falsehoods, and with a higher and lower
-    score, get a sign test each (repeats of an item are not independent). Raises ValueError when the reviews are
-    not valid."""
+    total and by category, family (the items that have one), request type, language and probe. An item is one
+    pair: each arm's falsehoods and score on it are averaged over its repeats, and the items with fewer and more
+    falsehoods, and with a higher and lower score, get a sign test each (repeats of an item are not independent).
+    Raises ValueError when the reviews are not valid."""
     mapping = json.loads(mapping_file(folder).read_text(encoding="utf-8"))
     if mapping.get("format") != 2:
         raise ValueError(f"{folder}: stats needs a pack of items of the general schema (format 2)")
@@ -317,7 +318,9 @@ def stats(folder: Path, base: str | None = None) -> str:
                      f" | {sum(e['central'] for u in rows for e in u['falsehoods'])}"
                      f" | {_f(sum(u['score'] for u in rows) / len(rows))} | {_count(rows, 'domain_drift', outside)}"
                      f" | {_count(rows, 'needless_idk', in_base)} | {sum(len(u['doubts']) for u in rows)} |")
-    groups = [("category", lambda it: [it["category"]]), ("request type", lambda it: [it["request_type"]]),
+    groups = [("category", lambda it: [it["category"]]),
+              ("family", lambda it: [it["family"]] if "family" in it else []),  # only the items that have one
+              ("request type", lambda it: [it["request_type"]]),
               ("language", lambda it: [it["lang"]]), ("probe", lambda it: it["probes"])]
     for arm, units in arms.items():
         if arm == base:

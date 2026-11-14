@@ -18,13 +18,15 @@ SIGNALS = ("exact", "numeric")  # checks that are quick signals: the reference v
 def item_fields(q: dict[str, Any], stage_log: list[dict[str, Any]], total_s: float, settings: Any) -> dict[str, Any]:
     """The measurement fields of an item log. `settings`: the config's `evals` section (None: no budgets and no
     drift, e.g. when the runner is used without a config). An item of the general schema carries its category,
-    request type, language, probes, `offline_base` and split into the log; `budget_s` and `within_budget` follow
-    its request type; `science_calls` counts the model's own calls of a science tool (stage `tool`) and
+    request type, language, probes, `offline_base`, split and, when it has one, `family` into the log; `budget_s`
+    and `within_budget` follow its request type; `science_calls` counts the model's own calls of a science tool (stage `tool`) and
     `science_research` the verifier's re-searches with one (stage `research`: they check claims, they are no
     drift); `drift_auto` says whether an item outside the science categories has a science call (None for an item
     of a science category or without a category: drift does not apply)."""
     general = "category" in q
     fields: dict[str, Any] = {k: q[k] for k in ITEM_FIELDS} if general else {}
+    if general and "family" in q:
+        fields["family"] = q["family"]
     if settings is None:
         return {**fields, "science_calls": None, "science_research": None, "drift_auto": None,
                 **({"budget_s": None, "within_budget": None} if general else {})}

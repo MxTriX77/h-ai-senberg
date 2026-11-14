@@ -60,6 +60,12 @@ def test_item_fields_carry_the_items_attributes(cfg):
     assert item_fields(q, [tool("search_knowledge")], 1.0, None) == {
         **{k: q[k] for k in ("category", "request_type", "lang", "probes", "offline_base", "split")},
         "science_calls": None, "science_research": None, "drift_auto": None, "budget_s": None, "within_budget": None}
+    assert "family" not in fields  # only an item that has one carries it
+    how_to = ready(item("procedure-dev-001", family="synthesis"))
+    for settings in (cfg.evals, None):
+        assert item_fields(how_to, [], 1.0, settings)["family"] == "synthesis"
+    looked_up = item_fields(how_to, [tool("search_knowledge")], 1.0, cfg.evals)
+    assert (looked_up["science_calls"], looked_up["drift_auto"]) == (1, None)  # a how-to item: lookups are expected
 
 
 def test_drift_is_a_science_call_of_the_model_on_a_non_science_item(cfg):

@@ -523,6 +523,49 @@ async def test_report_for_in_process_callers(cfg, fake, knowledge):
     assert report["claims"][0]["ids"] == ["S1"]
 
 
+async def _report(cfg, fake, knowledge):
+    items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(
+        [{"role": "user", "content": "What is ethanol?"}])]
+    return next(i["verification"] for i in items if "verification" in i)
+
+
+@pytest.mark.anyio
+async def test_report_holds_what_each_judge_call_saw(cfg, fake, knowledge):
+    fake.scripts = [
+        SEARCH_ETHANOL,
+        [content("Ethanol is a colorless liquid [S1]. Benzene boils at 80.1 °C. Let me know more.")],
+        [content("C1: supports S1\nC2: not_said\nC3: no_claim")],  # the claims against the passage they cite
+        [content("C2: supports S2")],  # C2 again, against what its re-search found
+    ]
+    report = await _report(cfg, fake, knowledge)
+    assert [(c["n"], c["outcome"], c["ids"]) for c in report["claims"]] == [
+        (1, "supported", ["S1"]), (2, "supported", ["S2"])]  # C3 is no claim: not reported, as before
+    assert {i: (s["label"], s["kind"], s["literature"]) for i, s in report["sources"].items()} == {
+        "S1": ("Ethanol", "text", False), "S2": ("Benzene", "text", False)}
+    first, second = report["judge_calls"]
+    for call, body in ((first, fake.bodies[2]), (second, fake.bodies[3])):  # exactly what the call was sent
+        user = body["messages"][1]["content"]
+        assert all(f"[{i}] {report['sources'][i]['label']}\n{report['sources'][i]['passage']}" in user
+                   for i in call["passages"])
+        assert user.endswith("\n".join(f"C{c['n']}: {c['text']}" for c in call["claims"]))
+    assert (first["stage"], first["passages"], [c["n"] for c in first["claims"]]) == ("judge", ["S1"], [1, 2, 3])
+    assert first["claims"][2]["text"] == "Let me know more." and first["reply"].endswith("C3: no_claim")
+    assert (second["stage"], second["passages"], second["claims"], second["reply"]) == (
+        "research_judge", ["S2"], [{"n": 2, "text": "Benzene boils at 80.1 °C."}], "C2: supports S2")
+
+
+@pytest.mark.anyio
+async def test_report_lists_a_failed_judge_call_and_no_call_without_a_claim_stage(cfg, fake, knowledge):
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a colorless liquid [S1].")], CONNECT_ERROR, CONNECT_ERROR]
+    report = await _report(cfg, fake, knowledge)
+    assert [(c["stage"], c["passages"], c["reply"]) for c in report["judge_calls"]] == [
+        ("judge", ["S1"], ""), ("research_judge", ["S1"], "")]
+    cfg.verifier.record_check = cfg.verifier.claim_judge = False
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a colorless liquid [S1].")]]
+    report = await _report(cfg, fake, knowledge)
+    assert list(report["sources"]) == ["S1"] and report["judge_calls"] == [] and report["claims"] == []
+
+
 def test_report_not_on_the_wire(client, fake):
     fake.scripts = [[content("Benzene boils at 80.1 °C.")], [content("C1: supports S1")]]
     r = chat(client)
@@ -550,9 +593,11 @@ async def test_judge_leaves_out_passages_that_do_not_fit(cfg, fake, knowledge):
     v.budget = estimate_tokens([{"role": "system", "content": cfg.verifier.judge_prompt},
                                 {"role": "user", "content": bare}], cfg.model_backend.chars_per_token) + 1500
     fake.scripts = [[content("C1: supports S1" + nl + "C2: supports S2")]]
-    lines = "".join([item["reasoning_content"] async for item in v._judge("q", claims, passages)])
+    calls = []
+    lines = "".join([item["reasoning_content"] async for item in v._judge("q", claims, passages, calls)])
     user = fake.bodies[0]["messages"][1]["content"]
     assert "[S1] P1" in user and "[S2] P2" not in user and "[S3] P3" not in user
+    assert calls[0]["passages"] == ["S1"]  # the report lists what was shown, not what was left out
     assert "S3 left out of the judge call" in lines and "S2 left out of the judge call" in lines
     assert estimate_tokens(fake.bodies[0]["messages"], cfg.model_backend.chars_per_token) <= v.budget
     assert (claims[0].outcome, claims[1].outcome) == (SUPPORTED, "")  # S2 was not given: not supported

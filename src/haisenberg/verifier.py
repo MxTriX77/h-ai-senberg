@@ -86,15 +86,19 @@ class Verification:
     consistency: list[dict[str, str]] = field(default_factory=list)  # applied review fixes: old, new, why, conflict
     arithmetic: list[dict[str, str]] = field(default_factory=list)  # fixed results: expression, stated, fixed
     checks: list[dict[str, Any]] = field(default_factory=list)  # domain checker findings: checker, text, fixed, note
+    sources: dict[str, dict[str, Any]] = field(default_factory=dict)  # every source issued: label, kind, passage
+    judge_calls: list[dict[str, Any]] = field(default_factory=list)  # what each judge call saw, and its reply
 
     def report(self) -> dict[str, Any]:
         claims = [c for c in self.claims if c.outcome != NO_CLAIM]
         return {
-            "claims": [{"text": c.text, "outcome": c.outcome, "ids": c.ids, "note": c.note} for c in claims],
+            "claims": [{"n": c.n, "text": c.text, "outcome": c.outcome, "ids": c.ids, "note": c.note} for c in claims],
             "counts": {o: sum(c.outcome == o for c in claims) for o in OUTCOMES},
             "consistency": self.consistency,
             "arithmetic": self.arithmetic,
             "checks": self.checks,
+            "sources": self.sources,
+            "judge_calls": self.judge_calls,
         }
 
 
@@ -925,9 +929,10 @@ class Verifier:
                     f"- {c['text']!r} → {c['fixed']!r} ({c['note']})\n" if c["fixed"] is not None
                     else f"- {c['text']!r}: {c['note']}\n" for c in found))
         claims: list[Claim] = []
+        calls: list[dict[str, Any]] = []  # the judge calls, for the report
         answer, fixes = draft, []
         if self.cfg.record_check or self.cfg.claim_judge:  # else no claim stage: the draft goes on as it is
-            checking = self._check_claims(question, draft, sources, claims)
+            checking = self._check_claims(question, draft, sources, claims, calls)
             try:
                 async for line in checking:
                     yield line
@@ -944,12 +949,16 @@ class Verifier:
                         yield item
             finally:
                 await review.aclose()
-        yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks)
+        shown = {s.id: {"label": s.record.label(), "kind": s.kind, "literature": s.literature, "passage": s.passage}
+                 for s in sources.items}  # the model's lookups and the re-searches, exactly as shown
+        yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks, sources=shown,
+                           judge_calls=calls)
 
-    async def _check_claims(self, question: str, draft: str, sources: Sources, claims: list[Claim]):
+    async def _check_claims(self, question: str, draft: str, sources: Sources, claims: list[Claim],
+                            calls: list[dict[str, Any]]):
         """The claim stage: split the draft into `claims` (filled in place), check them against the records in
         code (verifier.record_check), judge the rest and re-search what is not supported (verifier.claim_judge).
-        Sets every claim's outcome. Yields reasoning lines."""
+        Sets every claim's outcome and adds every judge call to `calls`. Yields reasoning lines."""
         derived = self.cfg.skip_derived_claims
         pending = []
         with stage("claims", CHECK):
@@ -981,7 +990,7 @@ class Verifier:
             pending = []
         cited = [s for s in sources.items if any(s.id in c.cites for c in pending)]
         if pending and cited:
-            async for line in self._judge(question, pending, cited):
+            async for line in self._judge(question, pending, cited, calls):
                 yield line
         research = [c for c in pending if not c.outcome]
         for c in research[self.cfg.max_research :]:
@@ -999,7 +1008,7 @@ class Verifier:
         again = [c for c in research if found_for.get(c.n) or c.cites]
         if again:
             wanted = {i for c in again for i in [*found_for.get(c.n, []), *c.cites]}
-            async for line in self._judge(question, again, [s for s in sources.items if s.id in wanted],
+            async for line in self._judge(question, again, [s for s in sources.items if s.id in wanted], calls,
                                           "research_judge"):
                 yield line
         for c in research:
@@ -1053,9 +1062,10 @@ class Verifier:
             yield _say(f"- {f['old']!r} → {f['new']!r}" + (f" ({f['why']})" if f["why"] else "") + "\n")
         yield answer, applied
 
-    async def _judge(self, question: str, claims: list[Claim], passages: list[Source], stage_name: str = "judge"):
-        """One judge call for these claims (named `stage_name` in an open stage log); sets their outcome. Yields
-        reasoning lines."""
+    async def _judge(self, question: str, claims: list[Claim], passages: list[Source], calls: list[dict[str, Any]],
+                     stage_name: str = "judge"):
+        """One judge call for these claims (named `stage_name` in an open stage log); sets their outcome and adds
+        what the call saw and its reply to `calls` (a failed call: an empty reply). Yields reasoning lines."""
         passages = list(passages)
         while True:  # leave passages out from the end until the call fits the context
             user = (
@@ -1069,12 +1079,16 @@ class Verifier:
                 break
             yield _say(f"- {passages.pop().id} left out of the judge call (context budget)\n")
         given = {s.id for s in passages}
+        call = {"stage": stage_name, "claims": [{"n": c.n, "text": plain(c.text)} for c in claims],
+                "passages": [s.id for s in passages], "reply": ""}
+        calls.append(call)
         try:
             reply = await self._complete(messages, stage_name)
         except (UpstreamError, httpx.HTTPError) as e:
             log.error("judge call failed: %s", e)
             yield _say(f"- judge failed: {e}\n")
             return
+        call["reply"] = reply
         verdicts = parse_verdicts(reply, given)
         for c in claims:
             verdict, ids, correction = verdicts.get(c.n, ("not_said", [], None))
