@@ -681,7 +681,7 @@ def test_tools_off_names_known_tools(tmp_path):
 def test_eval_settings(tmp_path, monkeypatch):
     e = load_config(write(tmp_path)).evals
     assert e.budgets_s == {"chat": 15, "factual": 120, "audit": 600}  # none for analytic: timed, not judged
-    assert e.science_categories == ["science"]
+    assert e.science_categories == ["science", "procedure"]  # lookups are expected on how-to items too
     assert e.science_tools == ["search_knowledge", "lookup_compound", "lookup_constant"]
     assert e.request == {"stream_options": {"include_usage": True}}
     assert (e.python_tests.enabled, e.python_tests.timeout_s, e.python_tests.memory_mb) == (True, 20, 2048)

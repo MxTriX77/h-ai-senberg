@@ -35,6 +35,17 @@ def test_any_category_and_the_monitor_split(tmp_path):
     assert [i["category"] for i in load_general(path)] == ["cooking", "travel"]
 
 
+def test_a_family_is_optional_and_a_text(tmp_path):
+    path = write_items(tmp_path / "p.yaml", item("procedure-dev-001", family="synthesis"), item("chat-dev-001"))
+    first, second = load_general(path)
+    assert first["family"] == "synthesis" and "family" not in second
+    for bad in (3, "", " "):
+        path = write_items(tmp_path / "bad.yaml", item("procedure-dev-002", family=bad))
+        with pytest.raises(ValueError) as e:
+            load_general(path)
+        assert str(e.value) == f"{path}: item procedure-dev-002: family must be a non-empty text"
+
+
 def test_unquoted_yes_and_no(tmp_path):
     text = yaml.safe_dump({"items": [item("science-dev-001"), item("science-dev-002")]}, sort_keys=False)
     assert text.count("offline_base: n/a") == 2

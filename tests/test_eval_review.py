@@ -305,6 +305,23 @@ def test_stats_compare_the_arms(two_arms, tmp_path):
         stats(folder, base="x")
 
 
+def test_stats_have_a_row_per_family(tmp_path):
+    items = [item("procedure-dev-001", family="synthesis"), item("procedure-dev-002", family="synthesis"),
+             item("procedure-dev-003", family="electronics"), item("chat-dev-001", request_type="chat")]
+    path = write_items(tmp_path / "items.yaml", *items)
+    runs = [make_run(tmp_path, "20261113-bare", "bare", path=path, items=items),
+            make_run(tmp_path, "20261113-suite", "config", path=path, items=items)]
+    folder = tmp_path / "pack"
+    pack(runs, folder, seed=7)
+    mapping = mapping_of(folder)
+    assert mapping["items"]["procedure-dev-003"]["family"] == "electronics"
+    assert "family" not in mapping["items"]["chat-dev-001"]  # an item without one: as before
+    write_reviews(folder, [review(b) for b in mapping["answers"]])
+    rows = rows_of(stats(folder), "Paired: 20261113-bare → 20261113-suite")
+    assert (rows["family: synthesis"][0], rows["family: electronics"][0]) == ("2", "1")
+    assert list(rows)[:5] == ["all", "category: chat", "category: procedure", "family: electronics", "family: synthesis"]
+
+
 def test_stats_take_the_arms_in_the_order_of_the_runs(two_arms, tmp_path):
     first = set()
     for seed in range(8):
