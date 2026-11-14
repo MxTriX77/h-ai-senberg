@@ -1875,6 +1875,17 @@ async def test_literature_only_support_unverified(cfg, fake, knowledge, on):
         assert (c.outcome, c.ids) == (SUPPORTED, ["S2"]) and "only literature" not in steps
 
 
+@pytest.mark.anyio
+async def test_a_reference_against_a_quoted_literature_support_is_a_contradiction(cfg, fake, knowledge):
+    cfg.verifier.support_quotes = True
+    draft = "The critical density of water is 356 kg/m³ [S2]."
+    result, _ = await verify(cfg, fake, knowledge, draft, retrieved(WATER, PHASE),
+                             'C1: supports S2 | "at 647 K and 22.064 MPa, density 356 kg/m³"')
+    c = result.claims[0]
+    assert (c.outcome, c.ids, c.status) == (UNVERIFIED, [], "contradicted")  # the quote is there; the reference says 322
+    assert result.report()["statuses"]["contradicted"] == 1
+
+
 @pytest.mark.parametrize("task, line", [
     (COST_TASK, "A1: 560 euros"),  # the wrong product is quoted, not fixed: the answer line keeps it
     ("Check the batch cost of 12 crates at 45 euros.", "A1: 540 euros"),  # the answer's own product: follows
