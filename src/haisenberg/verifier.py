@@ -67,6 +67,10 @@ _VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|contradicts|not[_ ]said|no[_ ]cla
 # The verdicts of verifier.support_prompt (verifier.support_quotes).
 _QUOTED_VERDICT = re.compile(r"^\W*C(\d+)\W+(supports|partly|contradicts|not[_ ]stated|not[_ ]found|no[_ ]claim)\b(.*)$",
                              re.I)
+# The same verdicts with the evidence first, `C1: S2 "<words of S2>" -> supports` (also `=>`, `→`): the passage
+# ids, the words copied, then the verdict; after a `contradicts`, `|` and the correction.
+_QUOTE_FIRST = re.compile(r"^\W*C(\d+)\W+(.*?)\s*(?:->|=>|→)\W*"
+                          r"(supports|partly|contradicts|not[_ ]stated|not[_ ]found|no[_ ]claim)\b(.*)$", re.I)
 _BOLD_LINE = re.compile(r"(\*\*|__)((?:(?!\1).)+)\1:?")  # a line that is one bold run: a heading written as text
 # A label (an id such as A1, C or (b), maybe after one word: "Claim C", "Claim 3") and a colon starts the line.
 _LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
@@ -877,22 +881,34 @@ def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None,
 
 def parse_verdicts(text: str, given: set[str], quotes: bool = False) -> dict[int, tuple[str, list[str], str | None]]:
     """Claim number -> (verdict, decisive ids among `given`, what follows `|`: a correction) from the judge's reply
-    lines. With `quotes` the lines are those of verifier.support_prompt: `supports` and `partly` carry a quote after
-    `|`. A verdict that needs a passage and names none of the given ones is not_stated (without `quotes`: not_said),
-    unless it carries a quote: the quote then says which passage (see quoted_support)."""
+    lines. With `quotes` the lines are those of verifier.support_prompt: `supports` and `partly` carry a quote. Such
+    a line is read evidence first (`C1: S2 "words" -> supports`: the ids are those before the quoted words, and a
+    correction follows `contradicts` after `|`) or verdict first (`C1: supports S2 | "words"`). A verdict that needs
+    a passage and names none of the given ones is not_stated (without `quotes`: not_said), unless it carries a
+    quote: the quote then says which passage (see quoted_support)."""
     pattern, unsettled = (_QUOTED_VERDICT, NOT_STATED) if quotes else (_VERDICT, "not_said")
     out: dict[int, tuple[str, list[str], str | None]] = {}
     for line in text.splitlines():
         m = pattern.match(line.strip())
-        if not m:
+        first = _QUOTE_FIRST.match(line.strip()) if quotes and not m else None
+        if first:
+            number, evidence, verdict, tail = first.groups()
+            mark = re.search(r"[\"“”«»„]", evidence)  # the words start at the quote mark, or after the ids
+            cut = mark.start() if mark else re.match(r"(?:\W*\bS\d+\b)*\W*", evidence).end()
+            ids_part, correction = evidence[:cut], evidence[cut:]
+            if verdict.lower() == "contradicts":
+                correction = tail.partition("|")[2]
+        elif m:
+            number, verdict = m.group(1), m.group(2)
+            ids_part, _, correction = m.group(3).partition("|")
+        else:
             continue
-        verdict = m.group(2).lower().replace(" ", "_")
-        ids_part, _, correction = m.group(3).partition("|")
+        verdict = verdict.lower().replace(" ", "_")
         ids = [i for i in dict.fromkeys(f"S{x}" for x in re.findall(r"S(\d+)", ids_part)) if i in given]
         quoted = quotes and verdict in ("supports", "partly") and correction.strip()
         if verdict in ("supports", "partly", "contradicts") and not ids and not quoted:
             verdict = unsettled
-        out.setdefault(int(m.group(1)), (verdict, ids, correction.strip() or None))
+        out.setdefault(int(number), (verdict, ids, correction.strip() or None))
     return out
 
 

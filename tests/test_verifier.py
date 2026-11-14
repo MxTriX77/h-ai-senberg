@@ -624,6 +624,25 @@ def test_parse_quoted_verdicts():
     assert v[9][0] == v[10][0] == "not_stated" and 8 not in v  # no passage and no quote; no verdict of this prompt
 
 
+def test_parse_verdicts_with_the_evidence_first():
+    reply = "\n".join([
+        'C1: S1 "its half-life is 6.0066 hours" -> supports', "**C2**: S2 “about eight days” => partly",
+        'C3: S2 "boils at 78.23 °C" -> contradicts | Ethanol boils at 78.23 °C.',
+        'C4: S1 "A -> B is slow" -> not_stated', "C5: none -> not_found", "C6: none → no_claim",
+        'C7: S9 "words" -> supports', "C8: S1 the half-life is short -> supports", "C9: none -> supports",
+        'C10: supports S2 | "about eight days"', 'C11: S1, S2 "words of either" -> partly'])
+    v = parse_verdicts(reply, {"S1", "S2"}, quotes=True)
+    assert v[1] == ("supports", ["S1"], '"its half-life is 6.0066 hours"')
+    assert v[2] == ("partly", ["S2"], "“about eight days”")
+    assert v[3] == ("contradicts", ["S2"], "Ethanol boils at 78.23 °C.")
+    assert [v[n][0] for n in (4, 5, 6)] == ["not_stated", "not_found", "no_claim"]
+    assert v[7][0] == "not_stated" and v[9][0] == "not_stated"  # a passage that was not given; no passage
+    assert v[8] == ("supports", ["S1"], "the half-life is short")  # no quote marks: the words after the ids
+    assert v[10] == ("supports", ["S2"], '"about eight days"')  # the verdict first is read as before
+    assert v[11] == ("partly", ["S1", "S2"], '"words of either"')
+    assert list(parse_verdicts(reply, {"S1", "S2"})) == [10]  # the judge without quotes reads the verdict first only
+
+
 def test_a_support_needs_its_quote_in_the_passage():
     claim = "The half-life is 6.0066 hours."
     assert quoted_support(claim, '"its half-life is 6.0066 hours"', ISOTOPE, 3) == ("supported", "")

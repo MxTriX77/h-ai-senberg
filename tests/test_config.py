@@ -464,7 +464,7 @@ def test_strict_support_settings(tmp_path, monkeypatch):
     assert v.support_quotes is False
     assert (v.quote_min_words, v.quote_min_share, v.context_chars, v.judge_batch) == (3, 0, 160, 0)
     for verdict in ("supports", "partly", "contradicts", "not_stated", "not_found", "no_claim"):
-        assert f": {verdict}" in v.support_prompt  # a reply line for every verdict the code reads
+        assert f"-> {verdict}" in v.support_prompt  # a reply line for every verdict the code reads
     data = base()
     data["verifier"]["support_prompt"] = " "
     with pytest.raises(ConfigError, match="verifier.support_prompt"):
