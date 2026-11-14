@@ -127,6 +127,8 @@ def registry(cfg: Config) -> list[Layer]:
               *_flag(v, "carry_fixes_forward"), needs=(("arithmetic",),), verifier=True),
         *(Layer(f"checker.{name}", f"the {name} checker", f"{v}.checkers", *_checker(name), verifier=True)
           for name in CHECKERS),
+        Layer("claims_any_script", "sentences without a Latin letter are claims too", f"{v}.claims_any_script",
+              *_flag(v, "claims_any_script"), needs=(("record_check", "judge"),), verifier=True),
         Layer("record_check", "numbers and formulas against retrieved records, in code", f"{v}.record_check",
               *_flag(v, "record_check"), needs=(knowledge,), verifier=True),
         Layer("judge", "the claim judge call", f"{v}.claim_judge", *_flag(v, "claim_judge"),

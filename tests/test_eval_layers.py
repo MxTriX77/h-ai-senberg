@@ -55,9 +55,9 @@ def test_every_layer_has_a_name_and_the_shipped_suite_has_them_on(shipped):
     names = [layer.name for layer in layers.registry(shipped)]
     assert names == ["system_prompt", "tool_prompt", *TOOL_LAYERS, "thinking_budget", "text_tool_calls",
                      "answer_retry", "written_calculations", "weak_hit_filter", "arithmetic", "carry_forward",
-                     "checker.element_balance", "record_check", "judge", "research", "support_quotes", "review",
-                     "ledger", "writer", "independent", "cite_stripping"]
-    off = {"independent", "checker.element_balance", "support_quotes"}  # the last one until its A/B
+                     "checker.element_balance", "claims_any_script", "record_check", "judge", "research",
+                     "support_quotes", "review", "ledger", "writer", "independent", "cite_stripping"]
+    off = {"independent", "checker.element_balance", "claims_any_script", "support_quotes"}  # the last two until their A/B
     assert on(shipped) == set(names) - off
     assert layers.effective(shipped) == {n: n not in off for n in names}
     assert layers.effective(shipped, knowledge(shipped)) == layers.effective(shipped)  # the store offers every tool

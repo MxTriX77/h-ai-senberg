@@ -446,6 +446,14 @@ def test_carry_fixes_forward_setting(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_claims_any_script_setting(tmp_path):
+    assert load_config(write(tmp_path)).verifier.claims_any_script is False  # shipped off until its A/B
+    data = base()
+    data["verifier"]["claims_any_script"] = "maybe"
+    with pytest.raises(ConfigError, match=r"verifier\.claims_any_script"):
+        load_config(write(tmp_path, data))
+
+
 def test_conservative_review_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_verdicts is v.keep_quotes is True
