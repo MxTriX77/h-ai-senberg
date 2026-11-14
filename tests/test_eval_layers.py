@@ -337,6 +337,16 @@ def test_manifest_records_the_arm_and_every_layer(shipped, tmp_path, monkeypatch
     assert man["evals"]["budgets_s"] == {"chat": 15, "factual": 120, "audit": 600}
 
 
+def test_manifest_records_the_batch_size_of_the_quote_arm(shipped, tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
+    monkeypatch.setattr(httpx, "get", no_backend)
+    assert manifest(shipped, "r0", "config", [], [], tmp_path / "cache.json")["judge_batch"] == 0
+    shipped.verifier.judge_batch = 5  # as JUDGE_BATCH=5 sets it: the arm's name does not say it
+    mode, arm = prepare(shipped, load_modes(), None, ["support_quotes"])
+    man = manifest(shipped, "r1", mode, [], [], tmp_path / "cache.json", arm, knowledge(shipped))
+    assert (man["mode"], man["judge_batch"], man["layers"]["support_quotes"]) == ("config-plus-support_quotes", 5, True)
+
+
 def test_bare_manifest_has_every_layer_off(shipped, tmp_path, monkeypatch):
     monkeypatch.setattr(run, "NVIDIA_SMI", ["no-such-nvidia-smi-here"])
     monkeypatch.setattr(httpx, "get", no_backend)
