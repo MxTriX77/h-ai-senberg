@@ -37,7 +37,8 @@ OUTCOMES = (SUPPORTED, UNVERIFIED, CORRECTED, REMOVED)
 # the quote or the record's value), a quoted passage states a part of it, a source states another value, a passage is
 # about its subject and none states it, no passage is about its subject (or its re-search found nothing), nothing
 # compared it with a source.
-PARTLY, CONTRADICTED, NOT_STATED, NOT_FOUND, NOT_CHECKED = "partly", "contradicted", "not_stated", "not_found", "not_checked"
+PARTLY, CONTRADICTED, NOT_STATED = "partly", "contradicted", "not_stated"
+NOT_FOUND, NOT_CHECKED = "not_found", "not_checked"
 STATUSES = (SUPPORTED, PARTLY, CONTRADICTED, NOT_STATED, NOT_FOUND, NOT_CHECKED)
 _OPEN = (PARTLY, NOT_STATED, NOT_FOUND, NOT_CHECKED)  # the statuses of an unsettled claim; an earlier one says more
 

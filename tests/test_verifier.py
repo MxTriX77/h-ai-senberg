@@ -652,10 +652,11 @@ def test_a_quote_is_read_like_a_quotation():
 
 def test_a_decimal_comma_of_the_claim_is_a_decimal_point():
     passage = "Water\nMolar mass: 18.015 g/mol. Density: 0.99705 g/mL at 25 °C."
-    assert quoted_support("Молярная масса воды равна 18,015 г/моль.", "Molar mass: 18.015 g/mol", passage, 3)[0] == "supported"
-    assert quoted_support("Молярная масса воды равна 18,02 г/моль.", "Molar mass: 18.015 g/mol", passage, 3)[0] == "supported"
-    assert quoted_support("Плотность воды 0,99705 г/мл при 25 °C.", "Density: 0.99705 g/mL at 25 °C", passage, 3)[0] == "supported"
-    assert quoted_support("Молярная масса воды равна 18,15 г/моль.", "Molar mass: 18.015 g/mol", passage, 3) == (
+    mass, density = "Molar mass: 18.015 g/mol", "Density: 0.99705 g/mL at 25 °C"
+    assert quoted_support("Молярная масса воды равна 18,015 г/моль.", mass, passage, 3)[0] == "supported"
+    assert quoted_support("Молярная масса воды равна 18,02 г/моль.", mass, passage, 3)[0] == "supported"
+    assert quoted_support("Плотность воды 0,99705 г/мл при 25 °C.", density, passage, 3)[0] == "supported"
+    assert quoted_support("Молярная масса воды равна 18,15 г/моль.", mass, passage, 3) == (
         "partly", "18,15 not in the quote")
     assert quoted_support("It weighs 1,900 g.", "a mass of 1900 g", "X\nIt has a mass of 1900 g.", 3)[0] == "supported"
 
@@ -664,9 +665,11 @@ def test_quote_share_is_a_measurement_setting():
     passage = "Time\nTime is the continued sequence of existence and events."
     claim, quote = "Sort the intervals by their start time.", "Time is the continued sequence of existence"
     assert quoted_support(claim, quote, passage, 3, 0.0) == ("supported", "")
-    assert quoted_support(claim, quote, passage, 3, 0.5) == ("not_stated", "the quote holds under 0.5 of the claim's words")
+    assert quoted_support(claim, quote, passage, 3, 0.5) == (
+        "not_stated", "the quote holds under 0.5 of the claim's words")
     assert quoted_support("Time is a sequence of events.", quote, passage, 3, 0.5)[0] == "supported"
-    assert quoted_support("Время есть последовательность событий.", quote, passage, 3, 0.5)[0] == "supported"  # other script
+    russian = "Время есть последовательность событий."  # another script than the quote: the share is not asked
+    assert quoted_support(russian, quote, passage, 3, 0.5)[0] == "supported"
 
 
 def test_claims_carry_their_subject():
