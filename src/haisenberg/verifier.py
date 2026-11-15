@@ -878,7 +878,8 @@ def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None,
 def parse_verdicts(text: str, given: set[str], quotes: bool = False) -> dict[int, tuple[str, list[str], str | None]]:
     """Claim number -> (verdict, decisive ids among `given`, what follows `|`: a correction) from the judge's reply
     lines. With `quotes` the lines are those of verifier.support_prompt: `supports` and `partly` carry a quote after
-    `|`, and a verdict that needs a passage and names none of the given ones is not_stated (without: not_said)."""
+    `|`. A verdict that needs a passage and names none of the given ones is not_stated (without `quotes`: not_said),
+    unless it carries a quote: the quote then says which passage (see quoted_support)."""
     pattern, unsettled = (_QUOTED_VERDICT, NOT_STATED) if quotes else (_VERDICT, "not_said")
     out: dict[int, tuple[str, list[str], str | None]] = {}
     for line in text.splitlines():
@@ -888,7 +889,8 @@ def parse_verdicts(text: str, given: set[str], quotes: bool = False) -> dict[int
         verdict = m.group(2).lower().replace(" ", "_")
         ids_part, _, correction = m.group(3).partition("|")
         ids = [i for i in dict.fromkeys(f"S{x}" for x in re.findall(r"S(\d+)", ids_part)) if i in given]
-        if verdict in ("supports", "partly", "contradicts") and not ids:
+        quoted = quotes and verdict in ("supports", "partly") and correction.strip()
+        if verdict in ("supports", "partly", "contradicts") and not ids and not quoted:
             verdict = unsettled
         out.setdefault(int(m.group(1)), (verdict, ids, correction.strip() or None))
     return out
@@ -901,25 +903,37 @@ def _numbers(text: str) -> list[Number]:
 
 def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min_share: float = 0.0) -> tuple[str, str]:
     """(status, why it is not supported) of a claim the judge says `passage` supports with `quote`
-    (verifier.support_quotes). supported: the quote is in the passage as whole words (both as _quote_text reads them,
-    case and the marks around the quote aside), has at least `min_words` words or a number, and holds every number of
-    the claim, within the rounding of either. not_stated: no quote, a quote too short or not in the passage, or, with
-    `min_share`, one that holds a smaller share of the claim's content words (tools.term_share; not asked when claim
-    and quote are in different scripts). partly: the quote is in the passage and lacks a number of the claim."""
-    said = re.sub(r"^\W+|\W+$", "", _quote_text(quote)[0].casefold())
-    if not said:
+    (verifier.support_quotes). supported, when all of these hold:
+    - the quote is in the passage as whole words (both as _quote_text reads them, case and the marks around the
+      quote aside; dots in it stand for words left out: every part is there, in their order);
+    - it has at least `min_words` words, or holds a number of the claim;
+    - it bears on the claim: it holds a number of the claim, or shares a content word with it and at least
+      `min_share` of its content words (tools.term_share; not asked when claim and quote are in different scripts);
+    - it holds every number of the claim, within the rounding of either.
+    not_stated when one of the first three fails; partly when only a number of the claim is not in the quote."""
+    parts = [p for p in (re.sub(r"^\W+|\W+$", "", part)
+                         for part in re.split(r"\.{3,}|…", _quote_text(quote)[0].casefold())) if p]
+    if not parts:
         return NOT_STATED, "no quote"
-    if len(_words(said)) < min_words and not read_numbers(said):
+    have, want = _numbers(quote), _numbers(claim)
+    missing = [n for n in want if not any(abs(n.value - m.value) <= max(n.half, m.half) for m in have)]
+    held = len(missing) < len(want)
+    if len(_words(" ".join(parts))) < min_words and not held:
         return NOT_STATED, "quote too short"
-    if not re.search(rf"(?<!\w){re.escape(said)}(?!\w)", _quote_text(passage)[0].casefold()):
-        return NOT_STATED, "quote not found"
-    if min_share and non_latin(claim) == non_latin(said) and term_share(claim, said) < min_share:
-        return NOT_STATED, f"the quote holds under {min_share:g} of the claim's words"
-    have = _numbers(quote)
-    missing = [claim[n.start : n.end] for n in _numbers(claim)
-               if not any(abs(n.value - m.value) <= max(n.half, m.half) for m in have)]
+    hay, at = _quote_text(passage)[0].casefold(), 0
+    for part in parts:
+        found = re.compile(rf"(?<!\w){re.escape(part)}(?!\w)").search(hay, at)
+        if not found:
+            return NOT_STATED, "quote not found"
+        at = found.end()
+    if not held and non_latin(claim) == non_latin(quote):
+        share = term_share(claim, " ".join(parts))
+        if not share:
+            return NOT_STATED, "the quote shares no word with the claim"
+        if share < min_share:
+            return NOT_STATED, f"the quote holds under {min_share:g} of the claim's words"
     if missing:
-        return PARTLY, f"{' and '.join(missing)} not in the quote"
+        return PARTLY, f"{' and '.join(claim[n.start : n.end] for n in missing)} not in the quote"
     return SUPPORTED, ""
 
 
@@ -1195,16 +1209,22 @@ class Verifier:
                 continue
             verdict, ids, correction = verdicts.get(c.n, ("not_said", [], None))
             c.note = f"judge: {verdict}" + (f" {' '.join(ids)}" if ids else "")
-            if quotes and verdict in ("supports", "partly"):  # as far as code finds the quote in a named passage
+            if quotes and verdict in ("supports", "partly"):  # as far as code finds the quote in a passage shown
+                # The quote says which passage: the ones the line names first, then the others of the call.
+                order = [s for s in passages if s.id in ids] + [s for s in passages if s.id not in ids]
                 (status, why), sid = min(
                     ((quoted_support(plain(c.text), correction or "", f"{s.record.label()}\n{s.passage}",
-                                     self.cfg.quote_min_words, self.cfg.quote_min_share), s.id)
-                     for s in passages if s.id in ids), key=lambda found: STATUSES.index(found[0][0]))
+                                     self.cfg.quote_min_words, self.cfg.quote_min_share), s.id) for s in order),
+                    key=lambda found: STATUSES.index(found[0][0]), default=((NOT_STATED, "no passage shown"), ""))
                 if verdict == "partly" and status == SUPPORTED:
                     status = PARTLY  # the judge itself says a part of the claim is not there
                 c.note += f" | {correction}" if correction else ""
+                if why.endswith("not found"):
+                    why += f" in {' '.join(ids)}" if ids else " in a passage shown"
+                elif sid and sid not in ids:
+                    c.note += f", the quote is in {sid}"
                 if why:
-                    c.note += f", {why}{f' in {sid}' if why.endswith('not found') else ''}: {status}"
+                    c.note += f", {why}: {status}"
                 if status == SUPPORTED:
                     c.outcome, c.ids, c.status = SUPPORTED, [sid], SUPPORTED
                 else:

@@ -614,13 +614,14 @@ IODINE = "Iodine-131\nIt has a radioactive decay half-life of about eight days."
 def test_parse_quoted_verdicts():
     reply = ('C1: supports S1 | "its half-life is 6.0066 hours"\n**C2** - partly S2 | "about eight days"\n'
              "C3: contradicts S2 | Ethanol boils at 78.23 °C.\nC4: not_stated\nC5: not_found\nC6: no_claim\n"
-             'C7: supports S9 | "words"\nC8: not_said\nnoise')
+             'C7: supports S9 | "words"\nC8: not_said\nC9: supports S9\nC10: contradicts S9 | Other text.\nnoise')
     v = parse_verdicts(reply, {"S1", "S2"}, quotes=True)
     assert v[1] == ("supports", ["S1"], '"its half-life is 6.0066 hours"')
     assert v[2] == ("partly", ["S2"], '"about eight days"')
     assert v[3] == ("contradicts", ["S2"], "Ethanol boils at 78.23 °C.")
     assert [v[n][0] for n in (4, 5, 6)] == ["not_stated", "not_found", "no_claim"]
-    assert v[7][0] == "not_stated" and 8 not in v  # a passage that was not given; no verdict of this prompt
+    assert v[7] == ("supports", [], '"words"')  # a passage that was not given: the quote will say which one it is
+    assert v[9][0] == v[10][0] == "not_stated" and 8 not in v  # no passage and no quote; no verdict of this prompt
 
 
 def test_a_support_needs_its_quote_in_the_passage():
@@ -644,10 +645,28 @@ def test_a_quote_without_a_number_of_the_claim_supports_a_part():
 def test_a_quote_is_read_like_a_quotation():
     passage = "Water\nWater (H₂O) is  a polar *inorganic* compound.\nMolar mass: 18.015 g·mol⁻¹"
     for quote in ('"WATER (H2O) IS A POLAR"', '“Water (H₂O) is a polar inorganic compound”', "is a  polar\ninorganic",
-                  "**Water** (H2O) is a polar.", "Molar mass: 18.015 g·mol-1"):
+                  "**Water** (H2O) is a polar.", "Water ... is a polar … compound"):  # dots: words left out
         assert quoted_support("Water is polar.", quote, passage, 3) == ("supported", ""), quote
+    assert quoted_support("Its molar mass is 18.015 g/mol.", "Molar mass: 18.015 g·mol-1", passage, 3)[0] == "supported"
     assert quoted_support("Water is polar.", "is a polar inorgan", passage, 3)[1] == "quote not found"  # a cut word
     assert quoted_support("Water is polar.", "is a polar organic compound", passage, 3)[1] == "quote not found"
+    assert quoted_support("Water is polar.", "compound ... Water is a polar", passage, 3)[1] == "quote not found"  # order
+
+
+def test_a_quote_bears_on_its_claim():
+    passage = "Benzoic acid\nBenzoic acid is a white solid.\nMelting point: 122 °C (252 °F; 395 K)\nOther names: E210"
+    line = "Melting point: 122 °C (252 °F; 395 K)"
+    assert quoted_support("Benzoic acid melts at 122 °C.", line, passage, 3) == ("supported", "")
+    assert quoted_support("Let the solution cool slowly in an ice bath.", line, passage, 3) == (
+        "not_stated", "the quote shares no word with the claim")
+    # A floor, not a proof: one shared word passes, and so does a claim in another script. The judge decides those.
+    assert quoted_support("It has a melting point near the boiling point of water.", line, passage, 3)[0] == "supported"
+    assert quoted_support("Охладите раствор на ледяной бане.", line, passage, 3)[0] == "supported"
+    assert quoted_support("The acid is a food additive.", "Other names: E210", passage, 3) == (
+        "not_stated", "the quote shares no word with the claim")  # three words, none of the claim's
+    assert quoted_support("The acid is a food additive.", "E210", passage, 3) == ("not_stated", "quote too short")
+    assert quoted_support("Its number is E210.", "E210", passage, 3) == ("not_stated", "quote too short")
+    assert quoted_support("It melts at 122 °C.", "122 °C", passage, 3) == ("supported", "")  # the claim's number
 
 
 def test_a_decimal_comma_of_the_claim_is_a_decimal_point():
@@ -702,11 +721,11 @@ def _claims(report):
 async def test_quoted_supports_through_the_loop(cfg, fake, knowledge):
     cfg.verifier.support_quotes = True
     draft = ("Ethanol is a volatile, flammable, colorless liquid [S1]. It is also called ethyl alcohol [S1]."
-             " It boils at 78 °C [S1]. It mixes with water [S1].")
+             " It is a liquid that boils at 78 °C [S1]. It mixes with water [S1].")
     fake.scripts = [
         SEARCH_ETHANOL,
         [content(draft)],
-        [content('C1: supports S1 | "It is a volatile, flammable, colorless liquid"\n'
+        [content('C1: supports S7 | "It is a volatile, flammable, colorless liquid"\n'  # S7 was not shown: the quote says S1
                  'C2: supports S1 | "it requires no medium"\n'
                  'C3: supports S1 | "It is a volatile, flammable, colorless liquid"')],  # no line for C4
         [content("C2: not_found\nC3: not_found\nC4: not_found")],  # after the re-searches: nothing more
@@ -718,7 +737,7 @@ async def test_quoted_supports_through_the_loop(cfg, fake, knowledge):
     assert report["counts"] == {"supported": 1, "unverified": 3, "corrected": 0, "removed": 0}
     assert report["statuses"] == {"supported": 1, "partly": 1, "contradicted": 0, "not_stated": 1, "not_found": 1,
                                   "not_checked": 0}
-    assert 'C1 judge: supports S1 | "It is a volatile, flammable, colorless liquid"\n' in steps
+    assert 'C1 judge: supports | "It is a volatile, flammable, colorless liquid", the quote is in S1\n' in steps
     assert 'C2 judge: supports S1 | "it requires no medium", quote not found in S1: not_stated' in steps
     assert "liquid\", 78 not in the quote: partly" in steps and "C4 judge: no verdict" in steps
     assert answer == draft.replace(" [S1]", "")  # the text follows the outcome, as before
