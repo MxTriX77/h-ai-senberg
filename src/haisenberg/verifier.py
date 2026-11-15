@@ -916,8 +916,9 @@ def _readings(text: str, fractions: bool = False) -> list[tuple[Number | None, l
     """Per number of a sentence (commas between digits read as in unconfirmed: decimal commas in Russian text), what
     it may stand for, each as (value, half a unit of its last digit, kind): the number as written (kind ''); a
     percentage also as the share it is (50 % = 0.5); a number with a unit this code reads also in SI base units, its
-    kind the unit's base powers (so km/s compares with m/s and never with kg). With `fractions`, every a/b written
-    in the text is one more value (1/2 = 0.5)."""
+    kind the unit's base powers (so km/s compares with m/s and never with kg; a degree Celsius next to another unit
+    is a step of temperature and counts as a kelvin there, so J/(g·°C) compares with J/(kg·K)). With `fractions`,
+    every a/b written in the text is one more value (1/2 = 0.5)."""
     points = _decimal_points(text, bool(re.search("[А-Яа-яЁё]", text)))
     norm = points.translate(_NORM)
     out: list[tuple[Number | None, list[tuple[float, float, str]]]] = []
@@ -927,7 +928,10 @@ def _readings(text: str, fractions: bool = False) -> list[tuple[Number | None, l
             values.append((n.value / 100, n.half / 100, ""))
         unit, _ = read_unit(norm[n.end :])
         if unit and any(unit[1].values()):
-            kind = repr(sorted((k, p) for k, p in unit[1].items() if p))
+            powers = {k: p for k, p in unit[1].items() if p}
+            if "°C" in powers and len(powers) > 1:  # with another unit a degree is a step of temperature: a kelvin
+                powers["K"] = powers.get("K", 0) + powers.pop("°C")
+            kind = repr(sorted((k, p) for k, p in powers.items() if p))
             values.append((n.value * unit[0], n.half * unit[0], kind))
         out.append((n, values))
     if fractions:
@@ -937,47 +941,112 @@ def _readings(text: str, fractions: bool = False) -> list[tuple[Number | None, l
 
 
 _UNSEEN = re.compile("[​-‏⁠﻿­]")  # zero-width spaces, joiners and marks, soft hyphens
+# What a quote is compared by: runs of letters and digits, and every other character alone. The markup of a formula
+# comes first and is none of them: a `\displaystyle` (any `\…style`), the delimiters `$`, `\(`, `\)`, `\[`, `\]`,
+# and braces.
+_SIGN = re.compile(r"\\[a-z]*style\b|\$|\\[()\[\]]|[{}]|\w+|[^\w\s]")
+
+
+def _signs(text: str) -> list[tuple[str, int]]:
+    """The words and signs a quote is compared by (_SIGN), in order, each with the number of the typeset formula it
+    stands in, 0 for none. The text is read as _quote_text reads it, case and spacing aside, and without the markup
+    of a formula, so one written plainly is the same signs as its marked-up form. A typeset formula is a brace group
+    that opens with a style command, as an encyclopedia passage writes its math."""
+    out: list[tuple[str, int]] = []
+    depth = inside = formula = 0  # open braces; the brace depth of the open typeset formula; its number
+    last = ""
+    for m in _SIGN.finditer(_quote_text(text)[0]):
+        sign = m.group()
+        if sign == "{":
+            depth += 1
+        elif sign == "}":
+            depth = max(depth - 1, 0)
+            inside = inside if depth >= inside else 0
+        elif sign.endswith("style") and sign.startswith("\\"):
+            if last == "{" and not inside:
+                inside, formula = depth, formula + 1
+        elif sign not in ("$", "\\(", "\\)", "\\[", "\\]"):
+            out.append((sign.casefold(), formula if inside else 0))
+        last = sign
+    return out
+
+
+def _row(want: list[str], have: list[tuple[str, int]], start: int) -> int | None:
+    """Where the signs `want` end in `have` (see _signs) when they stand there in a row at or after `start`: the
+    index after the last of them, or None. Between two of them a typeset formula of `have` may be left out whole:
+    a reader who copies the words of a sentence skips markup."""
+    for first in range(start, len(have)):
+        at, k = first, 0
+        while k < len(want) and at < len(have):
+            if have[at][0] == want[k]:
+                at, k = at + 1, k + 1
+            elif k and have[at][1] and have[at][1] != have[at - 1][1]:  # a formula starts here
+                number = have[at][1]
+                while at < len(have) and have[at][1] == number:
+                    at += 1
+            else:
+                break
+        if k == len(want):
+            return at
+    return None
+
+
+def _beside(text: str, n: Number) -> set[tuple[float, str]]:
+    """A number of the text with the word before it and with the word after it (each word by its first four letters,
+    as term_share matches words): what tells the number of a name, `Apollo 11`, from the same number elsewhere."""
+    words = (re.search(r"([^\W\d_]+)\W*$", text[: n.start]), re.match(r"\W*([^\W\d_]+)", text[n.end :]))
+    return {(n.value, m[1].casefold()[:4]) for m in words if m}
 
 
 def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min_share: float = 0.0,
                    title: str = "") -> tuple[str, str]:
     """(status, why it is not supported) of a claim the judge says `passage` supports with `quote`
     (verifier.support_quotes). supported, when all of these hold:
-    - the quote is in the passage as whole words (both as _quote_text reads them, case, the marks around the quote
-      and characters no reader sees aside; dots in it stand for words left out: every part is there, in their order);
+    - the quote is in the passage as whole words and signs in a row (see _signs: case, spacing, the marks around the
+      quote, characters no reader sees and the markup of a formula aside; a formula the passage typesets may be left
+      out whole; dots in the quote stand for words left out: every part is there, in their order);
     - it has at least `min_words` words, or holds a number of the claim;
     - it bears on the claim: it holds a number of the claim, or shares with it a content word that is not a word
       of `title` (the passage's title: the name of its subject shows what a passage is about, not what it states)
       and at least `min_share` of its content words (tools.term_share; not asked when claim and quote are in
       different scripts);
-    - it holds every number of the claim, within the rounding of either (see _readings: 50 % is 1/2, km/s is m/s).
+    - it holds every number of the claim, within the rounding of either (see _readings: 50 % is 1/2, km/s is m/s,
+      per °C is per K), but for a number of the subject's name: one that stands in `title` next to the same word as
+      in the claim.
     not_stated when one of the first three fails; partly when only a number of the claim is not in the quote."""
     quote, passage = _UNSEEN.sub("", quote), _UNSEEN.sub("", passage)
-    parts = [p for p in (re.sub(r"^\W+|\W+$", "", part)
-                         for part in re.split(r"\.{3,}|…", _quote_text(quote)[0].casefold())) if p]
+    parts = []  # per stretch between dots, its words and signs without the signs around it
+    for part in re.split(r"\.{3,}|…", _quote_text(quote)[0]):
+        signs = [sign for sign, _ in _signs(part)]
+        words = [i for i, sign in enumerate(signs) if re.match(r"\w", sign)]
+        if words:
+            parts.append(signs[words[0] : words[-1] + 1])
     if not parts:
         return NOT_STATED, "no quote"
+    said = " ".join(sign for part in parts for sign in part)
     have = [r for _, group in _readings(quote, fractions=True) for r in group]
     want = _readings(claim)
     missing = [n for n, group in want
                if not any(k == j and abs(v - w) <= max(h, g) for v, h, k in group for w, g, j in have)]
     held = len(missing) < len(want)
-    if len(_words(" ".join(parts))) < min_words and not held:
+    if len(_words(said)) < min_words and not held:
         return NOT_STATED, "quote too short"
-    hay, at = _quote_text(passage)[0].casefold(), 0
+    shown, at = _signs(passage), 0
     for part in parts:
-        found = re.compile(rf"(?<!\w){re.escape(part)}(?!\w)").search(hay, at)
-        if not found:
+        at = _row(part, shown, at)
+        if at is None:
             return NOT_STATED, "quote not found"
-        at = found.end()
     if not held and non_latin(claim) == non_latin(quote):
-        share = term_share(claim, " ".join(parts))
+        share = term_share(claim, said)
         if not share:
             return NOT_STATED, "the quote shares no word with the claim"
-        if not term_share(claim, " ".join(parts), skip=title):
+        if not term_share(claim, said, skip=title):
             return NOT_STATED, "the quote shares only its passage's title with the claim"
         if share < min_share:
             return NOT_STATED, f"the quote holds under {min_share:g} of the claim's words"
+    if missing:  # the passage states a number of its subject's name by its title
+        named = {pair for n in read_numbers(title) for pair in _beside(title, n)}
+        missing = [n for n in missing if not _beside(claim, n) & named]
     if missing:
         return PARTLY, f"{' and '.join(claim[n.start : n.end] for n in missing)} not in the quote"
     return SUPPORTED, ""

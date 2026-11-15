@@ -280,12 +280,15 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # reasoning; false: the correction replaces the whole claim
   support_quotes: false                    # true: the judge follows support_prompt and backs every "supports" with words
                                            # copied from a passage. Code accepts it only when those words are in a passage
-                                           # the call showed (whole words; case, emphasis, quote marks, spacing, sub- and
-                                           # superscripts and zero-width characters aside; dots = words left out), have
-                                           # quote_min_words words or a number of the claim, bear on the claim (a number
-                                           # of it, or a content word that is not only a word of the passage's title; not
-                                           # asked across scripts) and hold every number of the claim (within the rounding
-                                           # of either; 50 % = 1/2, km/s = m/s). Words that are not there, too short or
+                                           # the call showed (whole words and signs in a row; case, emphasis, quote marks,
+                                           # spacing, sub- and superscripts, zero-width characters and the markup of a
+                                           # formula aside; a formula the passage typesets may be left out whole; dots =
+                                           # words left out), have quote_min_words words or a number of the claim, bear
+                                           # on the claim (a number of it, or a content word that is not only a word of
+                                           # the passage's title; not asked across scripts) and hold every number of the
+                                           # claim (within the rounding of either; 50 % = 1/2, km/s = m/s, per °C = per K;
+                                           # not asked of a number of the subject's name that the passage's title holds
+                                           # next to the same word). Words that are not there, too short or
                                            # beside the claim: not_stated; a number of the claim missing: partly; the
                                            # reasoning says why. Every claim then has an evidence status next to its
                                            # outcome (supported, partly, contradicted, not_stated, not_found, not_checked)

@@ -690,6 +690,71 @@ def test_a_quote_is_read_like_a_quotation():
     assert quoted_support("Iron melts at 1538 °C.", "Melting point: 1811 K (1538 °C, 2800 °F)", unseen, 3) == ("supported", "")
 
 
+def test_a_formula_written_plainly_is_found_in_its_markup():
+    period = ("Period and frequency\nThe time for one oscillation is the period \\(T\\)."
+              " The number per unit time is \\(f\\).")
+    claim = "T is the period, the time for one oscillation."
+    for quote in ("The time for one oscillation is the period T", "The time for one oscillation is the period $T$",
+                  "the period \\(T\\). The number per unit time is f"):  # plainly, with other marks, past a full stop
+        assert quoted_support(claim, quote, period, 3) == ("supported", ""), quote
+    cell = ("Terminal voltage\nThe terminal potential difference is less than the emf of the cell.\n"
+            "$V= \\mathcal E - IR \\Rightarrow VI = \\mathcal E I - I^2R$\nThus\n$$V = R_L\\cdot I = E - r\\cdot I $$")
+    claim = "The terminal voltage is V = E - I·R."
+    for quote in ("less than the emf of the cell. V= \\mathcal E - IR", "V=\\mathcal E-IR",  # a line break; the spacing
+                  "less than the emf ... Thus V = R_L\\cdot I = E - r\\cdot I"):
+        assert quoted_support(claim, quote, cell, 3) == ("supported", ""), quote
+    for changed in ("V= \\mathcal E + IR", "V= \\mathcal E - I", "V= \\mathcal E IR"):  # a sign, a cut symbol, no sign
+        quote = f"less than the emf of the cell. {changed}"
+        assert quoted_support(claim, quote, cell, 3) == ("not_stated", "quote not found"), changed
+
+
+def test_a_typeset_formula_may_be_left_out_of_a_quote():
+    ohm = ("Ohm's law\nOhm's law states that the electric current {\\displaystyle I} through a conductor between two"
+           " points is directly proportional to the voltage {\\displaystyle V} across the two points. Introducing the"
+           " resistance one arrives at {\\displaystyle V=IR} , where I is the current.")
+    claim = "The current through a conductor is proportional to the voltage across it."
+    words = "the electric current through a conductor between two points is directly proportional to the voltage across"
+    assert quoted_support(claim, words, ohm, 3, 0.0, "Ohm's law") == ("supported", "")
+    plainly = words.replace("current", "current I").replace("voltage", "voltage V")
+    assert quoted_support(claim, plainly, ohm, 3, 0.0, "Ohm's law") == ("supported", "")
+    law = "one arrives at V=IR, where I is the current"  # a formula quoted without its wrapper
+    assert quoted_support("Ohm's law reads V = I·R.", law, ohm, 3) == ("supported", "")
+    assert quoted_support(claim, "the electric current through a conductor is directly proportional", ohm, 3) == (
+        "not_stated", "quote not found")  # words left out, not a formula
+    assert quoted_support("Ohm's law reads V = I.", law.replace("IR", "I"), ohm, 3) == (
+        "not_stated", "quote not found")  # a part of a formula left out
+    # The other checks read the words the judge copied: a number in a formula it left out is not in the quote.
+    case = ("Thermal resistance\nThe junction-to-case resistance {\\displaystyle R_{\\theta }=1.5} kelvin per watt"
+            " is small.")
+    assert quoted_support("The junction-to-case resistance is 1.5 K/W.",
+                          "The junction-to-case resistance kelvin per watt is small", case, 3) == (
+        "partly", "1.5 not in the quote")
+
+
+def test_a_degree_in_a_compound_unit_is_a_kelvin():
+    passage = "Aluminium\nSpecific heat capacity: 896.894 J/(kg·K)\nThe furnace warms the sample by 300 K per hour."
+    heat, rate = "Specific heat capacity: 896.894 J/(kg·K)", "The furnace warms the sample by 300 K per hour"
+    assert quoted_support("Its specific heat capacity is about 0.897 J/(g·°C).", heat, passage, 3) == ("supported", "")
+    assert quoted_support("Its specific heat capacity is about 0.874 J/(g·°C).", heat, passage, 3) == (
+        "partly", "0.874 not in the quote")
+    assert quoted_support("The sample warms by 5 °C per minute.", rate, passage, 3) == ("supported", "")
+    assert quoted_support("The sample warms by 6 °C per minute.", rate, passage, 3)[0] == "partly"
+
+
+def test_a_number_of_the_subjects_name_is_stated_by_the_title():
+    title, line = "Apollo 11", "They spent 21 hours, 36 minutes on the lunar surface"
+    passage = f"{title}\nApollo 11 was the first crewed landing on the Moon, in 1969.\n{line}."
+    named = "The Apollo 11 crew spent 21 hours on the lunar surface."
+    assert quoted_support(named, line, passage, 3, 0.0, title) == ("supported", "")
+    assert quoted_support(named, line, passage, 3) == ("partly", "11 not in the quote")  # no title given: as before
+    for claim, lacks in (("After 11 orbits the crew spent 21 hours on the lunar surface.", "11"),  # not the name
+                         ("The Apollo 12 crew spent 21 hours on the lunar surface.", "12"),  # another name
+                         ("The Apollo 11 crew of 1969 spent 21 hours on the lunar surface.", "1969")):
+        assert quoted_support(claim, line, passage, 3, 0.0, title) == ("partly", f"{lacks} not in the quote"), claim
+    assert quoted_support("Apollo 11 is a good name for the project.", line, passage, 3, 0.0, title) == (
+        "not_stated", "the quote shares no word with the claim")  # the name does not make a quote bear on the claim
+
+
 def test_a_quote_shares_more_than_the_title_of_its_passage_with_the_claim():
     passage = "Quartz\nQuartz is a hard, crystalline mineral composed of silica.\nMohs hardness: 7"
     quote = "Quartz is a hard, crystalline mineral composed of silica"
