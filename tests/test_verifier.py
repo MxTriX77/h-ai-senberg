@@ -793,6 +793,19 @@ async def test_quoted_supports_through_the_loop(cfg, fake, knowledge):
 
 
 @pytest.mark.anyio
+async def test_a_quote_that_shares_only_its_title_with_the_claim_through_the_loop(cfg, fake, knowledge):
+    cfg.verifier.support_quotes, cfg.verifier.max_research = True, 0
+    fake.scripts = [
+        SEARCH_ETHANOL,
+        [content("Ethanol works well for this cleaning step [S1].")],
+        [content('C1: S1 "Ethanol (also called ethyl alcohol) is an organic compound" -> supports')],
+    ]
+    report, steps, _ = await _run(cfg, fake, knowledge)
+    assert _claims(report) == [(1, "unverified", [], "not_stated")]  # the page says what it is, not what it is good for
+    assert "the quote shares only its passage's title with the claim: not_stated" in steps
+
+
+@pytest.mark.anyio
 async def test_a_reply_cut_at_the_token_limit_loses_only_its_own_lines(cfg, fake, knowledge):
     cfg.verifier.support_quotes, cfg.verifier.max_research = True, 0
     fake.scripts = [
