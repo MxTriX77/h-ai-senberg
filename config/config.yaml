@@ -286,6 +286,12 @@ verifier:                                  # claim checks on the draft; on/off: 
   claims_any_script: false                 # true: a sentence with a letter of any script can be a claim (Russian prose);
                                            # false: only a sentence with a Latin letter, as before. Every other rule of
                                            # the claim split stays (headings, code, tables, labels, short sentences)
+  claims_in_tables: false                  # true: every data row of a table is a claim when its cells meet the rules of a
+                                           # sentence; it is read with its header (`Reagent: X; Amount: 5 mL`) by the
+                                           # code checks, the judge, the re-search and the quote check; a correction of
+                                           # a row is only a minimal edit inside its cells, and a row is never removed.
+                                           # false: no line that starts with | is a claim, as before (shipped off until
+                                           # its A/B)
   keep_uncorrected: true                  # a judge "contradicts" without a correction marks the claim unverified;
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a

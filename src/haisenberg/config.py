@@ -290,6 +290,7 @@ class VerifierConfig(_Section):
     skip_labelled_claims: bool  # with skip_derived_claims: labelled lines too (false: only computations)
     computation_needs_arithmetic: bool  # only written arithmetic with its result is a computation (false: any = or <)
     claims_any_script: bool  # a sentence with a letter of any script can be a claim (false: only with a Latin letter)
+    claims_in_tables: bool  # every data row of a table is a claim, read with its header (false: no table row is one)
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
     judge_minimal_edits: bool  # a judge correction is applied only as a minimal edit the cited passages state

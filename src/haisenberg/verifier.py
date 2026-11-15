@@ -112,6 +112,13 @@ class Claim:
     note: str = ""
     status: str = ""  # one of STATUSES with verifier.support_quotes, else ''
     context: str = ""  # what the judge is shown with the claim (see split_claims)
+    read: str = ""  # a table row (verifier.claims_in_tables): its cells under their headers, as the checks read it
+    cells: list[tuple[int, int, int, int]] = field(default_factory=list)  # per cell in `read`: its span there and in the draft
+
+    @property
+    def said(self) -> str:
+        """What the checks, the judge and the re-search read: the text as written, or a table row as read."""
+        return self.read or self.text
 
 
 @dataclass
@@ -146,24 +153,47 @@ class Verification:
 # --- claims ---------------------------------------------------------------------------------------
 
 
-def split_claims(draft: str, skip_labelled: bool = False, context: int = 0, any_script: bool = False) -> list[Claim]:
+def split_claims(draft: str, skip_labelled: bool = False, context: int = 0, any_script: bool = False,
+                 tables: bool = False) -> list[Claim]:
     """Sentences of paragraphs and list items; not headings, code, display math, tables or lead-ins, and with
     `skip_labelled` not labelled answer or verdict lines (`A1: …`, `Claim C: Incorrect`). A sentence needs a Latin
     letter, or with `any_script` a letter of any script (verifier.claims_any_script). With `context` (characters:
     verifier.context_chars) every claim also gets what the judge is shown with it, each part cut to that length: the
     nearest heading above it (a `#` line, or a line that is one bold run) and the sentence before it under that
-    heading, as `under: Procedure; after: Heat the flask.`"""
+    heading, as `under: Procedure; after: Heat the flask.` With `tables` (verifier.claims_in_tables) every data row
+    of a table whose cells, read together, meet the rules of a sentence is a claim too: its text is the row between
+    its outer pipes, and it is read with its header (see _row_read). A table is a run of lines that start with `|`;
+    when its second line is a line of dashes, its first line is the header. Header and dashes are never claims, and
+    a row's context is that of the table: the heading above it and the sentence before it."""
     claims: list[Claim] = []
     pos, fence = 0, False
     under = before = ""
-    for line in draft.splitlines(keepends=True):
+    lines = draft.splitlines(keepends=True)
+    header: list[str] | None = None  # the header cells of the table being read ([]: a table without a header)
+    for i, line in enumerate(lines):
         start, pos = pos, pos + len(line)
         stripped = line.strip()
+        if not stripped.startswith("|"):
+            header = None
         if stripped.startswith("```"):
             fence = not fence
             continue
         if not fence and stripped.startswith("#"):
             under, before = plain(stripped.lstrip("#")), ""
+        if tables and not fence and stripped.startswith("|"):
+            if header is None and i + 1 < len(lines) and _dashes(lines[i + 1]):
+                header = [draft[a:b] for a, b in _table_row(line, start)[1]]
+                continue
+            header = header or []
+            if _dashes(line):
+                continue
+            (a, b), spans = _table_row(line, start)
+            if _is_claim(" ".join(draft[x:y] for x, y in spans if x < y), any_script):
+                read, cells = _row_read(draft, spans, header)
+                shown = [f"{name}: {part[:context]}" for name, part in (("under", under), ("after", before)) if part]
+                claims.append(Claim(len(claims) + 1, a, b, draft[a:b], cites(draft[a:b]),
+                                    context="; ".join(shown) if context else "", read=read, cells=cells))
+            continue
         if fence or not stripped or stripped.startswith(("#", "|", "$$", "\\[", "\\]")):
             continue
         body_at = start + _MARKERS.match(line).end()
@@ -214,6 +244,64 @@ def _is_claim(text: str, any_script: bool = False) -> bool:
 
 def cites(text: str) -> list[str]:
     return [f"S{n}" for m in _CITES.finditer(text) for n in re.findall(r"\d+", m.group())]
+
+
+# --- table rows (verifier.claims_in_tables) ---------------------------------------------------------
+
+
+def _dashes(line: str) -> bool:
+    """The line under a table's header: pipes, dashes, colons and spaces only (`|---|:--:|`)."""
+    s = line.strip()
+    return s.startswith("|") and "-" in s and not s.strip("|:- \t")
+
+
+def _table_row(line: str, at: int) -> tuple[tuple[int, int], list[tuple[int, int]]]:
+    """A table line that starts at `at` in the draft: the span of the row between its outer pipes (spaces aside),
+    and the span of each cell's text (spaces aside; an empty cell has an empty span). A pipe after a backslash is
+    text, not a border."""
+    body = line.rstrip()
+    lo = body.index("|") + 1
+    hi = len(body) - 1 if len(body) > lo and body.endswith("|") and not body.endswith("\\|") else len(body)
+    cells, start = [], lo
+    for stop in [*(lo + m.start() for m in re.finditer(r"(?<!\\)\|", body[lo:hi])), hi]:
+        cell = body[start:stop]
+        a = start + len(cell) - len(cell.lstrip())
+        cells.append((at + a, at + max(a, stop - (len(cell) - len(cell.rstrip())))))
+        start = stop + 1
+    inner = body[lo:hi]
+    a = lo + len(inner) - len(inner.lstrip())
+    return (at + a, at + max(a, hi - (len(inner) - len(inner.rstrip())))), cells
+
+
+def _row_read(draft: str, cells: list[tuple[int, int]], header: list[str]) -> tuple[str, list[tuple[int, int, int, int]]]:
+    """A data row as the checks read it: its non-empty cells in order, each after its column's header
+    (`Reagent: Acetic anhydride; Amount: 5 mL`); a cell whose column has no header is read alone. With, per cell,
+    (start, end) in that text and (start, end) in the draft."""
+    read, spans = "", []
+    for i, (a, b) in enumerate(cells):
+        if a == b:
+            continue
+        name = header[i].strip() if i < len(header) else ""
+        read += ("; " if read else "") + (f"{name}: " if name else "")
+        spans.append((len(read), len(read) + b - a, a, b))
+        read += draft[a:b]
+    return read, spans
+
+
+def in_cells(c: Claim, fixed: str) -> str | None:
+    """The text of the table row claim `c` with `fixed`, a correction of the row as read, put into its cells; None
+    when the correction does not stay inside them: what the read text has besides the cells (the headers and the
+    `; ` between cells) must be as it was, and no cell may gain a `|` or a line break. So the row keeps its cells."""
+    gaps = [c.read[prev : a] for prev, (a, *_) in zip([0, *(b for _, b, *_ in c.cells)], c.cells)]
+    pattern = "".join(f"{re.escape(g)}({'.*' if k == len(gaps) - 1 else '.*?'})" for k, g in enumerate(gaps))
+    if (m := re.fullmatch(pattern, c.read)) is None or list(m.groups()) != [c.read[a:b] for a, b, *_ in c.cells]:
+        return None  # the read text does not tell its cells apart (a cell holds what a header looks like)
+    if (m := re.fullmatch(pattern, fixed)) is None or any("|" in cell for cell in m.groups()):
+        return None
+    out = c.text
+    for (_, _, a, b), cell in sorted(zip(c.cells, m.groups()), key=lambda x: -x[0][2]):
+        out = out[: a - c.start] + cell + out[b - c.start :]
+    return out
 
 
 # --- quotations of the task -----------------------------------------------------------------------
@@ -616,9 +704,10 @@ def _fits(n: Number, v: Value, norm: str, cited: bool, named: bool, units: bool)
 def code_check(claim: Claim, sources: Sources, rel_tol: float,
                units: bool = True) -> tuple[str, list[str], str | None, str] | None:
     """(outcome, ids, fixed text, note) from the structured records, or None when code cannot decide. With
-    `units`, a number counts only as the same quantity as a record value (see _fits)."""
-    norm = claim.text.translate(_NORM)
-    nums, forms = read_numbers(claim.text), read_formulas(claim.text)
+    `units`, a number counts only as the same quantity as a record value (see _fits). A table row is read and fixed
+    as Claim.said."""
+    norm = claim.said.translate(_NORM)
+    nums, forms = read_numbers(claim.said), read_formulas(claim.said)
     cited = [s for i in claim.cites if (s := sources.get(i))]
     named = {s.id: _mentions(norm, s.record.names()) for s in sources.items}
     says_formula = "formula" in norm.lower()
@@ -645,7 +734,7 @@ def code_check(claim: Claim, sources: Sources, rel_tol: float,
             _, a, b = forms[0]
             fixes.append((a, b, s.record.formulas()[0], f"{norm[a:b]} ≠ {s.record.formulas()[0]}"))
         if fixes:
-            text = claim.text
+            text = claim.said
             for a, b, new, _ in sorted(fixes, reverse=True):
                 text = text[:a] + new + text[b:]
             return CORRECTED, [s.id], text, "; ".join(f[3] for f in fixes) + f" ({s.id})"
@@ -699,7 +788,7 @@ def reference_conflict(claim: Claim, sources: Sources, rel_tol: float) -> str:
     supporting = [s for i in claim.ids if (s := sources.get(i))]
     if not supporting or not all(s.literature for s in supporting):
         return ""
-    text = plain(claim.text)
+    text = plain(claim.said)
     quantities = _quantities(text)
     units = {w for _, u in quantities for w in _words(u)}
     words = [w for w in _words(text) if w not in units and w not in STOPWORDS]
@@ -784,10 +873,10 @@ def results(draft: str, arithmetic: bool = False) -> list[float]:
 def is_computation(claim: Claim, given: list[float], computed: list[float], rel_tol: float) -> bool:
     """The claim is a calculation: an equation, comparison or operation with numbers, or a sentence whose
     numbers are all the task's (`given`) or the answer's results (`computed`), at least one a result."""
-    nums = read_numbers(claim.text)
+    nums = read_numbers(claim.said)
     if not nums:
         return False
-    if _COMPUTED.search(claim.text):  # the claim as written: plain() would drop a "*" operator
+    if _COMPUTED.search(claim.said):  # the claim as written: plain() would drop a "*" operator
         return True
     is_result = [any(_matches(n, v, rel_tol) for v in computed) for n in nums]
     return any(is_result) and all(r or any(_matches(n, v, rel_tol) for v in given) for n, r in zip(nums, is_result))
@@ -803,15 +892,15 @@ def computation(claim: Claim, given: list[float], computed: list[float], rel_tol
     task's, whatever arithmetic returns it too) or `given` (every number is the task's and the claim writes them
     with `=` or `≈`: the task's own data repeated). Any other claim with a number is a stated value: a value
     written with `=`, `≈` or a comparison sign, a number in scientific notation, a formula in letters."""
-    nums = read_numbers(claim.text)
+    nums = read_numbers(claim.said)
     if not nums:
         return ""
-    if writes_arithmetic(claim.text):
+    if writes_arithmetic(claim.said):
         return ARITHMETIC
     is_given = [any(_matches(n, v, rel_tol) for v in given) for n in nums]
     is_result = [not g and any(_matches(n, v, rel_tol) for v in computed) for n, g in zip(nums, is_given)]
     if all(g or r for g, r in zip(is_given, is_result)):
-        return RESTATED if any(is_result) else GIVEN if re.search("[=≈]", claim.text) else ""
+        return RESTATED if any(is_result) else GIVEN if re.search("[=≈]", claim.said) else ""
     return ""
 
 
@@ -834,15 +923,15 @@ def origins(claim: Claim, given: list[float], computed: list[float], held: list[
     stands behind written arithmetic, or a calculator call of the answer returned it), `factor` (a whole number up
     to 12 or a power of ten, written without a unit), else `assumed`. Each with the number as written and, when one
     follows it, its unit."""
-    units = {n.start: unit for n, unit in _quantities(claim.text)}
+    units = {n.start: unit for n, unit in _quantities(claim.said)}
     out = []
-    for n in read_numbers(claim.text):
+    for n in read_numbers(claim.said):
         source = next((i for i, values in held if any(_matches(n, v, rel_tol) for v in values)), "")
         factor = n.start not in units and ((n.value.is_integer() and abs(n.value) <= 12)
                                            or (n.value > 0 and math.log10(n.value).is_integer()))
         origin = ("given" if any(_matches(n, v, rel_tol) for v in given) else "source" if source
                   else "result" if any(_matches(n, v, rel_tol) for v in computed) else "factor" if factor else "assumed")
-        out.append({"number": claim.text[n.start : n.end], **({"unit": units[n.start]} if n.start in units else {}),
+        out.append({"number": claim.said[n.start : n.end], **({"unit": units[n.start]} if n.start in units else {}),
                     "origin": origin, **({"id": source} if origin == "source" else {})})
     return out
 
@@ -1005,6 +1094,15 @@ def minimal_edit(text: str, correction: str, passages: str) -> tuple[str | None,
     for _, i1, i2, j1, j2 in reversed(edits):
         out = out[: old[i1][1]] + correction[new[j1][1] : new[j2 - 1][2]] + out[old[i2 - 1][2] :]
     return out, ""
+
+
+def correction_of(c: Claim, correction: str, passages: str) -> tuple[str | None, str]:
+    """A judge correction of claim `c` put in as a minimal edit of what was judged (minimal_edit on Claim.said), or
+    None and why not; a table row's correction must also stay inside its cells (in_cells)."""
+    fixed, why = minimal_edit(c.said, correction, passages)
+    if c.read and fixed is not None and (fixed := in_cells(c, fixed)) is None:
+        why = "it does not stay inside the row's cells"
+    return fixed, why
 
 
 def parse_verdicts(text: str, given: set[str], quotes: bool = False) -> dict[int, tuple[str, list[str], str | None]]:
@@ -1330,6 +1428,12 @@ class Verifier:
                         found := code_check(c, sources, self.cfg.rel_tol, self.cfg.unit_checks)):
                     c.outcome, c.ids, c.fixed, c.note = found
                     c.note = f"code: {c.note}"
+                    if c.read and c.fixed is not None:  # a table row: the correction goes into its cells, or not at all
+                        c.fixed = in_cells(c, c.fixed)
+                        if c.fixed is None:
+                            c.outcome, c.ids = UNVERIFIED, []
+                            c.note += "; correction not applied (it does not stay inside the row's cells)"
+                            c.status = CONTRADICTED if self.cfg.support_quotes else ""
                     yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
                 elif derived and (note := self._computation(c, given, computed, read)):
                     c.outcome, c.note = UNVERIFIED, note
@@ -1362,14 +1466,14 @@ class Verifier:
                 yield line
         research = [c for c in pending if not c.outcome]
         if self.cfg.research_values_first:  # a number with a unit first; draft order within each group
-            research.sort(key=lambda c: not _quantities(plain(c.text)))
+            research.sort(key=lambda c: not _quantities(plain(c.said)))
         for c in research[self.cfg.max_research :]:
             c.outcome, c.note = UNVERIFIED, "not supported; no re-search left"
         research = research[: self.cfg.max_research]
 
         found_for: dict[int, list[str]] = {}
         for c in research:
-            query = plain(c.text)
+            query = plain(c.said)
             yield _say(f"\n> {SEARCH}(query={json.dumps(query, ensure_ascii=False)})  [re-search C{c.n}]\n")
             _, lines, ids = self.knowledge.run(SEARCH, json.dumps({"query": query}), sources, self.cfg.research_k,
                                                internal=True)
@@ -1450,7 +1554,7 @@ class Verifier:
         """The claims of a draft, as this verifier's settings split them."""
         return split_claims(draft, skip_labelled=self.cfg.skip_derived_claims and self.cfg.skip_labelled_claims,
                             context=self.cfg.context_chars if self.cfg.support_quotes else 0,
-                            any_script=self.cfg.claims_any_script)
+                            any_script=self.cfg.claims_any_script, tables=self.cfg.claims_in_tables)
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source], calls: list[dict[str, Any]],
                      stage_name: str = "judge", pool: list[Source] | None = None,
@@ -1482,7 +1586,7 @@ class Verifier:
         is left out, unless it is in another script than the claims, where words cannot be compared: those follow
         in the order of the lookups."""
         named = {i for c in claims for i in must.get(c.n, [])}
-        words = " ".join(w for w in re.findall(r"\w+", " ".join(plain(c.text) for c in claims)) if not w.isdigit())
+        words = " ".join(w for w in re.findall(r"\w+", " ".join(plain(c.said) for c in claims)) if not w.isdigit())
         ranked = []
         for at, s in enumerate(pool):
             text = f"{s.record.label()}\n{s.passage}"
@@ -1506,14 +1610,14 @@ class Verifier:
                 f"Question: {question}\n\nPassages:\n"
                 + "\n\n".join(f"[{s.id}] {s.record.label()}\n{s.passage}" for s in passages)
                 + "\n\nClaims:\n"
-                + "\n".join(f"C{c.n}{f' [{c.context}]' if c.context else ''}: {plain(c.text)}" for c in claims)
+                + "\n".join(f"C{c.n}{f' [{c.context}]' if c.context else ''}: {plain(c.said)}" for c in claims)
             )
             messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user}]
             if not passages or estimate_tokens(messages, self.chars_per_token) <= self.budget:
                 break
             yield _say(f"- {passages.pop().id} left out of the judge call (context budget)\n")
         given = {s.id for s in passages}
-        call = {"stage": stage_name, "claims": [{"n": c.n, "text": plain(c.text),
+        call = {"stage": stage_name, "claims": [{"n": c.n, "text": plain(c.said),
                                                  **({"context": c.context} if c.context else {})} for c in claims],
                 "passages": [s.id for s in passages], "reply": ""}
         calls.append(call)
@@ -1536,7 +1640,7 @@ class Verifier:
                 # The quote says which passage: the ones the line names first, then the others of the call.
                 order = [s for s in passages if s.id in ids] + [s for s in passages if s.id not in ids]
                 (status, why), sid = min(
-                    ((quoted_support(plain(c.text), correction or "", f"{s.record.label()}\n{s.passage}",
+                    ((quoted_support(plain(c.said), correction or "", f"{s.record.label()}\n{s.passage}",
                                      self.cfg.quote_min_words, self.cfg.quote_min_share, s.record.label()), s.id)
                      for s in order),
                     key=lambda found: STATUSES.index(found[0][0]), default=((NOT_STATED, "no passage shown"), ""))
@@ -1559,14 +1663,15 @@ class Verifier:
                     and echoes(correction, prompt)):
                 correction, c.note = None, f"{c.note}, correction repeats the judge instructions: ignored"
             fixed, why = correction, ""
-            if verdict == "contradicts" and correction and self.cfg.judge_minimal_edits:
-                fixed, why = minimal_edit(c.text, correction, "\n".join(
+            # A table row is corrected only by a minimal edit that stays inside its cells, and never removed.
+            if verdict == "contradicts" and correction and (self.cfg.judge_minimal_edits or c.read):
+                fixed, why = correction_of(c, correction, "\n".join(
                     f"{s.record.label()}\n{s.passage}" for s in passages if s.id in ids))
             if verdict == "supports":
                 c.outcome, c.ids = SUPPORTED, ids
             elif why:  # a rewrite, or a value no passage states: the claim stays as written
                 c.outcome, c.note = UNVERIFIED, f"{c.note}, correction not applied ({why}): {correction}"
-            elif verdict == "contradicts" and not correction and self.cfg.keep_uncorrected:
+            elif verdict == "contradicts" and not correction and (self.cfg.keep_uncorrected or c.read):
                 c.outcome, c.note = UNVERIFIED, f"{c.note}, no correction: kept"  # no value stated against it
             elif verdict == "contradicts":
                 c.outcome, c.ids, c.fixed = (CORRECTED, ids, fixed) if fixed else (REMOVED, ids, None)
