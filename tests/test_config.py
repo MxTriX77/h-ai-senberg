@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from haisenberg.config import CONFIG_ENV, PROFILE_ENV, ConfigError, load_config
+from haisenberg.verifier import parse_verdicts
 
 REPO = Path(__file__).resolve().parents[1]
 SHIPPED = REPO / "config" / "config.yaml"
@@ -463,8 +464,9 @@ def test_strict_support_settings(tmp_path, monkeypatch):
     v = load_config(write(tmp_path)).verifier  # shipped off until its A/B
     assert v.support_quotes is False
     assert (v.quote_min_words, v.quote_min_share, v.context_chars, v.judge_batch) == (3, 0, 160, 0)
-    for verdict in ("supports", "partly", "contradicts", "not_stated", "not_found", "no_claim"):
-        assert f"-> {verdict}" in v.support_prompt  # a reply line for every verdict the code reads
+    examples = parse_verdicts(v.support_prompt, {"S1", "S2", "S3"}, quotes=True)  # the prompt's own reply lines
+    assert [verdict for _, (verdict, _, _) in sorted(examples.items())] == [
+        "supports", "partly", "contradicts", "not_stated", "not_found", "no_claim"]  # one for every verdict the code reads
     data = base()
     data["verifier"]["support_prompt"] = " "
     with pytest.raises(ConfigError, match="verifier.support_prompt"):
