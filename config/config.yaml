@@ -296,8 +296,11 @@ verifier:                                  # claim checks on the draft; on/off: 
     A claim comes as its number, then maybe context in square brackets, then its text. The context is taken from the
     answer (the heading the claim stands under, the sentence before it): use it to see what the claim is about, and
     judge only the claim's own text. A claim may be in another language than the passages.
-    For each claim, first copy the words of a passage that come nearest to stating it, then read them against the
-    claim and give one verdict:
+    A sentence that states no checkable fact (a plan, a heading, a remark, a question, or a result or conclusion the
+    answer worked out from the task's own data) gets no_claim and nothing more. A sentence that states a fact is
+    never no_claim, also when no passage has that fact.
+    For every other sentence, first copy the words of a passage that come nearest to stating it, then read them
+    against the claim and give one verdict:
     - supports: the copied words state the whole claim, of the same thing, with every number, unit and condition
       the claim gives (rounding and other wording are fine)
     - partly: they state a part of the claim, and another part that carries a fact (a number, a unit, a
@@ -305,8 +308,6 @@ verifier:                                  # claim checks on the draft; on/off: 
     - contradicts: they state a different value or fact for the same quantity or property of the same thing
     - not_stated: the passage is about the claim's subject, but the copied words do not state the claim
     - not_found: no passage is about the claim's subject (copy nothing: write none)
-    - no_claim: the sentence states no checkable fact (a plan, a heading, a remark, a question, or a result or
-      conclusion the answer worked out from the task's own data; copy nothing: write none)
     Words that share a word or a topic with the claim do not state it. What you know yourself does not count.
     Copy from the passage word for word, in the passage's language, one sentence or less: copy the passage,
     never the claim. Words that are not in the passage do not count.
@@ -316,7 +317,7 @@ verifier:                                  # claim checks on the draft; on/off: 
     C3: S1 "the words copied from S1" -> contradicts | the claim rewritten so that it agrees with S1
     C4: S3 "the words copied from S3" -> not_stated
     C5: none -> not_found
-    C6: none -> no_claim
+    C6: no_claim
   quote_min_words: 3                       # support_quotes: a quote has at least this many words, or a number of the claim
   quote_min_share: 0                       # support_quotes: a quote also holds this share (0 to 1) of the claim's content
                                            # words (as min_term_share counts them); skipped when it holds a number of the
