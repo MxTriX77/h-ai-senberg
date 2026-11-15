@@ -267,6 +267,21 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # judged like any sentence (computations still skipped). A format-bound guard
                                            # (D-042): prose verdicts are protected by keep_uncorrected and the judge's
                                            # minimal-edit rule only
+  computation_needs_arithmetic: false      # true: a claim is a computation only when it writes arithmetic with its result
+                                           # (two numbers joined by an operator, then = or ≈ and a number; a unit may stand
+                                           # between a number and its operator; a dash between numbers without spaces is a
+                                           # range, a power of ten is no operation), or restates results of the answer
+                                           # (numbers behind such arithmetic or returned by a calculator call) next to
+                                           # numbers of the request, or only repeats the request's numbers with = or ≈.
+                                           # A value written with =, ≈, < or >, a number in scientific notation and a
+                                           # formula in letters are then stated values: they go to the record check, the
+                                           # judge and the re-search like any claim. The note of a computation says what
+                                           # was done (recomputed in code, with the written result or with another; not
+                                           # recomputed; restated; the request's own numbers), and the reasoning names its
+                                           # numbers with a unit that no request, source or result holds. false: any =, ≈,
+                                           # <, > or operator between digits makes a computation, as before (a layer
+                                           # switch; shipped off until its A/B). Either way the report lists, per
+                                           # computation, where each of its numbers comes from (`computations`)
   claims_any_script: false                 # true: a sentence with a letter of any script can be a claim (Russian prose);
                                            # false: only a sentence with a Latin letter, as before. Every other rule of
                                            # the claim split stays (headings, code, tables, labels, short sentences).

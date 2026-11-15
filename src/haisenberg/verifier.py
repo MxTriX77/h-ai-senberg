@@ -11,7 +11,7 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -77,6 +77,19 @@ _BOLD_LINE = re.compile(r"(\*\*|__)((?:(?!\1).)+)\1:?")  # a line that is one bo
 _LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
+# Written arithmetic (verifier.computation_needs_arithmetic): two numbers joined by an operator. A unit or a couple
+# of words may stand between a number and its operator (`0.046 mol × 130.19 g/mol`). After a unit, a slash, a middle
+# dot or a plus is an operator only between spaces (`54.0 g / 20.0 cm³`; the slash of `g/mol` is not one), and so is
+# a hyphen or dash anywhere (`70–80 °C` and `1-2 mL` are ranges). The `}{` of a LaTeX fraction divides. Powers and
+# bold marks are taken out first (_bare). _RESULT_SIGN: a result sign with its number; _FREE: a number that is not part of
+# a name (`R1`, `x2`).
+_GAP = r"[^\d=≈;:!?\n]{0,24}?"
+_JOINED = re.compile(r"\d" + _GAP + r"(?:[×*÷⋅]|\\times|\\cdot|\}\s*\{|(?<=\s)[·/+](?=\s)|(?<= )[-−–](?= ))" + _GAP + r"\d"
+                     r"|\d\s*[/·+]\s*[-−(]?\s*\d")
+_RESULT_SIGN = re.compile(r"(?:=|≈|\\approx)[^\d=≈.;!?\n]{0,16}?\d")
+_FREE = re.compile(r"(?<![^\W\d])\d[\d.,]*")
+_POWER = re.compile(r"(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:(?:\^|\*\*)\s*\{?\(?[-−+]?\d+\)?\}?|[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+|-\d+)"
+                    r"|(?<=[\w)\]}])(?:\^|\*\*)\s*\{?\(?[-−+]?\d+\)?\}?|[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+|\*{2,}")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
 # Quotations of the task: runs this long (after _quote_text) that the answer shares with the task.
 _QUOTE_MIN = 20
@@ -109,6 +122,7 @@ class Verification:
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)  # every source issued: label, kind, passage
     judge_calls: list[dict[str, Any]] = field(default_factory=list)  # what each judge call saw, and its reply
     statuses: bool = False  # the claims have an evidence status (verifier.support_quotes)
+    computations: list[dict[str, Any]] = field(default_factory=list)  # per computation: n, its numbers and origins
 
     def report(self) -> dict[str, Any]:
         claims = [c for c in self.claims if c.outcome != NO_CLAIM]
@@ -123,6 +137,7 @@ class Verification:
             "checks": self.checks,
             "sources": self.sources,
             "judge_calls": self.judge_calls,
+            "computations": self.computations,
         }
 
 
@@ -321,8 +336,10 @@ def _result_units(tail: str) -> str:
 
 
 def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True, task: str = "", strict: bool = True,
-                   max_change: float = 0.0) -> tuple[str, list[dict[str, str]], int]:
+                   max_change: float = 0.0, read: dict[int, bool] | None = None) -> tuple[str, list[dict[str, str]], int]:
     """(the draft with every wrong `expression = result` fixed in place, the fixes, how many were checked).
+    `read` gets, by where its result starts in the draft as given, whether each checked expression gives the result
+    written there.
     A result is wrong only when it is wrong under every reading of its % signs (a% as a/100 or as a, a
     result in % as itself or as a fraction) and, with `prefixes`, of the SI prefixes in its chain (a unit
     with a prefix on an operand, right after the result or after the next `=`: the result may be scaled by
@@ -351,8 +368,11 @@ def fix_arithmetic(draft: str, rel_tol: float, prefixes: bool = True, task: str 
         units = _result_units(window[n.end :])
         scaled = prefixes and not in_percent and prefixed(f"{a.expression} {units}")
         scales = _SCALES if scaled else (1.0,)
-        if any(abs(v * s - lhs) <= max(half * s, rel_tol * abs(lhs))
-               for lhs in (a.fraction, a.plain) for v, half in stated for s in scales):
+        agrees = any(abs(v * s - lhs) <= max(half * s, rel_tol * abs(lhs))
+                     for lhs in (a.fraction, a.plain) for v, half in stated for s in scales)
+        if read is not None:
+            read[a.result_at] = agrees
+        if agrees:
             continue
         if strict and converted(a.expression, units):
             continue  # "10 Gbit/s × 60 s = 75 GB": a unit conversion, not plain arithmetic
@@ -698,15 +718,51 @@ def reference_conflict(claim: Claim, sources: Sources, rel_tol: float) -> str:
     return "; ".join(found)
 
 
-def results(draft: str) -> list[float]:
+def _bare(text: str) -> str:
+    """The text without what looks like an operation and is none: the power of ten of scientific notation, an
+    exponent, bold marks."""
+    return _POWER.sub("", text)
+
+
+def _worked(left: str) -> bool:
+    """`left`, the text before a `=` or `≈` (through _bare), is written arithmetic that the sign gives the result
+    of: its last clause (after a `;` or `:`) joins two numbers by an operator (_JOINED), and both from there to its
+    last number and from that number to the sign stand at most two words (a unit, a remark), no comma between
+    words and, after the number, no bracket left open (a remark in brackets is passed over). A value that has a name
+    of its own before the sign is stated, not computed: `a 3 × 5 cm strip (m = 0.1 g)`, `1.25 × (1 + R1/R2) with
+    R1 = 240 Ω`, `a 3 × 5 cm strip and note that 1 inch = 2.54 cm`."""
+    clause = re.split(r"[;:]\s", left)[-1]
+    numbers, joins = list(_FREE.finditer(clause)), list(_JOINED.finditer(clause))
+    if not numbers or not joins:
+        return False
+    last = numbers[-1]
+    gap, tail = (re.sub(r"\\[A-Za-z]+|\\.", " ", t) for t in (clause[joins[-1].end() : last.start()], clause[last.end() :]))
+    tail = re.sub(r"\([^()]*\)", " ", tail)
+    return not re.search(r"[(\[]", tail) and all(
+        not re.search(r",\s", t) and len(re.findall(r"[^\W\d_]\S*", t)) <= 2 for t in (gap, tail))
+
+
+def writes_arithmetic(text: str) -> bool:
+    """The text writes arithmetic with its result: `a op b = c`, two numbers joined by an operator and then `=` or
+    `≈` and a number (see _JOINED and _worked). `R = 0.082 L·atm/(mol·K)`, `5.29 × 10⁻¹¹ m`, `70–80 °C`, a formula
+    in letters, a size such as `10 × 20 cm` and an expression without its result do not."""
+    bare = _bare(text)
+    return any(_worked(bare[: m.start()]) for m in _RESULT_SIGN.finditer(bare))
+
+
+def results(draft: str, arithmetic: bool = False) -> list[float]:
     """Every number written right after `=` or `≈` in the draft and not followed by an operator: values the
-    answer computed."""
+    answer computed. With `arithmetic` (verifier.computation_needs_arithmetic) only where the text before the
+    sign, back to the start of its line or sentence, is written arithmetic (_worked; `\\approx` is a sign too): the
+    value of `R = 0.082` is stated, not computed."""
     out = []
-    for m in re.finditer(r"[=≈][ \t$]*", draft):
+    for m in re.finditer(r"(?:[=≈]|\\approx)[ \t$]*" if arithmetic else r"[=≈][ \t$]*", draft):
         text = draft[m.end() : m.end() + 40]
         nums = read_numbers(text)
         if nums and nums[0].start == 0 and not re.match(r"\s*(?:[×*/·⋅÷+^−-]|\\times|\\cdot)", text[nums[0].end :]):
-            out.append(nums[0].value)
+            start = max(draft.rfind("\n", 0, m.start()), draft.rfind(". ", 0, m.start())) + 1
+            if not arithmetic or _worked(_bare(draft[start : m.start()])):
+                out.append(nums[0].value)
     return out
 
 
@@ -720,6 +776,59 @@ def is_computation(claim: Claim, given: list[float], computed: list[float], rel_
         return True
     is_result = [any(_matches(n, v, rel_tol) for v in computed) for n in nums]
     return any(is_result) and all(r or any(_matches(n, v, rel_tol) for v in given) for n, r in zip(nums, is_result))
+
+
+ARITHMETIC, RESTATED, GIVEN = "arithmetic", "restated", "given"
+
+
+def computation(claim: Claim, given: list[float], computed: list[float], rel_tol: float) -> str:
+    """What kind of computation the claim is with verifier.computation_needs_arithmetic, or '': `arithmetic` (it
+    writes arithmetic with its result, see writes_arithmetic), `restated` (every number is the task's or a
+    result of the answer, at least one a result) or `given` (every number is the task's and the claim writes them
+    with `=` or `≈`: the task's own data repeated). Any other claim with a number is a stated value: a value
+    written with `=`, `≈` or a comparison sign, a number in scientific notation, a formula in letters."""
+    nums = read_numbers(claim.text)
+    if not nums:
+        return ""
+    if writes_arithmetic(claim.text):
+        return ARITHMETIC
+    is_given = [any(_matches(n, v, rel_tol) for v in given) for n in nums]
+    is_result = [any(_matches(n, v, rel_tol) for v in computed) for n in nums]
+    if all(g or r for g, r in zip(is_given, is_result)):
+        return RESTATED if any(is_result) else GIVEN if re.search("[=≈]", claim.text) else ""
+    return ""
+
+
+def calculator_results(text: str) -> list[float]:
+    """The numbers a calculator call returned: of every line `… = result` of its result text whose result is one
+    number, that number."""
+    out = []
+    for line in text.splitlines():
+        result = line.rpartition(" = ")[2].strip() if " = " in line else ""
+        nums = read_numbers(result)
+        if len(nums) == 1 and (nums[0].start, nums[0].end) == (0, len(result)):
+            out.append(nums[0].value)
+    return out
+
+
+def origins(claim: Claim, given: list[float], computed: list[float], held: list[tuple[str, list[float]]],
+            rel_tol: float) -> list[dict[str, str]]:
+    """Where each number of a claim comes from, the first of these that holds: `given` (the task writes it),
+    `source` with its id (`held`: the numbers of each of the answer's sources, title and passage), `result` (it
+    stands behind written arithmetic, or a calculator call of the answer returned it), `factor` (a whole number up
+    to 12 or a power of ten, written without a unit), else `assumed`. Each with the number as written and, when one
+    follows it, its unit."""
+    units = {n.start: unit for n, unit in _quantities(claim.text)}
+    out = []
+    for n in read_numbers(claim.text):
+        source = next((i for i, values in held if any(_matches(n, v, rel_tol) for v in values)), "")
+        factor = n.start not in units and ((n.value.is_integer() and abs(n.value) <= 12)
+                                           or (n.value > 0 and math.log10(n.value).is_integer()))
+        origin = ("given" if any(_matches(n, v, rel_tol) for v in given) else "source" if source
+                  else "result" if any(_matches(n, v, rel_tol) for v in computed) else "factor" if factor else "assumed")
+        out.append({"number": claim.text[n.start : n.end], **({"unit": units[n.start]} if n.start in units else {}),
+                    "origin": origin, **({"id": source} if origin == "source" else {})})
+    return out
 
 
 # --- judge ------------------------------------------------------------------------------------------
@@ -1085,8 +1194,10 @@ class Verifier:
         self.budget = cfg.context_tokens - judge_max  # prompt tokens a judge call may use
         self.chars_per_token = cfg.model_backend.chars_per_token
 
-    async def verify(self, question: str, draft: str, sources: Sources) -> AsyncIterator[dict | Verification]:
-        """Yield reasoning deltas while checking, then the Verification."""
+    async def verify(self, question: str, draft: str, sources: Sources,
+                     calculated: Sequence[float] = ()) -> AsyncIterator[dict | Verification]:
+        """Yield reasoning deltas while checking, then the Verification. `calculated`: the numbers the answer's
+        calculator calls returned (results of the answer, like the ones its written arithmetic states)."""
         arithmetic, checked, lines, carried = [], 0, [], []
         task = question if self.cfg.keep_quotes else ""
         args = (self.cfg.arithmetic_rel_tol, self.cfg.arithmetic_prefixes, task, self.cfg.arithmetic_strict_parse,
@@ -1130,9 +1241,10 @@ class Verifier:
                     else f"- {c['text']!r}: {c['note']}\n" for c in found))
         claims: list[Claim] = []
         calls: list[dict[str, Any]] = []  # the judge calls, for the report
+        computations: list[dict[str, Any]] = []  # the numbers of each computation and where they come from
         answer, fixes = draft, []
         if self.cfg.record_check or self.cfg.claim_judge:  # else no claim stage: the draft goes on as it is
-            checking = self._check_claims(question, draft, sources, claims, calls)
+            checking = self._check_claims(question, draft, sources, claims, calls, list(calculated), computations)
             try:
                 async for line in checking:
                     yield line
@@ -1152,19 +1264,47 @@ class Verifier:
         shown = {s.id: {"label": s.record.label(), "kind": s.kind, "literature": s.literature, "passage": s.passage}
                  for s in sources.items}  # the model's lookups and the re-searches, exactly as shown
         yield Verification(answer, claims, consistency=fixes, arithmetic=arithmetic, checks=checks, sources=shown,
-                           judge_calls=calls, statuses=self.cfg.support_quotes)
+                           judge_calls=calls, statuses=self.cfg.support_quotes, computations=computations)
+
+    def _computation(self, c: Claim, given: list[float], computed: list[float], read: dict[int, bool]) -> str:
+        """'' or the note of a claim that is a computation, which no evidence check reads: by is_computation, or
+        with verifier.computation_needs_arithmetic by computation, where the note says what was done (`read`: the
+        results the arithmetic check read in the draft, by position, and whether its own result is the one written)."""
+        if not self.cfg.computation_needs_arithmetic:
+            done = is_computation(c, given, computed, self.cfg.rel_tol)
+            return "computation: checked in code, not against sources" if done else ""
+        kind = computation(c, given, computed, self.cfg.rel_tol)
+        if kind == ARITHMETIC:
+            same = [ok for at, ok in read.items() if c.start <= at < c.end]
+            if not same:
+                return "computation: not recomputed (the check could not read it)"
+            return "computation: recomputed in code" + ("" if all(same) else " with another result, left as written")
+        return {RESTATED: "computation: restates the task's or the answer's numbers",
+                GIVEN: "computation: the task's own numbers repeated"}.get(kind, "")
 
     async def _check_claims(self, question: str, draft: str, sources: Sources, claims: list[Claim],
-                            calls: list[dict[str, Any]]):
+                            calls: list[dict[str, Any]], calculated: list[float],
+                            computations: list[dict[str, Any]]):
         """The claim stage: split the draft into `claims` (filled in place), check them against the records in
         code (verifier.record_check), judge the rest and re-search what is not supported (verifier.claim_judge).
-        Sets every claim's outcome and adds every judge call to `calls`. Yields reasoning lines."""
+        Sets every claim's outcome and adds every judge call to `calls`. `calculated`: the numbers the answer's
+        calculator calls returned; `computations` gets, per claim filed as a computation, its numbers and where
+        each comes from (origins). Yields reasoning lines."""
         derived = self.cfg.skip_derived_claims
         pending = []
         with stage("claims", CHECK):
             claims += self.split(draft)
             yield _say(f"\n\nVerification: {len(claims)} claims\n")
-            given, computed = [n.value for n in read_numbers(question)], results(draft)
+            given = [n.value for n in read_numbers(question)]
+            worked = [*results(draft, arithmetic=True), *calculated]  # behind written arithmetic, or calculated
+            strict = self.cfg.computation_needs_arithmetic
+            computed = worked if strict else results(draft)
+            read: dict[int, bool] = {}
+            if strict:  # the expressions the arithmetic check reads in this draft, recomputed
+                fix_arithmetic(draft, self.cfg.arithmetic_rel_tol, self.cfg.arithmetic_prefixes,
+                               question if self.cfg.keep_quotes else "", self.cfg.arithmetic_strict_parse,
+                               self.cfg.arithmetic_max_change, read)
+            held: list[tuple[str, list[float]]] | None = None  # the numbers of each source, read when first needed
             mask = quoted(draft, question) if self.cfg.keep_quotes else []
             for c in claims:
                 if is_quotation(draft, mask, c.start, c.end):  # before the code checks: they would rewrite it too
@@ -1175,9 +1315,17 @@ class Verifier:
                     c.outcome, c.ids, c.fixed, c.note = found
                     c.note = f"code: {c.note}"
                     yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
-                elif derived and is_computation(c, given, computed, self.cfg.rel_tol):
-                    c.outcome, c.note = UNVERIFIED, "computation: checked in code, not against sources"
-                    yield _say(f"- C{c.n} {c.outcome} ({c.note})\n")
+                elif derived and (note := self._computation(c, given, computed, read)):
+                    c.outcome, c.note = UNVERIFIED, note
+                    if held is None:
+                        held = [(s.id, [m.value for m in read_numbers(f"{s.record.label()}\n{s.passage}")])
+                                for s in sources.items]
+                    numbers = origins(c, given, worked, held, self.cfg.rel_tol)
+                    computations.append({"n": c.n, "numbers": numbers})
+                    assumed = [f"{x['number']} {x['unit']}" for x in numbers
+                               if strict and x["origin"] == "assumed" and "unit" in x]
+                    yield _say(f"- C{c.n} {c.outcome} ({c.note})"
+                               + (f"; from no task, source or result: {', '.join(assumed)}" if assumed else "") + "\n")
                 else:
                     pending.append(c)
 
