@@ -88,6 +88,39 @@ def test_bare_labels_are_not_claims():
     assert texts(draft) == ["Harbour Instruments Ltd was founded in 1994.** ✗ WRONG", "Vitamin B12.", "H2O."]
 
 
+RUSSIAN = "Молярная масса аспирина составляет 180,159 г/моль [S1]. Это белое вещество."
+
+
+def test_claims_in_any_script():
+    claims = split_claims(RUSSIAN, any_script=True)
+    assert [c.text for c in claims] == ["Молярная масса аспирина составляет 180,159 г/моль [S1].",
+                                        "Это белое вещество."]
+    assert claims[0].cites == ["S1"] and all(RUSSIAN[c.start : c.end] == c.text for c in claims)
+
+
+def test_claims_any_script_off_needs_a_latin_letter():
+    assert split_claims(RUSSIAN) == [] and split_claims(RUSSIAN, any_script=False) == []
+    assert texts("Формула воды — H2O.") == ["Формула воды — H2O."]
+
+
+def test_claims_any_script_needs_a_letter():
+    assert split_claims("- 3,01 × 10²³\n- 6,02 · 10²³ = 2 × 3,01 · 10²³\n", any_script=True) == []
+
+
+def test_claims_any_script_keeps_the_other_rules():
+    draft = ("## Ход работы\n**Оборудование:**\n```\nm = 4,2 г\n```\n$$M = 18$$\n| вода | 18 г/моль |\nПочему?\n"
+             "Да.\n**С2.\nА1: 4,2 г\n")
+    assert texts(draft) == [] and [c.text for c in split_claims(draft, any_script=True)] == ["А1: 4,2 г"]
+    assert split_claims(draft, skip_labelled=True, any_script=True) == []
+
+
+def test_claims_any_script_in_english_drafts():
+    draft = "Ethanol boils at approx. 78 °C. [S1] Water boils at 100 °C [S2].\n- η ≈ 75 %\n"
+    assert texts(draft) == ["Ethanol boils at approx. 78 °C. [S1]", "Water boils at 100 °C [S2]."]
+    assert [c.text for c in split_claims(draft, any_script=True)] == [*texts(draft), "η ≈ 75 %"]
+    assert split_claims(PUMP_DRAFT, any_script=True) == split_claims(PUMP_DRAFT)
+
+
 # --- numbers and formulas --------------------------------------------------------------------------
 
 

@@ -267,6 +267,11 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # judged like any sentence (computations still skipped). A format-bound guard
                                            # (D-042): prose verdicts are protected by keep_uncorrected and the judge's
                                            # minimal-edit rule only
+  claims_any_script: false                 # true: a sentence with a letter of any script can be a claim (Russian prose);
+                                           # false: only a sentence with a Latin letter, as before. Every other rule of
+                                           # the claim split stays (headings, code, tables, labels, short sentences).
+                                           # On only together with support_quotes: the judge as shipped calls nearly
+                                           # every claim it rates supported (42 Russian answers: 68 supports, 64 false)
   keep_uncorrected: true                  # a judge "contradicts" without a correction marks the claim unverified;
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a

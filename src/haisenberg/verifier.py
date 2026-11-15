@@ -128,9 +128,10 @@ class Verification:
 # --- claims ---------------------------------------------------------------------------------------
 
 
-def split_claims(draft: str, skip_labelled: bool = False, context: int = 0) -> list[Claim]:
+def split_claims(draft: str, skip_labelled: bool = False, context: int = 0, any_script: bool = False) -> list[Claim]:
     """Sentences of paragraphs and list items; not headings, code, display math, tables or lead-ins, and with
-    `skip_labelled` not labelled answer or verdict lines (`A1: …`, `Claim C: Incorrect`). With `context` (characters:
+    `skip_labelled` not labelled answer or verdict lines (`A1: …`, `Claim C: Incorrect`). A sentence needs a Latin
+    letter, or with `any_script` a letter of any script (verifier.claims_any_script). With `context` (characters:
     verifier.context_chars) every claim also gets what the judge is shown with it, each part cut to that length: the
     nearest heading above it (a `#` line, or a line that is one bold run) and the sentence before it under that
     heading, as `under: Procedure; after: Heat the flask.`"""
@@ -155,7 +156,7 @@ def split_claims(draft: str, skip_labelled: bool = False, context: int = 0) -> l
             text = body[a:b]
             lead = len(text) - len(text.lstrip())
             text = text.strip()
-            if _is_claim(text):
+            if _is_claim(text, any_script):
                 at = body_at + a + lead
                 shown = [f"{name}: {part[:context]}" for name, part in (("under", under), ("after", before)) if part]
                 claims.append(Claim(len(claims) + 1, at, at + len(text), text, cites(text),
@@ -185,9 +186,10 @@ def plain(text: str) -> str:
     return re.sub(r"[*`]", "", _CITES.sub("", text)).strip()
 
 
-def _is_claim(text: str) -> bool:
+def _is_claim(text: str, any_script: bool = False) -> bool:
     p = plain(text)
-    if not re.search(r"[A-Za-z]", p) or p.endswith((":", "?")) or _BARE_LABEL.fullmatch(p):
+    letter = any(ch.isalpha() for ch in p) if any_script else re.search(r"[A-Za-z]", p)  # isalpha: not ² or ×
+    if not letter or p.endswith((":", "?")) or _BARE_LABEL.fullmatch(p):
         return False
     return len(p.split()) >= 3 or bool(re.search(r"\d", p))
 
@@ -1272,7 +1274,8 @@ class Verifier:
     def split(self, draft: str) -> list[Claim]:
         """The claims of a draft, as this verifier's settings split them."""
         return split_claims(draft, skip_labelled=self.cfg.skip_derived_claims and self.cfg.skip_labelled_claims,
-                            context=self.cfg.context_chars if self.cfg.support_quotes else 0)
+                            context=self.cfg.context_chars if self.cfg.support_quotes else 0,
+                            any_script=self.cfg.claims_any_script)
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source], calls: list[dict[str, Any]],
                      stage_name: str = "judge"):
