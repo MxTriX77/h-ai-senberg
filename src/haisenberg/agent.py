@@ -24,7 +24,7 @@ from .config import Config, ThinkingBudgetConfig, ToolCallMarkup
 from .evidence import _LOOKALIKE, Evidence, Settled, listed_items
 from .llm import LLMClient, estimate_tokens
 from .tools import CALC_TOOLS, CALCULATE, Knowledge, Sources
-from .verifier import Verification, Verifier, read_numbers, strip_cites
+from .verifier import Verification, Verifier, calculator_results, read_numbers, strip_cites
 
 DRAFT_MARK = "\n\nDraft answer:\n"
 CUT_NOTE = "\n[... shortened: context budget]"
@@ -302,8 +302,9 @@ class Agent:
         yield {"draft": draft}  # for in-process callers (evals); the server forwards only text fields
         report: dict[str, Any] = {}
         question = _question(history)
+        trail = ask if ask_again else messages  # the retry's copy holds its own tool results too
         if self.verifier and draft:
-            check = self.verifier.verify(question, draft, sources)
+            check = self.verifier.verify(question, draft, sources, _calculated(trail))
             try:
                 async for item in check:
                     if isinstance(item, Verification):
@@ -313,7 +314,6 @@ class Agent:
             finally:
                 await check.aclose()
         if self.evidence and draft and (items := self.evidence.triggered(question)):
-            trail = ask if ask_again else messages  # the retry's copy holds its own tool results too
             run = self.evidence.run(turns, items, answer, _tool_results(trail))
             try:
                 async for item in run:
@@ -381,6 +381,13 @@ def _tool_results(messages: list[dict[str, Any]]) -> str:
         if m["role"] == "tool":
             out.append(f"> {calls.get(m['tool_call_id'], 'tool')}\n{m['content']}")
     return "\n\n".join(out)
+
+
+def _calculated(messages: list[dict[str, Any]]) -> list[float]:
+    """The numbers the calculator calls of the conversation returned (verifier.calculator_results)."""
+    names = {c["id"]: c["function"]["name"] for m in messages for c in m.get("tool_calls") or []}
+    return [v for m in messages if m["role"] == "tool" and names.get(m["tool_call_id"]) in CALC_TOOLS
+            for v in calculator_results(m["content"])]
 
 
 def _items_named(text: str, items: list[tuple[str, str]]) -> int:

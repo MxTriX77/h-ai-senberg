@@ -454,6 +454,14 @@ def test_claims_any_script_setting(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_computation_needs_arithmetic_setting(tmp_path):
+    assert load_config(write(tmp_path)).verifier.computation_needs_arithmetic is False  # shipped off until its A/B
+    data = base()
+    data["verifier"]["computation_needs_arithmetic"] = "sometimes"
+    with pytest.raises(ConfigError, match=r"verifier\.computation_needs_arithmetic"):
+        load_config(write(tmp_path, data))
+
+
 def test_evidence_in_hand_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier  # both shipped off until their A/B
     assert (v.judge_all_sources, v.judge_passages, v.research_values_first) == (False, 4, False)
