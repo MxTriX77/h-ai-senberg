@@ -1098,6 +1098,19 @@ async def test_a_claim_is_not_judged_twice_against_the_same_source(cfg, fake, kn
 
 
 @pytest.mark.anyio
+async def test_a_claim_without_a_verdict_is_judged_after_its_re_search(cfg, fake, knowledge):
+    cfg.verifier.judge_all_sources, cfg.verifier.support_quotes = True, True
+    fake.scripts = [SEARCH_ETHANOL,
+                    [content("Ethanol is a volatile, flammable, colorless liquid. Ethanol is an organic compound.")],
+                    [content('C1: S1 "It is a volatile, flammable, colorless liquid" -> supports')],  # no line for C2
+                    [content('C2: S1 "Ethanol (also called ethyl alcohol) is an organic compound" -> supports')]]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    # the first reply did not rate C2, so S1 is still unread for it: its re-search finds S1 and it is judged on it
+    assert _judged(report) == [("judge", [1, 2], ["S1"]), ("research_judge", [2], ["S1"])]
+    assert [c["outcome"] for c in report["claims"]] == ["supported", "supported"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("first, searched", [(False, "C1"), (True, "C2")])
 async def test_values_go_first_in_the_re_search(cfg, fake, knowledge, first, searched):
     cfg.verifier.research_values_first, cfg.verifier.max_research = first, 1

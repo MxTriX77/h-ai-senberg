@@ -41,6 +41,7 @@ PARTLY, CONTRADICTED, NOT_STATED = "partly", "contradicted", "not_stated"
 NOT_FOUND, NOT_CHECKED = "not_found", "not_checked"
 STATUSES = (SUPPORTED, PARTLY, CONTRADICTED, NOT_STATED, NOT_FOUND, NOT_CHECKED)
 _OPEN = (PARTLY, NOT_STATED, NOT_FOUND, NOT_CHECKED)  # the statuses of an unsettled claim; an earlier one says more
+NO_VERDICT = "judge: no verdict"  # the note of a claim that a judge reply has no line for
 
 # Same-length normalisation for reading numbers and formulas, so spans stay valid in the original text.
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
@@ -1302,9 +1303,10 @@ class Verifier:
             if shown or pool is None:
                 async for line in self._judge_call(question, batch, shown, calls, stage_name):
                     yield line
-                if met is not None:
+                if met is not None and calls[-1]["reply"]:  # a failed call has rated nothing
                     for c in batch:
-                        met.setdefault(c.n, set()).update(calls[-1]["passages"])
+                        if c.note != NO_VERDICT:  # a claim the reply has no line for has not been judged on them
+                            met.setdefault(c.n, set()).update(calls[-1]["passages"])
 
     def _shown(self, claims: list[Claim], passages: list[Source], pool: list[Source],
                must: dict[int, list[str]]) -> list[Source]:
@@ -1361,7 +1363,7 @@ class Verifier:
         verdicts = parse_verdicts(reply, given, quotes)
         for c in claims:
             if quotes and c.n not in verdicts:  # no line for it (a reply cut off, a claim left out): not rated
-                c.note = "judge: no verdict"
+                c.note = NO_VERDICT
                 yield _say(f"- C{c.n} {c.note}\n")
                 continue
             verdict, ids, correction = verdicts.get(c.n, ("not_said", [], None))
