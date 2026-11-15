@@ -84,7 +84,7 @@ _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*
 # bold marks are taken out first (_bare). _RESULT_SIGN: a result sign with its number; _FREE: a number that is not part of
 # a name (`R1`, `x2`).
 _GAP = r"[^\d=≈;:!?\n]{0,24}?"
-_JOINED = re.compile(r"\d" + _GAP + r"(?:[×*÷⋅]|\\times|\\cdot|\}\s*\{|(?<=\s)[·/+](?=\s)|(?<= )[-−–](?= ))" + _GAP + r"\d"
+_JOINED = re.compile(r"\d" + _GAP + r"(?:[×*÷⋅]|\\times|\\cdot|\\div|\}\s*\{|(?<=\s)[·/+](?=\s)|(?<= )[-−–](?= ))" + _GAP + r"\d"
                      r"|\d\s*[/·+]\s*[-−(]?\s*\d")
 _RESULT_SIGN = re.compile(r"(?:=|≈|\\approx)[^\d=≈.;!?\n]{0,16}?\d")
 _FREE = re.compile(r"(?<![^\W\d])\d[\d.,]*")
