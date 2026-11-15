@@ -11,3 +11,7 @@ model_backend:
 
 llama_server:
   model_path: "${MODEL_PATH:-models/Qwen3.5-9B-heretic-v2.i1-Q4_K_M.gguf}"
+
+verifier:
+  consistency_check: false                 # off for this model (D-049, D-055): on 184 recorded answers the review
+                                           # applied 7 fixes, 5 of them wrong, for 17 to 19 % of the answer time

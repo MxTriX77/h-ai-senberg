@@ -108,7 +108,7 @@ Nothing in the code is tied to this laptop or model. On another machine (for exa
 
 All variables and their defaults are in `.env.example`.
 
-**Model profiles.** Each extra model gets a small file `config/model_cfg/<name>.yaml` with only its own settings (model file and ID, sampling, thinking budget, context, GPU layers or MoE offload), merged over `config/config.yaml`. Pick one with `MODEL_PROFILE`, for example:
+**Model profiles.** Each extra model gets a small file `config/model_cfg/<name>.yaml` with only its own settings (model file and ID, sampling, thinking budget, context, GPU layers or MoE offload), merged over `config/config.yaml`. A profile can also switch a layer off for its model: `qwen3.5-9b-heretic-v2` sets `verifier.consistency_check: false`, because on that model the consistency review made more wrong fixes than right ones. Pick one with `MODEL_PROFILE`, for example:
 
 ```bash
 MODEL_PROFILE=<name> bash scripts/wsl/run.sh

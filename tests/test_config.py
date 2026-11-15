@@ -398,6 +398,19 @@ def test_big_profile_budget(tmp_path, monkeypatch):
     assert cfg.llama_server.flags["reasoning-budget"] == "8192"
 
 
+def test_consistency_review_is_off_for_the_9b_heretic_profile_only(tmp_path, monkeypatch):
+    monkeypatch.delenv(PROFILE_ENV, raising=False)
+    assert load_config(write(tmp_path / "base")).verifier.consistency_check is True
+    for profile in PROFILES:
+        root = tmp_path / profile.stem
+        path = write(root)
+        write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
+        monkeypatch.setenv(PROFILE_ENV, profile.stem)
+        v = load_config(path).verifier
+        assert v.consistency_check is (profile.stem != "qwen3.5-9b-heretic-v2"), profile.stem
+        assert v.consistency_prompt.strip()
+
+
 def test_consistency_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.consistency_check is True and v.consistency_prompt.strip()
