@@ -630,13 +630,15 @@ def test_parse_verdicts_with_the_evidence_first():
         'C3: S2 "boils at 78.23 °C" -> contradicts | Ethanol boils at 78.23 °C.',
         'C4: S1 "A -> B is slow" -> not_stated', "C5: none -> not_found", "C6: none → no_claim",
         'C7: S9 "words" -> supports', "C8: S1 the half-life is short -> supports", "C9: none -> supports",
-        'C10: supports S2 | "about eight days"', 'C11: S1, S2 "words of either" -> partly'])
+        'C10: supports S2 | "about eight days"', 'C11: S1, S2 "words of either" -> partly',
+        "C12: S9 -> contradicts | Other text."])
     v = parse_verdicts(reply, {"S1", "S2"}, quotes=True)
     assert v[1] == ("supports", ["S1"], '"its half-life is 6.0066 hours"')
     assert v[2] == ("partly", ["S2"], "“about eight days”")
     assert v[3] == ("contradicts", ["S2"], "Ethanol boils at 78.23 °C.")
     assert [v[n][0] for n in (4, 5, 6)] == ["not_stated", "not_found", "no_claim"]
-    assert v[7][0] == "not_stated" and v[9][0] == "not_stated"  # a passage that was not given; no passage
+    assert v[7] == ("supports", [], '"words"')  # a passage that was not given: the quote will say which one it is
+    assert v[9] == ("supports", [], "none") and v[12][0] == "not_stated"  # `none` is no quote of any passage
     assert v[8] == ("supports", ["S1"], "the half-life is short")  # no quote marks: the words after the ids
     assert v[10] == ("supports", ["S2"], '"about eight days"')  # the verdict first is read as before
     assert v[11] == ("partly", ["S1", "S2"], '"words of either"')
@@ -659,6 +661,20 @@ def test_a_quote_without_a_number_of_the_claim_supports_a_part():
         "partly", "29.9 and 30 not in the quote")
     assert quoted_support("Its half-life is 6.01 h.", '"Its half-life is 6.0066 hours"', ISOTOPE, 3)[0] == "supported"
     assert quoted_support("Its half-life is 6.1 h.", '"Its half-life is 6.0066 hours"', ISOTOPE, 3)[0] == "partly"
+
+
+def test_a_number_of_the_claim_in_another_form_is_in_the_quote():
+    coin = "Coin flipping\nFor a fair coin the probability of either heads or tails is 1/2."
+    light = "Speed of light\nspeed of light in vacuum = 299 792 458 m s^-1 (exact)\nIt takes 8.3 minutes from the Sun."
+    half, exact = "the probability of either heads or tails is 1/2", "speed of light in vacuum = 299 792 458 m s^-1"
+    assert quoted_support("The probability of heads is 50%.", half, coin, 3) == ("supported", "")  # a share
+    assert quoted_support("The probability of heads is 0.5.", half, coin, 3) == ("supported", "")
+    assert quoted_support("The probability of heads is 40%.", half, coin, 3) == ("partly", "40 not in the quote")
+    assert quoted_support("Light travels at about 299,792 km/s.", exact, light, 3) == ("supported", "")  # the unit's scale
+    assert quoted_support("Light travels at about 299,792 m/s.", exact, light, 3)[0] == "partly"
+    assert quoted_support("Light travels at about 299,792 kg.", exact, light, 3)[0] == "partly"  # another kind of unit
+    assert quoted_support("Light takes 498 s from the Sun.", "It takes 8.3 minutes from the Sun", light, 3)[0] == "supported"
+    assert quoted_support("Light takes 600 s from the Sun.", "It takes 8.3 minutes from the Sun", light, 3)[0] == "partly"
 
 
 def test_a_quote_is_read_like_a_quotation():

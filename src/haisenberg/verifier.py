@@ -912,9 +912,28 @@ def parse_verdicts(text: str, given: set[str], quotes: bool = False) -> dict[int
     return out
 
 
-def _numbers(text: str) -> list[Number]:
-    """The numbers of a sentence, commas between digits read as in unconfirmed (Russian text: decimal commas)."""
-    return read_numbers(_decimal_points(text, bool(re.search("[А-Яа-яЁё]", text))))
+def _readings(text: str, fractions: bool = False) -> list[tuple[Number | None, list[tuple[float, float, str]]]]:
+    """Per number of a sentence (commas between digits read as in unconfirmed: decimal commas in Russian text), what
+    it may stand for, each as (value, half a unit of its last digit, kind): the number as written (kind ''); a
+    percentage also as the share it is (50 % = 0.5); a number with a unit this code reads also in SI base units, its
+    kind the unit's base powers (so km/s compares with m/s and never with kg). With `fractions`, every a/b written
+    in the text is one more value (1/2 = 0.5)."""
+    points = _decimal_points(text, bool(re.search("[А-Яа-яЁё]", text)))
+    norm = points.translate(_NORM)
+    out: list[tuple[Number | None, list[tuple[float, float, str]]]] = []
+    for n in read_numbers(points):
+        values = [(n.value, n.half, "")]
+        if re.match(r"\s*\\?%", norm[n.end :]):
+            values.append((n.value / 100, n.half / 100, ""))
+        unit, _ = read_unit(norm[n.end :])
+        if unit and any(unit[1].values()):
+            kind = repr(sorted((k, p) for k, p in unit[1].items() if p))
+            values.append((n.value * unit[0], n.half * unit[0], kind))
+        out.append((n, values))
+    if fractions:
+        out += [(None, [(int(a) / int(b), 0.0, "")])
+                for a, b in re.findall(r"(?<![\w./])(\d{1,3})\s*/\s*(\d{1,3})(?![\w./])", norm) if int(b)]
+    return out
 
 
 def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min_share: float = 0.0) -> tuple[str, str]:
@@ -925,14 +944,16 @@ def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min
     - it has at least `min_words` words, or holds a number of the claim;
     - it bears on the claim: it holds a number of the claim, or shares a content word with it and at least
       `min_share` of its content words (tools.term_share; not asked when claim and quote are in different scripts);
-    - it holds every number of the claim, within the rounding of either.
+    - it holds every number of the claim, within the rounding of either (see _readings: 50 % is 1/2, km/s is m/s).
     not_stated when one of the first three fails; partly when only a number of the claim is not in the quote."""
     parts = [p for p in (re.sub(r"^\W+|\W+$", "", part)
                          for part in re.split(r"\.{3,}|…", _quote_text(quote)[0].casefold())) if p]
     if not parts:
         return NOT_STATED, "no quote"
-    have, want = _numbers(quote), _numbers(claim)
-    missing = [n for n in want if not any(abs(n.value - m.value) <= max(n.half, m.half) for m in have)]
+    have = [r for _, group in _readings(quote, fractions=True) for r in group]
+    want = _readings(claim)
+    missing = [n for n, group in want
+               if not any(k == j and abs(v - w) <= max(h, g) for v, h, k in group for w, g, j in have)]
     held = len(missing) < len(want)
     if len(_words(" ".join(parts))) < min_words and not held:
         return NOT_STATED, "quote too short"
