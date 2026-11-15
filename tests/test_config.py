@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from haisenberg.config import CONFIG_ENV, PROFILE_ENV, ConfigError, load_config
+from haisenberg.verifier import parse_verdicts
 
 REPO = Path(__file__).resolve().parents[1]
 SHIPPED = REPO / "config" / "config.yaml"
@@ -457,6 +458,27 @@ def test_conservative_review_settings(tmp_path):
         del data["verifier"][key]
         with pytest.raises(ConfigError, match=f"verifier.{key}"):
             load_config(write(tmp_path, data))
+
+
+def test_strict_support_settings(tmp_path, monkeypatch):
+    v = load_config(write(tmp_path)).verifier  # shipped off until its A/B
+    assert v.support_quotes is False
+    assert (v.quote_min_words, v.quote_min_share, v.context_chars, v.judge_batch) == (3, 0, 160, 0)
+    examples = parse_verdicts(v.support_prompt, {"S1", "S2", "S3"}, quotes=True)  # the prompt's own reply lines
+    assert [verdict for _, (verdict, _, _) in sorted(examples.items())] == [
+        "supports", "partly", "contradicts", "not_stated", "not_found", "no_claim"]  # one for every verdict the code reads
+    data = base()
+    data["verifier"]["support_prompt"] = " "
+    with pytest.raises(ConfigError, match="verifier.support_prompt"):
+        load_config(write(tmp_path, data))
+    for key, bad in (("quote_min_share", 1.5), ("judge_batch", -1), ("quote_min_words", 0), ("context_chars", -1),
+                     ("support_quotes", "maybe")):
+        data = base()
+        data["verifier"][key] = bad
+        with pytest.raises(ConfigError, match=f"verifier.{key}"):
+            load_config(write(tmp_path, data))
+    monkeypatch.setenv("JUDGE_BATCH", "5")  # the A/B arm's calls of five claims
+    assert load_config(write(tmp_path)).verifier.judge_batch == 5
 
 
 def test_relevance_threshold(tmp_path):

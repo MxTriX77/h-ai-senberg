@@ -563,6 +563,7 @@ def manifest(cfg: Config, run_id: str, mode: str, files: list[Path], args: list[
         "config_sha256": hashlib.sha256(cfg.model_dump_json().encode()).hexdigest(),
         "model_file": {"path": str(model), "sha256": file_sha256(model, cache)},
         "knowledge": cfg.retrieval.knowledge,
+        "judge_batch": cfg.verifier.judge_batch,  # claims per judge call (JUDGE_BATCH); 0 = all in one
         "stores": store_identities(cfg),
         "eval_files": [{"path": _rel(f), "sha256": file_sha256(f)} for f in files],
         "seed": None,  # the runner does not shuffle; --limit picks the same items every time
@@ -725,6 +726,9 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
     pairs = [(s["draft"]["parts"][k], v) for r in ok if (s := r["scores"]) for k, v in s["final"]["parts"].items()]
     latency = sorted(r["timings"]["total_s"] for r in ok)
     counts = {o: sum(r["verification"].get("counts", {}).get(o, 0) for r in logs) for o in OUTCOMES}
+    statuses: Counter = Counter()  # what the evidence gave per claim, in logs that say (verifier.support_quotes)
+    for r in logs:
+        statuses.update(r["verification"].get("statuses", {}))
     claims = sum(counts.values())
     solved = sum(s["final"]["correct"] for s in scored)
     facts = [s["final"] for s in scored if "loose_correct" in s["final"]]
@@ -759,6 +763,7 @@ def summarize(logs: list[dict[str, Any]]) -> dict[str, Any]:
         "claims": claims,
         "supported_claims_pct": _pct(counts["supported"], claims),
         **{f"{o}_claims": c for o, c in counts.items()},
+        **({"claim_statuses": dict(statuses)} if statuses else {}),
         "unmarked_contradictions": sum(r["unmarked_contradiction"] for r in logs),
         "consistency_fixes": sum(len(r["verification"].get("consistency", [])) for r in logs),
         "arithmetic_fixes": sum(len(r["verification"].get("arithmetic", [])) for r in logs),

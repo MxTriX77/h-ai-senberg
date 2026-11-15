@@ -291,6 +291,12 @@ class VerifierConfig(_Section):
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored
     judge_minimal_edits: bool  # a judge correction is applied only as a minimal edit the cited passages state
+    support_quotes: bool  # a "supports" counts only with a quote that code finds in the passage; claims get a status
+    support_prompt: str  # the judge's instructions with support_quotes
+    quote_min_words: PositiveInt  # a quote has at least this many words, or a number
+    quote_min_share: Annotated[float, Field(ge=0, le=1)]  # ... and holds this share of the claim's words; 0 = off
+    context_chars: NonNegativeInt  # with support_quotes: characters of heading and of previous sentence sent with a claim
+    judge_batch: NonNegativeInt  # claims per judge call; 0 = all in one
     research_k: PositiveInt
     max_research: NonNegativeInt
     request: dict[str, Any] = {}  # fields merged into every judge call
@@ -313,7 +319,7 @@ class VerifierConfig(_Section):
             raise ValueError(f"unknown checker {unknown}; available: {sorted(CHECKERS)}")
         return v
 
-    @field_validator("judge_prompt", "consistency_prompt")
+    @field_validator("judge_prompt", "consistency_prompt", "support_prompt")
     @classmethod
     def _not_empty(cls, v: str) -> str:
         if not v.strip():

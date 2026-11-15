@@ -268,15 +268,20 @@ def _embedder(cfg: Config, need: str, index: DenseIndex, path) -> Embed:
     return client.embed
 
 
-def term_share(query: str, text: str) -> float:
+def term_share(query: str, text: str, skip: str = "") -> float:
     """Share of the query's content words found in the text; words of 4+ letters match on their first four
-    letters (close to the store's stemming), shorter ones exactly."""
-    words = [w for w in re.findall(r"\w+", query.lower()) if w not in STOPWORDS]
+    letters (close to the store's stemming), shorter ones exactly. The query's words that are found in `skip`
+    in that way are not counted."""
+    def words_of(of: str) -> Callable[[str], bool]:
+        have = set(re.findall(r"\w+", of.lower()))
+        stems = {h[:4] for h in have if len(h) >= 4}
+        return lambda w: (w[:4] in stems) if len(w) >= 4 else (w in have)
+
+    skipped, found = words_of(skip), words_of(text)
+    words = [w for w in re.findall(r"\w+", query.lower()) if w not in STOPWORDS and not skipped(w)]
     if not words:
         return 1.0
-    have = set(re.findall(r"\w+", text.lower()))
-    stems = {h[:4] for h in have if len(h) >= 4}
-    return sum((w[:4] in stems) if len(w) >= 4 else (w in have) for w in words) / len(words)
+    return sum(map(found, words)) / len(words)
 
 
 def _each(arguments: str, param: str, run: Callable[[Any], str]) -> tuple[str, list[str]]:

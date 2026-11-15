@@ -278,6 +278,61 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # (numbers within rounding); only those terms change in the claim. Anything
                                            # else leaves the claim as written, unverified, with the reason in the
                                            # reasoning; false: the correction replaces the whole claim
+  support_quotes: false                    # true: the judge follows support_prompt and backs every "supports" with words
+                                           # copied from a passage. Code accepts it only when those words are in a passage
+                                           # the call showed (whole words and signs in a row; case, emphasis, quote marks,
+                                           # spacing, sub- and superscripts, zero-width characters and the markup of a
+                                           # formula aside; a formula the passage typesets may be left out whole; dots =
+                                           # words left out), have quote_min_words words or a number of the claim, bear
+                                           # on the claim (a number of it, or a content word that is not only a word of
+                                           # the passage's title; not asked across scripts) and hold every number of the
+                                           # claim (within the rounding of either; 50 % = 1/2, km/s = m/s, per °C = per K;
+                                           # not asked of a number of the subject's name that the passage's title holds
+                                           # next to the same word). Words that are not there, too short or
+                                           # beside the claim: not_stated; a number of the claim missing: partly; the
+                                           # reasoning says why. Every claim then has an evidence status next to its
+                                           # outcome (supported, partly, contradicted, not_stated, not_found, not_checked)
+                                           # in the eval records; the answer's text follows the outcome as before. false:
+                                           # the judge as before (a layer switch; shipped off until its A/B)
+  support_prompt: |
+    You check the claims of an answer against numbered source passages, using only the passages.
+    A claim comes as its number, then maybe context in square brackets, then its text. The context is taken from the
+    answer (the heading the claim stands under, the sentence before it): use it to see what the claim is about, and
+    judge only the claim's own text. A claim may be in another language than the passages.
+    A sentence that states no checkable fact (a plan, a heading, a remark, a question, or a result or conclusion the
+    answer worked out from the task's own data) gets no_claim and nothing more. A sentence that states a fact is
+    never no_claim, also when no passage has that fact.
+    For every other sentence, first copy the words of a passage that come nearest to stating it, then read them
+    against the claim and give one verdict:
+    - supports: the copied words state the whole claim, of the same thing, with every number, unit and condition
+      the claim gives (rounding and other wording are fine)
+    - partly: they state a part of the claim, and another part that carries a fact (a number, a unit, a
+      condition, a cause) is not in them
+    - contradicts: they state a different value or fact for the same quantity or property of the same thing
+    - not_stated: the passage is about the claim's subject, but the copied words do not state the claim
+    - not_found: no passage is about the claim's subject (copy nothing: write none)
+    Words that share a word or a topic with the claim do not state it. What you know yourself does not count.
+    Copy from the passage word for word, in the passage's language, one sentence or less: copy the passage,
+    never the claim. Words that are not in the passage do not count.
+    Reply with exactly one line per claim and nothing else, no explanation, like this:
+    C1: S2 "the words copied from S2" -> supports
+    C2: S1 "the words copied from S1" -> partly
+    C3: S1 "the words copied from S1" -> contradicts | the claim rewritten so that it agrees with S1
+    C4: S3 "the words copied from S3" -> not_stated
+    C5: none -> not_found
+    C6: no_claim
+  quote_min_words: 3                       # support_quotes: a quote has at least this many words, or a number of the claim
+  quote_min_share: 0                       # support_quotes: a quote also holds this share (0 to 1) of the claim's content
+                                           # words (as min_term_share counts them); skipped when it holds a number of the
+                                           # claim or when claim and quote are in different scripts; 0 = off (measured:
+                                           # 0.34 costs a third of the true supports, which are often paraphrases)
+  context_chars: 160                       # support_quotes: a claim is sent to the judge with the nearest heading (or bold
+                                           # line) above it and the sentence before it, each cut to this many characters;
+                                           # 0 = the claim alone
+  judge_batch: "${JUDGE_BATCH:-0}"         # claims per judge call, in draft order, every call with the passages of its
+                                           # stage; 0 = all claims of a stage in one call (as before). With support_quotes
+                                           # set it (the A/B arm: 5): a quoted verdict for every claim of a long answer
+                                           # does not fit one reply (request.max_tokens)
   keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
                                            # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
                                            # of the material under review: checkers and the arithmetic check (when the
