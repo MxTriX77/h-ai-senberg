@@ -784,7 +784,8 @@ ARITHMETIC, RESTATED, GIVEN = "arithmetic", "restated", "given"
 def computation(claim: Claim, given: list[float], computed: list[float], rel_tol: float) -> str:
     """What kind of computation the claim is with verifier.computation_needs_arithmetic, or '': `arithmetic` (it
     writes arithmetic with its result, see writes_arithmetic), `restated` (every number is the task's or a
-    result of the answer, at least one a result) or `given` (every number is the task's and the claim writes them
+    result of the answer, at least one a result that the task does not give: a number of the task stays the
+    task's, whatever arithmetic returns it too) or `given` (every number is the task's and the claim writes them
     with `=` or `≈`: the task's own data repeated). Any other claim with a number is a stated value: a value
     written with `=`, `≈` or a comparison sign, a number in scientific notation, a formula in letters."""
     nums = read_numbers(claim.text)
@@ -793,7 +794,7 @@ def computation(claim: Claim, given: list[float], computed: list[float], rel_tol
     if writes_arithmetic(claim.text):
         return ARITHMETIC
     is_given = [any(_matches(n, v, rel_tol) for v in given) for n in nums]
-    is_result = [any(_matches(n, v, rel_tol) for v in computed) for n in nums]
+    is_result = [not g and any(_matches(n, v, rel_tol) for v in computed) for n, g in zip(nums, is_given)]
     if all(g or r for g, r in zip(is_given, is_result)):
         return RESTATED if any(is_result) else GIVEN if re.search("[=≈]", claim.text) else ""
     return ""
