@@ -454,6 +454,16 @@ def test_claims_any_script_setting(tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_evidence_in_hand_settings(tmp_path):
+    v = load_config(write(tmp_path)).verifier  # both shipped off until their A/B
+    assert (v.judge_all_sources, v.judge_passages, v.research_values_first) == (False, 4, False)
+    for key, bad in (("judge_all_sources", "some"), ("judge_passages", 0), ("research_values_first", "maybe")):
+        data = base()
+        data["verifier"][key] = bad
+        with pytest.raises(ConfigError, match=f"verifier.{key}"):
+            load_config(write(tmp_path, data))
+
+
 def test_conservative_review_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.consistency_quotes is v.ignore_prompt_echo is v.consistency_keep_verdicts is v.keep_quotes is True

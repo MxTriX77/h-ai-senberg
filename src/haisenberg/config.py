@@ -298,8 +298,11 @@ class VerifierConfig(_Section):
     quote_min_share: Annotated[float, Field(ge=0, le=1)]  # ... and holds this share of the claim's words; 0 = off
     context_chars: NonNegativeInt  # with support_quotes: characters of heading and of previous sentence sent with a claim
     judge_batch: NonNegativeInt  # claims per judge call; 0 = all in one
+    judge_all_sources: bool  # every waiting claim meets the sources of the answer's own lookups, cited or not
+    judge_passages: PositiveInt  # with judge_all_sources: sources chosen by word share per judge call
     research_k: PositiveInt
     max_research: NonNegativeInt
+    research_values_first: bool  # the re-search slots go first to claims that state a number with a unit
     request: dict[str, Any] = {}  # fields merged into every judge call
     answer_style: Literal["plain", "annotated"]  # plain chat answer, or labels + ids + sources (debugging)
     strip_source_ids: bool  # plain style: [S#] markers are removed from the final answer
