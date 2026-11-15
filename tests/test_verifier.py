@@ -414,6 +414,9 @@ def test_the_kinds_of_computation():
     assert computation(sentence("Given: Q = 0.04 m³/s and h = 6 m."), given, worked, 0.001) == "given"
     assert computation(sentence("Given: Q = 0.04 m³/s and g = 9.81 m/s²."), given, worked, 0.001) == ""  # 9.81: not the task's
     assert computation(sentence("The motor is too small."), given, worked, 0.001) == ""  # no number
+    # a number of the task stays the task's when a calculation returns it too (here 6): no result, so a claim
+    assert computation(sentence("The lift of 6 m is the larger part of the head."), given, [*worked, 6], 0.001) == ""
+    assert computation(sentence("So 2354 W for a lift of 6 m."), given, [*worked, 6], 0.001) == "restated"
 
 
 @pytest.mark.parametrize("text", [
