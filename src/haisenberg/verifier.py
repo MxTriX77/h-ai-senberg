@@ -936,16 +936,23 @@ def _readings(text: str, fractions: bool = False) -> list[tuple[Number | None, l
     return out
 
 
-def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min_share: float = 0.0) -> tuple[str, str]:
+_UNSEEN = re.compile("[​-‏⁠﻿­]")  # zero-width spaces, joiners and marks, soft hyphens
+
+
+def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min_share: float = 0.0,
+                   title: str = "") -> tuple[str, str]:
     """(status, why it is not supported) of a claim the judge says `passage` supports with `quote`
     (verifier.support_quotes). supported, when all of these hold:
-    - the quote is in the passage as whole words (both as _quote_text reads them, case and the marks around the
-      quote aside; dots in it stand for words left out: every part is there, in their order);
+    - the quote is in the passage as whole words (both as _quote_text reads them, case, the marks around the quote
+      and characters no reader sees aside; dots in it stand for words left out: every part is there, in their order);
     - it has at least `min_words` words, or holds a number of the claim;
-    - it bears on the claim: it holds a number of the claim, or shares a content word with it and at least
-      `min_share` of its content words (tools.term_share; not asked when claim and quote are in different scripts);
+    - it bears on the claim: it holds a number of the claim, or shares with it a content word that is not a word
+      of `title` (the passage's title: the name of its subject shows what a passage is about, not what it states)
+      and at least `min_share` of its content words (tools.term_share; not asked when claim and quote are in
+      different scripts);
     - it holds every number of the claim, within the rounding of either (see _readings: 50 % is 1/2, km/s is m/s).
     not_stated when one of the first three fails; partly when only a number of the claim is not in the quote."""
+    quote, passage = _UNSEEN.sub("", quote), _UNSEEN.sub("", passage)
     parts = [p for p in (re.sub(r"^\W+|\W+$", "", part)
                          for part in re.split(r"\.{3,}|…", _quote_text(quote)[0].casefold())) if p]
     if not parts:
@@ -967,6 +974,8 @@ def quoted_support(claim: str, quote: str, passage: str, min_words: int = 1, min
         share = term_share(claim, " ".join(parts))
         if not share:
             return NOT_STATED, "the quote shares no word with the claim"
+        if not term_share(claim, " ".join(parts), skip=title):
+            return NOT_STATED, "the quote shares only its passage's title with the claim"
         if share < min_share:
             return NOT_STATED, f"the quote holds under {min_share:g} of the claim's words"
     if missing:
@@ -1251,7 +1260,8 @@ class Verifier:
                 order = [s for s in passages if s.id in ids] + [s for s in passages if s.id not in ids]
                 (status, why), sid = min(
                     ((quoted_support(plain(c.text), correction or "", f"{s.record.label()}\n{s.passage}",
-                                     self.cfg.quote_min_words, self.cfg.quote_min_share), s.id) for s in order),
+                                     self.cfg.quote_min_words, self.cfg.quote_min_share, s.record.label()), s.id)
+                     for s in order),
                     key=lambda found: STATUSES.index(found[0][0]), default=((NOT_STATED, "no passage shown"), ""))
                 if verdict == "partly" and status == SUPPORTED:
                     status = PARTLY  # the judge itself says a part of the claim is not there

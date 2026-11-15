@@ -686,6 +686,20 @@ def test_a_quote_is_read_like_a_quotation():
     assert quoted_support("Water is polar.", "is a polar inorgan", passage, 3)[1] == "quote not found"  # a cut word
     assert quoted_support("Water is polar.", "is a polar organic compound", passage, 3)[1] == "quote not found"
     assert quoted_support("Water is polar.", "compound ... Water is a polar", passage, 3)[1] == "quote not found"  # order
+    unseen = "Iron\nMelting point: 1811 K ​(1538 °C, ​2800 °F)"  # zero-width spaces, as the store has them
+    assert quoted_support("Iron melts at 1538 °C.", "Melting point: 1811 K (1538 °C, 2800 °F)", unseen, 3) == ("supported", "")
+
+
+def test_a_quote_shares_more_than_the_title_of_its_passage_with_the_claim():
+    passage = "Quartz\nQuartz is a hard, crystalline mineral composed of silica.\nMohs hardness: 7"
+    quote = "Quartz is a hard, crystalline mineral composed of silica"
+    use = "Quartz is the right choice for the window of this sensor."  # what to do with it, not what the page states
+    assert quoted_support(use, quote, passage, 3, 0.0, "Quartz") == (
+        "not_stated", "the quote shares only its passage's title with the claim")
+    assert quoted_support("Quartz is a hard mineral.", quote, passage, 3, 0.0, "Quartz") == ("supported", "")
+    assert quoted_support("Quartz crystals are made of silica.", quote, passage, 3, 0.0, "Quartz") == ("supported", "")
+    assert quoted_support("Its Mohs hardness is 7.", "Mohs hardness: 7", passage, 3, 0.0, "Quartz")[0] == "supported"
+    assert quoted_support(use, quote, passage, 3)[0] == "supported"  # no title given: one shared word, as before
 
 
 def test_a_quote_bears_on_its_claim():
