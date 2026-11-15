@@ -77,17 +77,19 @@ _BOLD_LINE = re.compile(r"(\*\*|__)((?:(?!\1).)+)\1:?")  # a line that is one bo
 _LABELLED = re.compile(r"[*_`]*(?:(?:[^\W\d_]+\s+)?\(?[^\W\d_]\d{0,2}\)?|[^\W\d_]+\s+\d{1,2})[*_`\s]*[:：][*_`]*(?:\s|$)")
 # An equation, comparison or operation with numbers: a computation, not a sourceable fact.
 _COMPUTED = re.compile(r"[=≈<>≤≥]|\d\s*(?:[×*/÷·⋅]|\\times|\\cdot)\s*[-−(]?\s*\d|\\frac")
-# Written arithmetic (verifier.computation_needs_arithmetic): two numbers joined by an operator. A unit or a couple
-# of words may stand between a number and its operator (`0.046 mol × 130.19 g/mol`). After a unit, a slash, a middle
-# dot or a plus is an operator only between spaces (`54.0 g / 20.0 cm³`; the slash of `g/mol` is not one), and so is
-# a hyphen or dash anywhere (`70–80 °C` and `1-2 mL` are ranges). The `}{` of a LaTeX fraction divides. Powers and
-# bold marks are taken out first (_bare). _RESULT_SIGN: a result sign with its number; _FREE: a number that is not part of
-# a name (`R1`, `x2`).
+# An expression (verifier.computation_needs_arithmetic: a line above that gives a name its value, see _under): two
+# numbers joined by an operator. A unit or a couple of words may stand between a number and its operator
+# (`0.046 mol × 130.19 g/mol`). After a unit, a slash, a middle dot or a plus is an operator only between spaces
+# (`54.0 g / 20.0 cm³`; the slash of `g/mol` is not one), and so is a hyphen or dash anywhere (`70–80 °C` and `1-2 mL`
+# are ranges). The `}{` of a LaTeX fraction divides. Powers and bold marks are taken out first (_bare). _RESULT_SIGN: a
+# result sign with its number; _FREE: a number that is not part of a name (`R1`, `x2`); _MARKUP: spaces, emphasis
+# and math delimiters, what a name is written with besides its letters.
 _GAP = r"[^\d=≈;:!?\n]{0,24}?"
 _JOINED = re.compile(r"\d" + _GAP + r"(?:[×*÷⋅]|\\times|\\cdot|\\div|\}\s*\{|(?<=\s)[·/+](?=\s)|(?<= )[-−–](?= ))" + _GAP + r"\d"
                      r"|\d\s*[/·+]\s*[-−(]?\s*\d")
 _RESULT_SIGN = re.compile(r"(?:=|≈|\\approx)[^\d=≈.;!?\n]{0,16}?\d")
-_FREE = re.compile(r"(?<![^\W\d])\d[\d.,]*")
+_FREE = re.compile(r"(?<!\w)\d(?:[.,]?\d)*")
+_MARKUP = re.compile(r"[\s*_`$]|\\[()\[\]]")
 _POWER = re.compile(r"(?:[×x*·⋅]|\\times|\\cdot)\s*10\s*(?:(?:\^|\*\*)\s*\{?\(?[-−+]?\d+\)?\}?|[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+|-\d+)"
                     r"|(?<=[\w)\]}])(?:\^|\*\*)\s*\{?\(?[-−+]?\d+\)?\}?|[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+|\*{2,}")
 _BARE_LABEL = re.compile(r"\W*[^\W\d_]\d{1,2}\W*")  # S3. / C2. / A1): a label cut off its line, not a claim
@@ -725,27 +727,39 @@ def _bare(text: str) -> str:
 
 
 def _worked(left: str) -> bool:
-    """`left`, the text before a `=` or `≈` (through _bare), is written arithmetic that the sign gives the result
-    of: its last clause (after a `;` or `:`) joins two numbers by an operator (_JOINED), and both from there to its
-    last number and from that number to the sign stand at most two words (a unit, a remark), no comma between
-    words and, after the number, no bracket left open (a remark in brackets is passed over). A value that has a name
-    of its own before the sign is stated, not computed: `a 3 × 5 cm strip (m = 0.1 g)`, `1.25 × (1 + R1/R2) with
-    R1 = 240 Ω`, `a 3 × 5 cm strip and note that 1 inch = 2.54 cm`."""
+    """`left`, the text before a `=` or `≈` (through _bare), ends in a number, so the sign gives a value derived
+    from what it follows: arithmetic (`42 / 24.464 = 1.72`), a conversion (`25 °C = 298.15 K`), a function value
+    (`-log(0,002) ≈ 2,699`). In its last clause (after a `;` or `:`) at most two words (a unit, a remark) stand
+    between its last number and the sign, no comma between words and no bracket left open (a remark in brackets is
+    passed over). A value that has a name of its own before the sign is stated, not derived: `R = 0.082`,
+    `a 3 × 5 cm strip (m = 0.1 g)`, `1.25 × (1 + R1/R2) with R1 = 240 Ω`."""
     clause = re.split(r"[;:]\s", left)[-1]
-    numbers, joins = list(_FREE.finditer(clause)), list(_JOINED.finditer(clause))
-    if not numbers or not joins:
+    numbers = list(_FREE.finditer(clause))
+    if not numbers:
         return False
-    last = numbers[-1]
-    gap, tail = (re.sub(r"\\[A-Za-z]+|\\.", " ", t) for t in (clause[joins[-1].end() : last.start()], clause[last.end() :]))
-    tail = re.sub(r"\([^()]*\)", " ", tail)
-    return not re.search(r"[(\[]", tail) and all(
-        not re.search(r",\s", t) and len(re.findall(r"[^\W\d_]\S*", t)) <= 2 for t in (gap, tail))
+    tail = re.sub(r"\([^()]*\)", " ", re.sub(r"\\[A-Za-z]+|\\.", " ", clause[numbers[-1].end() :]))
+    return not re.search(r"[(\[]|,\s", tail) and len(re.findall(r"[^\W\d_]\S*", tail)) <= 2
+
+
+def _under(draft: str, at: int) -> bool:
+    """The sign at `at` gives a name, alone before it on its line, the value of the expression that the nearest
+    line above with text gives the same name: a result under its expression (`E = (6.626 × 10⁻³⁴ × 2.998 × 10⁸) /
+    (532 × 10⁻⁹)`, then `E ≈ 3.73 × 10⁻¹⁹ J`). An expression joins two numbers by an operator (_JOINED)."""
+    line = draft.rfind("\n", 0, at) + 1
+    name = _MARKUP.sub("", draft[_MARKERS.match(draft, line).end() : at])
+    if not name or _FREE.search(name):
+        return False
+    above = next((x for x in reversed(draft[:line].splitlines()) if _MARKUP.sub("", x)), "")
+    body = above[_MARKERS.match(above).end() :]
+    sign = re.search(r"=|≈|\\approx", body)
+    return bool(sign) and _MARKUP.sub("", body[: sign.start()]) == name and bool(_JOINED.search(_bare(body[sign.end() :])))
 
 
 def writes_arithmetic(text: str) -> bool:
-    """The text writes arithmetic with its result: `a op b = c`, two numbers joined by an operator and then `=` or
-    `≈` and a number (see _JOINED and _worked). `R = 0.082 L·atm/(mol·K)`, `5.29 × 10⁻¹¹ m`, `70–80 °C`, a formula
-    in letters, a size such as `10 × 20 cm` and an expression without its result do not."""
+    """The text writes a derivation with its result: a number on both sides of `=` or `≈`, as in `a op b = c`, a
+    conversion `25 °C = 298.15 K` or a function value `-log(0,002) ≈ 2,699` (see _worked). `R = 0.082 L·atm/(mol·K)`,
+    `5.29 × 10⁻¹¹ m`, `70–80 °C`, a formula in letters, a size such as `10 × 20 cm` and an expression without its
+    result do not."""
     bare = _bare(text)
     return any(_worked(bare[: m.start()]) for m in _RESULT_SIGN.finditer(bare))
 
@@ -753,15 +767,16 @@ def writes_arithmetic(text: str) -> bool:
 def results(draft: str, arithmetic: bool = False) -> list[float]:
     """Every number written right after `=` or `≈` in the draft and not followed by an operator: values the
     answer computed. With `arithmetic` (verifier.computation_needs_arithmetic) only where the text before the
-    sign, back to the start of its line or sentence, is written arithmetic (_worked; `\\approx` is a sign too): the
-    value of `R = 0.082` is stated, not computed."""
+    sign, back to the start of its line or sentence, ends in a number (_worked; `\\approx` is a sign too), or where
+    the sign gives a name the value of the expression on the line above (_under): the value of `R = 0.082` is
+    stated, not computed."""
     out = []
     for m in re.finditer(r"(?:[=≈]|\\approx)[ \t$]*" if arithmetic else r"[=≈][ \t$]*", draft):
         text = draft[m.end() : m.end() + 40]
         nums = read_numbers(text)
         if nums and nums[0].start == 0 and not re.match(r"\s*(?:[×*/·⋅÷+^−-]|\\times|\\cdot)", text[nums[0].end :]):
             start = max(draft.rfind("\n", 0, m.start()), draft.rfind(". ", 0, m.start())) + 1
-            if not arithmetic or _worked(_bare(draft[start : m.start()])):
+            if not arithmetic or _worked(_bare(draft[start : m.start()])) or _under(draft, m.start()):
                 out.append(nums[0].value)
     return out
 
@@ -783,7 +798,7 @@ ARITHMETIC, RESTATED, GIVEN = "arithmetic", "restated", "given"
 
 def computation(claim: Claim, given: list[float], computed: list[float], rel_tol: float) -> str:
     """What kind of computation the claim is with verifier.computation_needs_arithmetic, or '': `arithmetic` (it
-    writes arithmetic with its result, see writes_arithmetic), `restated` (every number is the task's or a
+    writes a derivation with its result, see writes_arithmetic), `restated` (every number is the task's or a
     result of the answer, at least one a result that the task does not give: a number of the task stays the
     task's, whatever arithmetic returns it too) or `given` (every number is the task's and the claim writes them
     with `=` or `≈`: the task's own data repeated). Any other claim with a number is a stated value: a value

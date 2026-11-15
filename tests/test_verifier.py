@@ -434,7 +434,10 @@ def test_the_kinds_of_computation():
     "Use a 3 × 5 cm strip of magnesium (m = 0.1 g).",  # joined numbers, and a value with a name of its own
     "Set the supply to 12 V / 2 A and check that V_out = 5 V.",
     "Your formula: Vout = 1.25 × (1 + R1/R2) with R1 = 240 Ω and R2 = 720 Ω.",
-    "Cut a 3 × 5 cm strip and note that 1 inch = 2.54 cm.",
+    "Cut a 3 × 5 cm strip and note that its mass m = 0.1 g.",
+    "At 25 °C, Kw = 1.0 × 10⁻¹⁴.",  # a name before the sign, not a number
+    "x = 3, y = 4",  # a comma after a number ends what the sign follows
+    "Regulator U12 dropout ≈ 2 V.",  # the digits of a name are no number
 ])
 def test_stated_values_are_not_arithmetic(text):
     assert not writes_arithmetic(text)
@@ -455,6 +458,28 @@ def test_stated_values_are_not_arithmetic(text):
 ])
 def test_written_arithmetic_has_its_result(text):
     assert writes_arithmetic(text) and computation(sentence(text), [], [], 0.001) == "arithmetic"
+
+
+@pytest.mark.parametrize("text", [
+    "T = 25 °C = 298.15 K",  # a conversion
+    "Сечение: S = 0,5 мм² = 0,5 × 10⁻⁶ м²",
+    "pH = -log(0,002) ≈ 2,699",  # a function value
+    "n = 1.7166 mol ≈ 1.72 mol",  # a rounding
+    "4:30 AM minus 45 minutes = 3:45 AM.",  # arithmetic in words
+    "7 = 4 + 2 + 1",  # a result before its expression
+    "1 inch = 2.54 cm.",  # a unit identity too: no property of the text tells it from a conversion
+])
+def test_a_number_on_both_sides_of_the_sign_is_a_derivation(text):
+    assert writes_arithmetic(text) and computation(sentence(text), [], [], 0.001) == "arithmetic"
+
+
+def test_a_result_under_its_expression():
+    draft = ("E = (6.626 × 10⁻³⁴ × 2.998 × 10⁸) / (532 × 10⁻⁹)\n\n**E ≈ 3.73 × 10⁻¹⁹ J**\n"
+             "R = 8.314 J/(mol·K)\nR = 0.08206 L·atm/(mol·K)\nλ = 532 nm")
+    assert results(draft, arithmetic=True) == [pytest.approx(3.73e-19)]  # under a value or another name: stated
+    claims = split_claims(draft)
+    # the expression without its result, the value under it, two stated values of one name, a value of another name
+    assert [computation(c, [], results(draft, arithmetic=True), 0.001) for c in claims] == ["", "restated", "", "", ""]
 
 
 def test_a_result_stands_behind_written_arithmetic():
