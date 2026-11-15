@@ -448,6 +448,7 @@ def test_stated_values_are_not_arithmetic(text):
     "The margin is (2.2 − 2.354)/2.354 = −6.5 %.",
     "10 g tea × 0.03 (3% average) = **0.30 g**",  # a remark in brackets before the sign
     "n = \\frac{0.707}{0.469} \\approx 1.51",
+    "Monthly rate = $0.042 \\div 12 = 0.0035$",
     "72 \\text{ км/ч} \\times 0{,}5 \\text{ ч} = 36 \\text{ км}.",
     "Масса: 0,046 моль × 130,19 г/моль = 6,0 г.",
     "Cut a 10 × 20 cm sheet; its area is 10 cm × 20 cm = 200 cm².",
