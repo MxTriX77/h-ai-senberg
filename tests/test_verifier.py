@@ -1016,6 +1016,111 @@ async def test_a_failed_judge_call_leaves_only_its_own_claims_unrated(cfg, fake,
     assert "status" not in report["claims"][0] and "statuses" not in report  # only with support_quotes
 
 
+# --- the evidence in hand (verifier.judge_all_sources, verifier.research_values_first) ------------------------
+
+
+def _judged(report):
+    return [(c["stage"], [x["n"] for x in c["claims"]], c["passages"]) for c in report["judge_calls"]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("on", [False, True])
+async def test_a_draft_without_markers_meets_the_sources_in_hand(cfg, fake, knowledge, on):
+    cfg.verifier.judge_all_sources, cfg.verifier.max_research = on, 0
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol is a volatile, flammable, colorless liquid.")],
+                    [content("C1: supports S1")]]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    claim = report["claims"][0]
+    if on:  # the lookup returned S1: the claim meets it although the draft names no source
+        assert (claim["outcome"], claim["ids"]) == ("supported", ["S1"]) and _judged(report) == [("judge", [1], ["S1"])]
+    else:  # no marker, no first call, as before
+        assert claim["outcome"] == "unverified" and _judged(report) == [] and len(fake.requests) == 2
+
+
+@pytest.mark.anyio
+async def test_no_lookups_no_first_call(cfg, fake, knowledge):
+    cfg.verifier.judge_all_sources, cfg.verifier.max_research = True, 0
+    fake.scripts = [[content("Zorblax quivers sharply.")]]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    assert _judged(report) == [] and report["claims"][0]["outcome"] == "unverified"
+
+
+def _pool(*pairs):
+    sources = Sources()
+    for title, text in pairs:
+        sources.add("text", article(title, ""), f"{title}: {text}")
+    return sources.items
+
+
+METALS = (("Copper", "Copper is a ductile metal that conducts heat."), ("Zinc", "Zinc is a brittle metal."),
+          ("Glass", "Glass is an amorphous solid."), ("Opera", "An opera is a staged drama in 2 or 3 acts."),
+          ("Brass", "Brass is an alloy of copper and zinc, 2 to 1 by mass."))
+
+
+def test_passages_chosen_for_a_judge_call(cfg):
+    cfg.verifier.judge_passages = 2
+    v, pool = Verifier(cfg, None, None), _pool(*METALS)
+    claims = split_claims("Brass is an alloy of copper and zinc. It is poured at 900 °C [S3]. There are 2 kinds.")
+    # the cited source, then the two that hold most of the claims' words; ties in the order of the lookups
+    cited = {c.n: c.cites for c in claims}
+    assert [s.id for s in v._shown(claims, pool, pool, cited)] == ["S3", "S5", "S1"]
+    cfg.verifier.judge_passages = 9  # a source with none of the words is never shown: the 2 they share is no word
+    assert [s.id for s in v._shown(claims, pool, pool, cited)] == ["S3", "S5", "S1", "S2"]
+    assert v._shown(split_claims("The libretto was sung in Italian."), pool, pool, {}) == []  # nothing to read: no call
+
+
+def test_passages_for_claims_in_another_script(cfg):
+    cfg.verifier.judge_passages = 2
+    v, pool = Verifier(cfg, None, None), _pool(*METALS)
+    russian = split_claims("Латунь — это сплав меди и цинка. Её льют при 900 °C.", any_script=True)
+    assert [s.id for s in v._shown(russian, pool, pool, {})] == ["S1", "S2"]  # no word to compare: the lookups' order
+    named = split_claims("Латунь (brass) — это сплав меди и цинка.", any_script=True)
+    assert [s.id for s in v._shown(named, pool, pool, {})] == ["S5", "S1"]  # a Latin-script word in common goes first
+
+
+def test_the_second_call_shows_what_is_new(cfg):
+    v, pool = Verifier(cfg, None, None), _pool(*METALS)
+    claims = split_claims("Brass is an alloy of copper and zinc. It is poured at 900 °C [S3].")
+    new = {2: ["S4"], 7: ["S1"]}  # the re-search of the second claim found S4; S1 is for a claim of another call
+    assert [s.id for s in v._shown(claims, pool, [], new)] == ["S4"]  # not S3 again, which the first call showed it
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("on", [False, True])
+async def test_a_claim_is_not_judged_twice_against_the_same_source(cfg, fake, knowledge, on):
+    cfg.verifier.judge_all_sources = on
+    fake.scripts = [SEARCH_ETHANOL, [content("Ethanol quivers like zorblax [S1].")],
+                    [content("C1: not_said")], [content("C1: not_said")]]
+    report, steps, _ = await _run(cfg, fake, knowledge)
+    assert "[re-search C1]" in steps and report["claims"][0]["outcome"] == "unverified"
+    # its re-search finds nothing new: with the switch the first call was all there is to read
+    assert [stage for stage, _, _ in _judged(report)] == (["judge"] if on else ["judge", "research_judge"])
+
+
+@pytest.mark.anyio
+async def test_a_claim_without_a_verdict_is_judged_after_its_re_search(cfg, fake, knowledge):
+    cfg.verifier.judge_all_sources, cfg.verifier.support_quotes = True, True
+    fake.scripts = [SEARCH_ETHANOL,
+                    [content("Ethanol is a volatile, flammable, colorless liquid. Ethanol is an organic compound.")],
+                    [content('C1: S1 "It is a volatile, flammable, colorless liquid" -> supports')],  # no line for C2
+                    [content('C2: S1 "Ethanol (also called ethyl alcohol) is an organic compound" -> supports')]]
+    report, _, _ = await _run(cfg, fake, knowledge)
+    # the first reply did not rate C2, so S1 is still unread for it: its re-search finds S1 and it is judged on it
+    assert _judged(report) == [("judge", [1, 2], ["S1"]), ("research_judge", [2], ["S1"])]
+    assert [c["outcome"] for c in report["claims"]] == ["supported", "supported"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first, searched", [(False, "C1"), (True, "C2")])
+async def test_values_go_first_in_the_re_search(cfg, fake, knowledge, first, searched):
+    cfg.verifier.research_values_first, cfg.verifier.max_research = first, 1
+    fake.scripts = [[content("Zorblax quivers sharply. Heat the glimmerstone to 85 °C for 15 minutes.")],
+                    [content("C1: not_said\nC2: not_said")]]
+    report, steps, _ = await _run(cfg, fake, knowledge)
+    assert f"[re-search {searched}]" in steps and steps.count("[re-search C") == 1
+    assert [c["outcome"] for c in report["claims"]] == ["unverified", "unverified"]
+
+
 # --- consistency review -------------------------------------------------------------------------------
 
 DRAFT = "The theoretical yield is 23.75 g, so 23.4 g is a 98.6 % yield.\n\n| Check | Result |\n|---|---|\n| Yield | 85 % (consistent) |"

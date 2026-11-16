@@ -338,6 +338,25 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # stage; 0 = all claims of a stage in one call (as before). With support_quotes
                                            # set it (the A/B arm: 5): a quoted verdict for every claim of a long answer
                                            # does not fit one reply (request.max_tokens)
+  judge_all_sources: false                 # true: every claim that waits for the judge meets the sources the answer's own
+                                           # lookups returned, cited or not: the first judge call no longer waits for
+                                           # [S#] markers. Each call (see judge_batch) shows the sources its claims cite,
+                                           # then the judge_passages others that hold the largest share of its claims'
+                                           # words (digits aside; a source with none of them is left out, unless it is in
+                                           # another script than the claims: those follow in the order of the lookups).
+                                           # The call after the re-searches shows a claim only what is new, its re-search
+                                           # results and what it cites, and a claim whose re-search found nothing is not
+                                           # judged again. false: as before (a layer switch; shipped off until its A/B;
+                                           # meant to run with support_quotes: more passages before a judge that takes a
+                                           # shared word for proof would mean more false supports). Measured by a replay
+                                           # of the checks on recorded answers, with support_quotes on and the supports
+                                           # read blind: the claims never compared with a passage fall from 60 % to 28 %
+                                           # on how-to answers, and false supports rise all the same (24 how-to answers:
+                                           # 2 → 10 false, 1 → 2 true; 160 general answers: 20 → 29 false, 52 → 55
+                                           # true); the judge takes 41 s per how-to answer instead of 17
+  judge_passages: 4                        # judge_all_sources: sources chosen by word share per judge call. Measured on
+                                           # how-to answers with the literature store: 2, 4 and 6 gave 19, 17 and 16
+                                           # true supports and 31, 53 and 51 false ones (switch off: 10 and 13)
   keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
                                            # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
                                            # of the material under review: checkers and the arithmetic check (when the
@@ -359,6 +378,11 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # "S5. …"); false: as before
   research_k: 2                            # records per re-search of an unsupported claim
   max_research: 6                          # claims re-searched per answer
+  research_values_first: false             # true: those slots go first to the claims that state a number with a unit, in
+                                           # draft order, then to the others; false: draft order alone (a layer switch;
+                                           # shipped off until its A/B). Measured with judge_all_sources on: supports
+                                           # on 24 how-to answers 12 → 13 (true 2 → 3), with the literature store
+                                           # 70 → 62 (true 17 → 15)
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the
                                            # reasoning block); annotated: [S#], labels, summary, source list (debugging)
   strip_source_ids: true                   # plain style: [S#] markers are removed from the final answer; false: the answer

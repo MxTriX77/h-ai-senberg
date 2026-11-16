@@ -41,6 +41,7 @@ PARTLY, CONTRADICTED, NOT_STATED = "partly", "contradicted", "not_stated"
 NOT_FOUND, NOT_CHECKED = "not_found", "not_checked"
 STATUSES = (SUPPORTED, PARTLY, CONTRADICTED, NOT_STATED, NOT_FOUND, NOT_CHECKED)
 _OPEN = (PARTLY, NOT_STATED, NOT_FOUND, NOT_CHECKED)  # the statuses of an unsettled claim; an earlier one says more
+NO_VERDICT = "judge: no verdict"  # the note of a claim that a judge reply has no line for
 
 # Same-length normalisation for reading numbers and formulas, so spans stay valid in the original text.
 _NORM = str.maketrans("−⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉  \xa0", "--+01234567890123456789   ")
@@ -1187,11 +1188,17 @@ class Verifier:
                 yield _say(f"- {len(pending)} claim{'s' if len(pending) != 1 else ''} not judged"
                            " (the claim judge is off)\n")
             pending = []
-        cited = [s for s in sources.items if any(s.id in c.cites for c in pending)]
-        if pending and cited:
-            async for line in self._judge(question, pending, cited, calls):
+        own = list(sources.items)  # what the answer's own lookups returned: the re-searches below add theirs
+        every = self.cfg.judge_all_sources  # each claim meets those sources, cited or not (see _shown)
+        met: dict[int, set[str]] = {}  # claim number -> the sources a judge call has shown it
+        first = own if every else [s for s in own if any(s.id in c.cites for c in pending)]
+        if pending and first:
+            async for line in self._judge(question, pending, first, calls, pool=own if every else None,
+                                          must={c.n: c.cites for c in pending}, met=met):
                 yield line
         research = [c for c in pending if not c.outcome]
+        if self.cfg.research_values_first:  # a number with a unit first; draft order within each group
+            research.sort(key=lambda c: not _quantities(plain(c.text)))
         for c in research[self.cfg.max_research :]:
             c.outcome, c.note = UNVERIFIED, "not supported; no re-search left"
         research = research[: self.cfg.max_research]
@@ -1204,11 +1211,15 @@ class Verifier:
                                                internal=True)
             yield _say("".join(f"- {line}\n" for line in lines))
             found_for[c.n] = ids
-        again = [c for c in research if found_for.get(c.n) or c.cites]
+        # A claim is judged again when its re-search found something or it cites a source. With judge_all_sources
+        # only when the re-search found a source it has not met, and it is shown those alone: a second reading of
+        # the same passages is a second draw of the judge, not more evidence.
+        new = {c.n: [i for i in found_for[c.n] if not every or i not in met.get(c.n, ())] for c in research}
+        again = [c for c in research if new[c.n] or (c.cites and not every)]
         if again:
-            wanted = {i for c in again for i in [*found_for.get(c.n, []), *c.cites]}
+            wanted = {i for c in again for i in [*new[c.n], *c.cites]}
             async for line in self._judge(question, again, [s for s in sources.items if s.id in wanted], calls,
-                                          "research_judge"):
+                                          "research_judge", pool=[] if every else None, must=new):
                 yield line
         for c in research:
             if not c.outcome:
@@ -1224,8 +1235,8 @@ class Verifier:
             for c in claims:
                 if c.outcome in (SUPPORTED, CORRECTED, REMOVED):  # settled in code, from a record
                     c.status = c.status or (SUPPORTED if c.outcome == SUPPORTED else CONTRADICTED)
-                elif c.n in found_for and not (found_for[c.n] or c.cites):
-                    _open_status(c, NOT_FOUND)  # its re-search returned nothing
+                elif c.n in found_for and not (found_for[c.n] or (c.cites and not every)):
+                    _open_status(c, NOT_FOUND)  # its re-search returned nothing (a status it has that says more stays)
                 elif c.outcome != NO_CLAIM:
                     c.status = c.status or NOT_CHECKED  # a quotation, a computation, no re-search slot, no verdict
         for c in claims:
@@ -1278,13 +1289,43 @@ class Verifier:
                             any_script=self.cfg.claims_any_script)
 
     async def _judge(self, question: str, claims: list[Claim], passages: list[Source], calls: list[dict[str, Any]],
-                     stage_name: str = "judge"):
+                     stage_name: str = "judge", pool: list[Source] | None = None,
+                     must: dict[int, list[str]] | None = None, met: dict[int, set[str]] | None = None):
         """The judge calls of one stage for these claims: one call, or with verifier.judge_batch calls of at most
-        that many claims, in their order, each with these passages (see _judge_call). Yields reasoning lines."""
+        that many claims, in their order, each with these passages (see _judge_call). With `pool`
+        (verifier.judge_all_sources) each call shows only the passages chosen for its own claims (see _shown), and
+        a call with none is not made: its claims wait for the re-search. `met` gets, per claim number, the sources
+        a call has shown it. Yields reasoning lines."""
         size = self.cfg.judge_batch or len(claims) or 1
         for i in range(0, len(claims), size):
-            async for line in self._judge_call(question, claims[i : i + size], passages, calls, stage_name):
-                yield line
+            batch = claims[i : i + size]
+            shown = passages if pool is None else self._shown(batch, passages, pool, must or {})
+            if shown or pool is None:
+                async for line in self._judge_call(question, batch, shown, calls, stage_name):
+                    yield line
+                if met is not None and calls[-1]["reply"]:  # a failed call has rated nothing
+                    for c in batch:
+                        if c.note != NO_VERDICT:  # a claim the reply has no line for has not been judged on them
+                            met.setdefault(c.n, set()).update(calls[-1]["passages"])
+
+    def _shown(self, claims: list[Claim], passages: list[Source], pool: list[Source],
+               must: dict[int, list[str]]) -> list[Source]:
+        """The passages of one judge call with verifier.judge_all_sources, the most wanted first (the last ones go
+        when the call does not fit the context): of `passages`, the sources `must` names for these claims (the ones
+        they cite; after a re-search, what it found that they have not met); then the verifier.judge_passages
+        sources of `pool`, the answer's own lookups, that hold the largest share of the claims' words
+        (tools.term_share; digits aside: a digit in common says nothing). A source that holds none of those words
+        is left out, unless it is in another script than the claims, where words cannot be compared: those follow
+        in the order of the lookups."""
+        named = {i for c in claims for i in must.get(c.n, [])}
+        words = " ".join(w for w in re.findall(r"\w+", " ".join(plain(c.text) for c in claims)) if not w.isdigit())
+        ranked = []
+        for at, s in enumerate(pool):
+            text = f"{s.record.label()}\n{s.passage}"
+            share = term_share(words, text)
+            if s.id not in named and (share or non_latin(words) != non_latin(text)):
+                ranked.append((-share, at, s))
+        return [s for s in passages if s.id in named] + [s for *_, s in sorted(ranked)[: self.cfg.judge_passages]]
 
     async def _judge_call(self, question: str, claims: list[Claim], passages: list[Source],
                           calls: list[dict[str, Any]], stage_name: str):
@@ -1322,7 +1363,7 @@ class Verifier:
         verdicts = parse_verdicts(reply, given, quotes)
         for c in claims:
             if quotes and c.n not in verdicts:  # no line for it (a reply cut off, a claim left out): not rated
-                c.note = "judge: no verdict"
+                c.note = NO_VERDICT
                 yield _say(f"- C{c.n} {c.note}\n")
                 continue
             verdict, ids, correction = verdicts.get(c.n, ("not_said", [], None))
