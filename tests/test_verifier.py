@@ -21,6 +21,7 @@ from haisenberg.verifier import (
     carry_forward,
     code_check,
     computation,
+    correction_of,
     echoes,
     fix_answer_lines,
     fix_arithmetic,
@@ -2378,3 +2379,101 @@ async def test_quoted_wrong_product_answer_line_in_the_loop(cfg, fake, knowledge
     items = [i async for i in Agent(cfg, fake.client(cfg.model_backend), knowledge).run(question)]
     assert next(i["content"] for i in items if "content" in i) == f"{COST_DRAFT}\n\nA1: 560 euros"
     assert next(i["verification"] for i in items if "verification" in i)["arithmetic"] == []
+
+
+# --- table rows as claims (verifier.claims_in_tables) ------------------------------------------------
+
+REAGENTS = "| Reagent | Amount | Role |\n|---|---|---|\n| Acetic anhydride | 5 mL | acetylating agent |\n"
+
+
+def test_a_table_row_with_a_value_is_one_claim():
+    [c] = split_claims(REAGENTS, tables=True)  # not the header, not the line of dashes
+    assert REAGENTS[c.start : c.end] == c.text == "Acetic anhydride | 5 mL | acetylating agent"
+    assert c.read == c.said == "Reagent: Acetic anhydride; Amount: 5 mL; Role: acetylating agent"
+    assert split_claims(REAGENTS) == []  # switched off: no line that starts with | is a claim
+
+
+def test_rows_that_say_nothing_checkable_are_no_claims():
+    draft = "| Step | Temperature | Time |\n|:--|:-:|--:|\n| — | — | — |\n| Stir well | | |\n| Step 2 | | 15 min |\n"
+    assert [c.read for c in split_claims(draft, tables=True)] == ["Step: Step 2; Time: 15 min"]  # an empty cell
+
+
+def test_a_table_without_a_header():
+    draft = "| Ethanol boils at 78 °C [S1] |\n| Water | 100 °C |\n| ok | fine |\n"
+    assert [(c.read, c.cites) for c in split_claims(draft, tables=True)] == [
+        ("Ethanol boils at 78 °C [S1]", ["S1"]), ("Water; 100 °C", [])]
+
+
+def test_sentences_and_their_context_do_not_change_with_tables():
+    draft = f"## Reagents\nYou need these three.\n\n{REAGENTS}\nHeat the flask to 80 °C [S1]. Stir it slowly.\n"
+    off, on = split_claims(draft, context=160), split_claims(draft, context=160, tables=True)
+    assert [(c.text, c.context) for c in on if not c.read] == [(c.text, c.context) for c in off]
+    assert [c.context for c in on if c.read] == ["under: Reagents; after: You need these three."]
+
+
+BOILING = "| Compound | Molar mass | Boiling point |\n|---|---|---|\n| Ethanol | 46.07 g/mol | 87 °C [S1] |\n"
+BOILING_PASSAGE = "Ethanol is a substance.\nMolar mass: 46.07 g/mol\nBoiling point: 78.23 °C"
+
+
+@pytest.mark.parametrize("correction, fixed, why", [
+    ("Compound: Ethanol; Molar mass: 46.07 g/mol; Boiling point: 78.23 °C",  # one term, in its cell
+     "Ethanol | 46.07 g/mol | 78.23 °C [S1]", ""),
+    ("Compound: Ethanol; Molar mass: 46.07 g/mol; Boiling point: 78.23 °C; Density: 0.789 g/mL", None,
+     "not a minimal edit: adds"),  # a cell more
+    ("Ethanol boils at 78.23 °C.", None, "not a minimal edit: drops"),  # a sentence: the cells are gone
+    ("| Ethanol | 46.07 g/mol | 78.23 °C |", None, "not a minimal edit: drops"),  # the row without its headers
+    ("Substance: Ethanol; Molar mass: 46.07 g/mol; Boiling point: 78.23 °C", None,
+     "it does not stay inside the row's cells"),  # a header changed
+])
+def test_a_row_is_corrected_only_inside_its_cells(correction, fixed, why):
+    c = split_claims(BOILING, tables=True)[0]
+    out, said = correction_of(c, correction, BOILING_PASSAGE)
+    assert out == fixed and said.startswith(why)
+
+
+ETHANOL_ARTICLE = article("Ethanol", "Molar mass: 46.07 g/mol\nBoiling point: 78.23 °C")
+
+
+async def judged_table(cfg, fake, knowledge, draft, judge, question="q", record=ETHANOL_ARTICLE):
+    cfg.verifier.claims_in_tables = True
+    fake.scripts = [[content(judge)]]
+    items = [i async for i in Verifier(cfg, fake.client(cfg.model_backend), knowledge).verify(
+        question, draft, retrieved(record))]
+    return items[-1], "".join(i.get("reasoning_content", "") for i in items[:-1])
+
+
+@pytest.mark.anyio
+async def test_a_wrong_value_in_a_cell_is_corrected_in_the_cell(cfg, fake, knowledge):
+    cfg.verifier.record_check = False  # the judge's correction (the record's is below)
+    result, _ = await judged_table(cfg, fake, knowledge, BOILING,
+                                   "C1: contradicts S1 | Compound: Ethanol; Molar mass: 46.07 g/mol; Boiling point: 78.23 °C")
+    assert result.answer == BOILING.replace("87 °C [S1]", "78.23 °C").rstrip()  # one term changed, the cells kept
+    user = fake.bodies[0]["messages"][1]["content"]
+    assert "C1: Compound: Ethanol; Molar mass: 46.07 g/mol; Boiling point: 87 °C" in user  # the row as read
+    assert result.judge_calls[0]["claims"][0]["text"] == "Compound: Ethanol; Molar mass: 46.07 g/mol; Boiling point: 87 °C"
+
+
+@pytest.mark.anyio
+async def test_a_record_corrects_a_cell(cfg, fake, knowledge):
+    draft = "| Compound | Molar mass |\n|---|---|\n| Ethanol | 64.07 g/mol [S1] |\n"
+    result, _ = await judged_table(cfg, fake, knowledge, draft, "", record=ETHANOL_C)
+    assert result.claims[0].outcome == CORRECTED and fake.bodies == []  # settled in code, no judge call
+    assert result.answer == "| Compound | Molar mass |\n|---|---|\n| Ethanol | 46.07 g/mol |"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("judge, note", [
+    ("C1: contradicts S1 | Ethanol boils at 78.23 °C.", "correction not applied (not a minimal edit"),  # a sentence
+    ("C1: contradicts S1", "no correction: kept"),  # a sentence would be removed, a row is not
+])
+async def test_a_row_is_never_removed(cfg, fake, knowledge, judge, note):
+    cfg.verifier.record_check, cfg.verifier.keep_uncorrected = False, False
+    result, steps = await judged_table(cfg, fake, knowledge, BOILING, judge)
+    assert result.claims[0].outcome == UNVERIFIED and note in steps
+    assert result.answer == BOILING.replace(" [S1]", "").rstrip()  # the row as written
+
+
+@pytest.mark.anyio
+async def test_a_row_of_the_request_is_not_checked(cfg, fake, knowledge):
+    result, steps = await judged_table(cfg, fake, knowledge, BOILING, "", question=f"Is my table right?\n{BOILING}")
+    assert result.claims[0].note == "quoted from the task: not checked" and fake.bodies == []

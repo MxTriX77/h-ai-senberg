@@ -129,6 +129,8 @@ def registry(cfg: Config) -> list[Layer]:
           for name in CHECKERS),
         Layer("claims_any_script", "sentences without a Latin letter are claims too", f"{v}.claims_any_script",
               *_flag(v, "claims_any_script"), needs=(("record_check", "judge"),), verifier=True),
+        Layer("claims_in_tables", "the data rows of a table are claims, read with their header",
+              f"{v}.claims_in_tables", *_flag(v, "claims_in_tables"), needs=(("record_check", "judge"),), verifier=True),
         Layer("computation_needs_arithmetic", "only written arithmetic is a computation; a stated value is checked",
               f"{v}.computation_needs_arithmetic", *_flag(v, "computation_needs_arithmetic"), needs=(("judge",),),
               verifier=True),

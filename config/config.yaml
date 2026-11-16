@@ -294,6 +294,18 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # the claim split stays (headings, code, tables, labels, short sentences).
                                            # On only together with support_quotes: the judge as shipped calls nearly
                                            # every claim it rates supported (42 Russian answers: 68 supports, 64 false)
+  claims_in_tables: false                  # true: every data row of a table is a claim when its cells meet the rules of a
+                                           # sentence; it is read with its header (`Reagent: X; Amount: 5 mL`) by the
+                                           # code checks, the judge, the re-search and the quote check; a correction of
+                                           # a row is only a minimal edit inside its cells, and a row is never removed.
+                                           # false: no line that starts with | is a claim, as before (shipped off until
+                                           # its A/B). Measured by a replay of the checks on recorded answers
+                                           # (support_quotes, claims_any_script, judge_all_sources and
+                                           # computation_needs_arithmetic on, the supports read blind): no table broken,
+                                           # nothing corrected, no answer changed; 444 of the 656 row claims found no
+                                           # source; supports on 160 general answers 89 → 94 (true 61 → 65, the new
+                                           # true ones rows of stated facts), on 24 how-to answers 14 → 23 (true
+                                           # 3 → 4), and every supported row of the how-to answers (9) was false
   keep_uncorrected: true                  # a judge "contradicts" without a correction marks the claim unverified;
                                            # false: the claim is removed
   ignore_prompt_echo: true                 # a judge correction that repeats judge_prompt (all of it, or five words in a
