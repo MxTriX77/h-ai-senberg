@@ -282,7 +282,13 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # numbers with a unit that no request, source or result holds. false: any =, ≈,
                                            # <, > or operator between digits makes a computation, as before (a layer
                                            # switch; shipped off until its A/B). Either way the report lists, per
-                                           # computation, where each of its numbers comes from (`computations`)
+                                           # computation, where each of its numbers comes from (`computations`). Measured
+                                           # by a replay of the checks on recorded answers (support_quotes,
+                                           # claims_any_script and judge_all_sources on, the supports read blind): no
+                                           # answer changed and nothing was corrected; of the 122 claims that left
+                                           # "computation" 70 found no source and 4 were supported, all four truly;
+                                           # supports on 24 how-to answers 12 → 14 (true 2 → 3), on 160 general
+                                           # answers 84 → 89 (true 57 → 62)
   claims_any_script: false                 # true: a sentence with a letter of any script can be a claim (Russian prose);
                                            # false: only a sentence with a Latin letter, as before. Every other rule of
                                            # the claim split stays (headings, code, tables, labels, short sentences).
