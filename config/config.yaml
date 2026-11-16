@@ -267,6 +267,28 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # judged like any sentence (computations still skipped). A format-bound guard
                                            # (D-042): prose verdicts are protected by keep_uncorrected and the judge's
                                            # minimal-edit rule only
+  computation_needs_arithmetic: false      # true: a claim is a computation only when it writes a derivation with its result
+                                           # (a number on both sides of = or ≈: arithmetic, a conversion, a function value;
+                                           # at most two words between the number and the sign; a power of ten is no
+                                           # operation), or restates results of the answer (numbers behind such a
+                                           # derivation, given to a name right under the line that gives it an expression,
+                                           # or returned by a calculator call) next to numbers of the request, or only
+                                           # repeats the request's numbers with = or ≈. A value written with =, ≈, < or >
+                                           # after a name, a number in scientific notation and a
+                                           # formula in letters are then stated values: they go to the record check, the
+                                           # judge and the re-search like any claim. The note of a computation says what
+                                           # was done (recomputed in code, with the written result or with another; not
+                                           # recomputed; restated; the request's own numbers), and the reasoning names its
+                                           # numbers with a unit that no request, source or result holds. false: any =, ≈,
+                                           # <, > or operator between digits makes a computation, as before (a layer
+                                           # switch; shipped off until its A/B). Either way the report lists, per
+                                           # computation, where each of its numbers comes from (`computations`). Measured
+                                           # by a replay of the checks on recorded answers (support_quotes,
+                                           # claims_any_script and judge_all_sources on, the supports read blind): no
+                                           # answer changed and nothing was corrected; of the 122 claims that left
+                                           # "computation" 70 found no source and 4 were supported, all four truly;
+                                           # supports on 24 how-to answers 12 → 14 (true 2 → 3), on 160 general
+                                           # answers 84 → 89 (true 57 → 62)
   claims_any_script: false                 # true: a sentence with a letter of any script can be a claim (Russian prose);
                                            # false: only a sentence with a Latin letter, as before. Every other rule of
                                            # the claim split stays (headings, code, tables, labels, short sentences).

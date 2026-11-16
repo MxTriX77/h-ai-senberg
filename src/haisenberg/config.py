@@ -288,6 +288,7 @@ class VerifierConfig(_Section):
     arithmetic_max_change: NonNegativeFloat  # a fix changing c by this factor or more, or its sign, is only reported
     skip_derived_claims: bool  # computations and labelled answer/verdict lines are never judged
     skip_labelled_claims: bool  # with skip_derived_claims: labelled lines too (false: only computations)
+    computation_needs_arithmetic: bool  # only written arithmetic with its result is a computation (false: any = or <)
     claims_any_script: bool  # a sentence with a letter of any script can be a claim (false: only with a Latin letter)
     keep_uncorrected: bool  # a "contradicts" verdict without a correction marks the claim unverified, not removed
     ignore_prompt_echo: bool  # a judge correction repeating the judge's own instructions is ignored

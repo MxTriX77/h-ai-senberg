@@ -16,13 +16,17 @@ from haisenberg.verifier import (
     REMOVED,
     SUPPORTED,
     UNVERIFIED,
+    Claim,
+    calculator_results,
     carry_forward,
     code_check,
+    computation,
     echoes,
     fix_answer_lines,
     fix_arithmetic,
     is_computation,
     minimal_edit,
+    origins,
     parse_fixes,
     parse_verdicts,
     quoted,
@@ -37,6 +41,7 @@ from haisenberg.verifier import (
     split_claims,
     unconfirmed,
     verdict_tokens,
+    writes_arithmetic,
 )
 from test_server import chat, events
 
@@ -391,6 +396,120 @@ def test_computations_are_recognised():
     assert computed == [2354, -6.5]  # "= 1000 × …" starts an expression: not a result
     # equation; computed vs given; equation; only given numbers; a value of a source; restated given data
     assert [is_computation(c, given, computed, 0.001) for c in claims] == [True, True, True, False, False, False]
+
+
+# --- only written arithmetic is a computation (verifier.computation_needs_arithmetic) -------------------
+
+
+def sentence(text):
+    return Claim(1, 0, len(text), text, [])
+
+
+def test_the_kinds_of_computation():
+    claims = split_claims(PUMP_DRAFT)
+    given, worked = [n.value for n in read_numbers(PUMP_TASK)], results(PUMP_DRAFT, arithmetic=True)
+    assert worked == [2354, -6.5]
+    # arithmetic; its result next to the task's number; arithmetic; the task's number; a source's value; the task's
+    assert [computation(c, given, worked, 0.001) for c in claims] == ["arithmetic", "restated", "arithmetic", "", "", ""]
+    assert computation(sentence("Given: Q = 0.04 m³/s and h = 6 m."), given, worked, 0.001) == "given"
+    assert computation(sentence("Given: Q = 0.04 m³/s and g = 9.81 m/s²."), given, worked, 0.001) == ""  # 9.81: not the task's
+    assert computation(sentence("The motor is too small."), given, worked, 0.001) == ""  # no number
+    # a number of the task stays the task's when a calculation returns it too (here 6): no result, so a claim
+    assert computation(sentence("The lift of 6 m is the larger part of the head."), given, [*worked, 6], 0.001) == ""
+    assert computation(sentence("So 2354 W for a lift of 6 m."), given, [*worked, 6], 0.001) == "restated"
+
+
+@pytest.mark.parametrize("text", [
+    "The gas constant is R = 0.08206 L·atm/(mol·K).",  # a value written with a sign
+    "Red LED forward voltage ≈ 2.0 V.",
+    "The pH must stay < 7.",
+    "The Bohr radius is 5.29 × 10⁻¹¹ m [S1].",  # scientific notation: the power of ten is no operation
+    "k = 1.38 \\times 10^{-23} J/K",
+    "Keep the bath at 70–80 °C.",  # ranges
+    "Heat for 10 - 15 minutes.",
+    "The frequency is f = 1.44 / ((R1 + 2 R2) C).",  # a formula in letters
+    "n = (3.5 atm × 12 L) / (0.08206 × 298 K)",  # an expression without its result
+    "Cut a 10 × 20 cm sheet of foil.",  # a size
+    "4 Fe + 3 O₂ → 2 Fe₂O₃ is balanced.",  # a reaction equation
+    "Use a 3 × 5 cm strip of magnesium (m = 0.1 g).",  # joined numbers, and a value with a name of its own
+    "Set the supply to 12 V / 2 A and check that V_out = 5 V.",
+    "Your formula: Vout = 1.25 × (1 + R1/R2) with R1 = 240 Ω and R2 = 720 Ω.",
+    "Cut a 3 × 5 cm strip and note that its mass m = 0.1 g.",
+    "At 25 °C, Kw = 1.0 × 10⁻¹⁴.",  # a name before the sign, not a number
+    "x = 3, y = 4",  # a comma after a number ends what the sign follows
+    "Regulator U12 dropout ≈ 2 V.",  # the digits of a name are no number
+])
+def test_stated_values_are_not_arithmetic(text):
+    assert not writes_arithmetic(text)
+    assert computation(sentence(text), [], results(text, arithmetic=True), 0.001) == ""
+
+
+@pytest.mark.parametrize("text", [
+    "n = 42 / 24.464 = 1.72 mol.",
+    "0.046 mol × 130.19 g/mol = 6.0 g",  # a unit between a number and its operator
+    "The density is 54.0 g / 20.0 cm³ = 2.70 g/cm³.",
+    "The margin is (2.2 − 2.354)/2.354 = −6.5 %.",
+    "10 g tea × 0.03 (3% average) = **0.30 g**",  # a remark in brackets before the sign
+    "n = \\frac{0.707}{0.469} \\approx 1.51",
+    "Monthly rate = $0.042 \\div 12 = 0.0035$",
+    "72 \\text{ км/ч} \\times 0{,}5 \\text{ ч} = 36 \\text{ км}.",
+    "Масса: 0,046 моль × 130,19 г/моль = 6,0 г.",
+    "Cut a 10 × 20 cm sheet; its area is 10 cm × 20 cm = 200 cm².",
+])
+def test_written_arithmetic_has_its_result(text):
+    assert writes_arithmetic(text) and computation(sentence(text), [], [], 0.001) == "arithmetic"
+
+
+@pytest.mark.parametrize("text", [
+    "T = 25 °C = 298.15 K",  # a conversion
+    "Сечение: S = 0,5 мм² = 0,5 × 10⁻⁶ м²",
+    "pH = -log(0,002) ≈ 2,699",  # a function value
+    "n = 1.7166 mol ≈ 1.72 mol",  # a rounding
+    "4:30 AM minus 45 minutes = 3:45 AM.",  # arithmetic in words
+    "7 = 4 + 2 + 1",  # a result before its expression
+    "1 inch = 2.54 cm.",  # a unit identity too: no property of the text tells it from a conversion
+])
+def test_a_number_on_both_sides_of_the_sign_is_a_derivation(text):
+    assert writes_arithmetic(text) and computation(sentence(text), [], [], 0.001) == "arithmetic"
+
+
+def test_a_result_under_its_expression():
+    draft = ("E = (6.626 × 10⁻³⁴ × 2.998 × 10⁸) / (532 × 10⁻⁹)\n\n**E ≈ 3.73 × 10⁻¹⁹ J**\n"
+             "R = 8.314 J/(mol·K)\nR = 0.08206 L·atm/(mol·K)\nλ = 532 nm")
+    assert results(draft, arithmetic=True) == [pytest.approx(3.73e-19)]  # under a value or another name: stated
+    claims = split_claims(draft)
+    # the expression without its result, the value under it, two stated values of one name, a value of another name
+    assert [computation(c, [], results(draft, arithmetic=True), 0.001) for c in claims] == ["", "restated", "", "", ""]
+
+
+def test_a_result_stands_behind_written_arithmetic():
+    draft = ("R = 0.08206 L·atm/(mol·K) and t = 8.02 days. Then n = 42 / 24.464 = 1.72 mol, "
+             "so V \\approx 3 × 1.72 \\approx 5.16 L.")
+    assert results(draft) == [0.08206, 8.02, 1.72]  # as before: every number after a sign
+    assert results(draft, arithmetic=True) == [1.72, 5.16]  # a stated value is no result of the answer
+
+
+def test_calculator_results():
+    text = "9 - 2 = 7\n7 / 0.02 = 350\nweekday(2026-10-29) = Thursday\nsqrt(-1): error\n2 / 3 = 0.6666666667"
+    assert calculator_results(text) == [7, 350, 0.6666666667]
+    assert calculator_results("Error: arguments are not valid JSON") == []
+
+
+def test_where_the_numbers_of_a_computation_come_from():
+    held = [("S1", [44.097, 2019]), ("S2", [44.097])]
+    numbers = origins(sentence("So 50 g / 44.097 g/mol = 1.134 mol, and 1.134 × 0.08206 L·atm/(mol·K) × 12 = 1.117."),
+                      [50], [1.134, 1.117], held, 0.001)
+    assert numbers == [
+        {"number": "50", "unit": "g", "origin": "given"},
+        {"number": "44.097", "unit": "g/mol", "origin": "source", "id": "S1"},  # the first source that holds it
+        {"number": "1.134", "unit": "mol", "origin": "result"},
+        {"number": "1.134", "origin": "result"},
+        {"number": "0.08206", "unit": "L·atm", "origin": "assumed"},  # no task, source or result holds it
+        {"number": "12", "origin": "factor"},  # a whole number up to 12, or a power of ten
+        {"number": "1.117", "origin": "result"},
+    ]
+    assert [n["origin"] for n in origins(sentence("That is 1000 × 13 × 0.5."), [], [], [], 0.001)] == [
+        "factor", "assumed", "assumed"]
 
 
 # --- judge reply -----------------------------------------------------------------------------------
@@ -1406,6 +1525,78 @@ def test_labelled_lines_judged_when_their_switch_is_off(cfg, fake, knowledge):
         chat(c, [{"role": "user", "content": PUMP_TASK}])
     user = fake.bodies[2]["messages"][1]["content"]
     assert "Claim B: Incorrect, the motor is too small" in user and "P = 1000 × 9.81" not in user
+
+
+NOTES_DRAFT = ("The gas constant is R = 0.08206 L·atm/(mol·K). The radius is 5.29 × 10⁻¹¹ m. "
+               "P = 1000 × 9.81 × 0.04 × 6 = 2354 W. So 2354 W is more than the 2.2 kW of the motor. "
+               "In symbols, n = (3.5 atm × 12 L) / (R × 298 K) = 1.72 mol. The total is 2.5 × 4 = 1000 g. "
+               "Given: Q = 0.04 m³/s and h = 6 m.")
+
+
+@pytest.mark.anyio
+async def test_a_stated_value_is_checked_and_the_note_says_what_was_done(cfg, fake, knowledge):
+    cfg.verifier.computation_needs_arithmetic = True
+    fake.chunks = [content("C1: not_said\nC2: not_said")]
+    fake.scripts = [SEARCH_ETHANOL, [content(NOTES_DRAFT)]]
+    report, reasoning, _ = await _run(cfg, fake, knowledge, PUMP_TASK)
+    notes = {c["n"]: c["note"] for c in report["claims"]}
+    assert not notes[1].startswith("computation") and not notes[2].startswith("computation")  # like any claim
+    assert [notes[n] for n in (3, 4, 5, 6, 7)] == [
+        "computation: recomputed in code",
+        "computation: restates the task's or the answer's numbers",
+        "computation: not recomputed (the check could not read it)",
+        "computation: recomputed in code with another result, left as written",
+        "computation: the task's own numbers repeated",
+    ]
+    assert {c["outcome"] for c in report["claims"]} == {"unverified"}
+    assert [c["n"] for c in report["computations"]] == [3, 4, 5, 6, 7]  # the stated values are not among them
+    assert "- C5 unverified (computation: not recomputed (the check could not read it)); from no task, source or" \
+           " result: 3.5 atm, 12 L, 298 K\n" in reasoning
+
+
+@pytest.mark.anyio
+async def test_the_note_of_a_computation_under_the_old_rule(cfg, fake, knowledge):
+    fake.scripts = [SEARCH_ETHANOL, [content(NOTES_DRAFT)]]
+    report, reasoning, _ = await _run(cfg, fake, knowledge, PUMP_TASK)
+    assert {c["note"] for c in report["claims"]} == {"computation: checked in code, not against sources"}
+    assert report["judge_calls"] == [] and "from no task" not in reasoning  # nothing judged, the lines as before
+    assert [c["n"] for c in report["computations"]] == [1, 2, 3, 4, 5, 6, 7]  # the record of their numbers is kept
+    assert report["computations"][0]["numbers"] == [{"number": "0.08206", "unit": "L·atm", "origin": "assumed"}]
+
+
+@pytest.mark.anyio
+async def test_where_the_numbers_of_a_computation_come_from_in_the_report(cfg, fake, knowledge):
+    cfg.verifier.computation_needs_arithmetic = True
+    fake.scripts = [
+        [tool_call("lookup_compound", '{"query": "caffeine"}', call_id="c1"), finish("tool_calls")],
+        [content("That is 50 / 194.19 = 0.2575 mol. As a gas it would fill 0.2575 mol × 24.464 L/mol = 6.30 L.")],
+    ]
+    report, reasoning, _ = await _run(cfg, fake, knowledge, "I have 50 g of caffeine. How many moles is that?")
+    assert [c["note"] for c in report["claims"]] == ["computation: recomputed in code"] * 2
+    assert report["computations"] == [
+        {"n": 1, "numbers": [{"number": "50", "origin": "given"}, {"number": "194.19", "origin": "source", "id": "S1"},
+                              {"number": "0.2575", "unit": "mol", "origin": "result"}]},
+        {"n": 2, "numbers": [{"number": "0.2575", "unit": "mol", "origin": "result"},
+                              {"number": "24.464", "unit": "L/mol", "origin": "assumed"},
+                              {"number": "6.30", "unit": "L", "origin": "result"}]}]
+    assert "- C1 unverified (computation: recomputed in code)\n" in reasoning
+    assert "- C2 unverified (computation: recomputed in code); from no task, source or result: 24.464 L/mol\n" in reasoning
+
+
+LED_TASK = "The supply is 9 V and the LED needs 20 mA. Which resistor do I need?"
+
+
+@pytest.mark.anyio
+async def test_a_calculator_result_is_a_result_of_the_answer(cfg, fake, knowledge):
+    cfg.verifier.computation_needs_arithmetic = True
+    fake.chunks = [content("C2: not_said")]
+    fake.scripts = [
+        [tool_call("calculate", '{"expressions": ["(9 - 2) / 0.02"]}', call_id="k1"), finish("tool_calls")],
+        [content("That is 350 Ω for the resistor. It dissipates 0.14 W.")],
+    ]
+    report, _, _ = await _run(cfg, fake, knowledge, LED_TASK)
+    assert [c["note"].startswith("computation: restates") for c in report["claims"]] == [True, False]
+    assert report["computations"] == [{"n": 1, "numbers": [{"number": "350", "unit": "Ω", "origin": "result"}]}]
 
 
 @pytest.mark.parametrize("keep, expected", [(True, "Ethanol is a liquid. It is blue."), (False, "Ethanol is a liquid.")])
