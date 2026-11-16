@@ -105,6 +105,7 @@ Nothing in the code is tied to this laptop or model. On another machine (for exa
 
 - `MODEL_PATH`, `MODEL_ID`: any GGUF llama.cpp supports
 - `CTX_SIZE`, `GPU_LAYERS`, `LLAMA_THREADS`, `REASONING_BUDGET`: context size, layers on the GPU, CPU threads, thinking-token cap (server cap and top of the per-question budget)
+- `LLAMA_CACHE_RAM`: host memory in MiB for llama-server's cache of earlier prompts (default 1024; llama-server's own default of 8192 does not fit a 15 GB machine; 0 for none)
 - `LLAMA_SERVER_ENABLED=false` with `API_BASE_URL`, `API_KEY`: use a model server that is already running, here or remote
 - `APP_HOST`, `APP_PORT`, `DATA_DIR`: address and data folder
 - `KNOWLEDGE`: which knowledge stores the tools read (`base`: the Layer 1 store; `extended`: also the Layer 2 literature store; `hybrid`: the literature store ranked by keywords and embeddings together)
@@ -233,7 +234,7 @@ uv run python -m evals.run --authored data/evals/authored/b01 --split dev --sets
 
 The fact questions are set S1 and the reasoning problems set S2 in the logs.
 
-`EVAL_SEED=<n>` (an integer ≥ 0, `model_backend.seed`) sends that sampling seed with every model call and records it in the manifest's `sampling`: with the same seed in both arms of an A/B (llama-server `--parallel 1`), an answer the change does not touch comes out the same. Unset or empty, no seed is sent.
+`EVAL_SEED=<n>` (an integer ≥ 0, `model_backend.seed`) sends that sampling seed with every model call and records it in the manifest's `sampling`: with the same seed in both arms of an A/B (llama-server `--parallel 1`), an answer the change does not touch comes out the same. Unset or empty, no seed is sent. Start the server of an eval run with `LLAMA_CACHE_RAM=0` too: with a cache of earlier prompts a reply can depend on the requests the server answered before, and two runs with one seed then differ.
 
 ### General items
 

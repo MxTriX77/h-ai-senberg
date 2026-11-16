@@ -639,6 +639,9 @@ llama_server:                              # local reasoner, started by `uv run 
     cache-type-k: q8_0
     cache-type-v: q8_0
     threads: "${LLAMA_THREADS:-8}"
+    cache-ram: "${LLAMA_CACHE_RAM:-1024}"  # MiB of host memory for llama-server's cache of earlier prompts (its own
+                                           # default, 8192, does not fit a 15 GB machine); 0 = none. Use 0 for eval
+                                           # runs: a reply then does not depend on the requests before it
     log-file: "${LLAMA_LOG_FILE:-}"        # keep llama-server's own log in this file (empty = console only)
 
 embedding:                                 # the embedding model of the dense stores (KNOWLEDGE=hybrid|crosslingual, ingest.embed_l2|embed_l1)

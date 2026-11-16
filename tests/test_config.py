@@ -643,6 +643,17 @@ def test_shipped_prompt_states_the_evidence_discipline():
         assert rule in prompt
 
 
+def test_prompt_cache_limit_from_the_environment(tmp_path, monkeypatch):
+    from haisenberg.launcher import build_command
+
+    monkeypatch.delenv("LLAMA_CACHE_RAM", raising=False)
+    assert load_config(write(tmp_path / "a")).llama_server.flags["cache-ram"] == "1024"
+    monkeypatch.setenv("LLAMA_CACHE_RAM", "0")
+    cfg = load_config(write(tmp_path / "b"))
+    command = build_command(cfg)
+    assert cfg.llama_server.flags["cache-ram"] == "0" and command[command.index("--cache-ram") + 1] == "0"
+
+
 def test_thinking_budget_settings(tmp_path):
     cfg = load_config(write(tmp_path))
     tb = cfg.reasoning_policy.thinking_budget
