@@ -282,10 +282,18 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # numbers with a unit that no request, source or result holds. false: any =, ≈,
                                            # <, > or operator between digits makes a computation, as before (a layer
                                            # switch; shipped off until its A/B). Either way the report lists, per
-                                           # computation, where each of its numbers comes from (`computations`)
+                                           # computation, where each of its numbers comes from (`computations`). Measured
+                                           # by a replay of the checks on recorded answers (support_quotes,
+                                           # claims_any_script and judge_all_sources on, the supports read blind): no
+                                           # answer changed and nothing was corrected; of the 122 claims that left
+                                           # "computation" 70 found no source and 4 were supported, all four truly;
+                                           # supports on 24 how-to answers 12 → 14 (true 2 → 3), on 160 general
+                                           # answers 84 → 89 (true 57 → 62)
   claims_any_script: false                 # true: a sentence with a letter of any script can be a claim (Russian prose);
                                            # false: only a sentence with a Latin letter, as before. Every other rule of
-                                           # the claim split stays (headings, code, tables, labels, short sentences)
+                                           # the claim split stays (headings, code, tables, labels, short sentences).
+                                           # On only together with support_quotes: the judge as shipped calls nearly
+                                           # every claim it rates supported (42 Russian answers: 68 supports, 64 false)
   claims_in_tables: false                  # true: every data row of a table is a claim when its cells meet the rules of a
                                            # sentence; it is read with its header (`Reagent: X; Amount: 5 mL`) by the
                                            # code checks, the judge, the re-search and the quote check; a correction of
@@ -368,8 +376,15 @@ verifier:                                  # claim checks on the draft; on/off: 
                                            # results and what it cites, and a claim whose re-search found nothing is not
                                            # judged again. false: as before (a layer switch; shipped off until its A/B;
                                            # meant to run with support_quotes: more passages before a judge that takes a
-                                           # shared word for proof would mean more false supports)
-  judge_passages: 4                        # judge_all_sources: sources chosen by word share per judge call
+                                           # shared word for proof would mean more false supports). Measured by a replay
+                                           # of the checks on recorded answers, with support_quotes on and the supports
+                                           # read blind: the claims never compared with a passage fall from 60 % to 28 %
+                                           # on how-to answers, and false supports rise all the same (24 how-to answers:
+                                           # 2 → 10 false, 1 → 2 true; 160 general answers: 20 → 29 false, 52 → 55
+                                           # true); the judge takes 41 s per how-to answer instead of 17
+  judge_passages: 4                        # judge_all_sources: sources chosen by word share per judge call. Measured on
+                                           # how-to answers with the literature store: 2, 4 and 6 gave 19, 17 and 16
+                                           # true supports and 31, 53 and 51 false ones (switch off: 10 and 13)
   keep_quotes: true                        # a run of the answer of 20+ characters that also occurs in the user's task
                                            # (sub/superscripts, emphasis, quote marks and spacing ignored) is a quotation
                                            # of the material under review: checkers and the arithmetic check (when the
@@ -393,7 +408,9 @@ verifier:                                  # claim checks on the draft; on/off: 
   max_research: 6                          # claims re-searched per answer
   research_values_first: false             # true: those slots go first to the claims that state a number with a unit, in
                                            # draft order, then to the others; false: draft order alone (a layer switch;
-                                           # shipped off until its A/B)
+                                           # shipped off until its A/B). Measured with judge_all_sources on: supports
+                                           # on 24 how-to answers 12 → 13 (true 2 → 3), with the literature store
+                                           # 70 → 62 (true 17 → 15)
   answer_style: plain                      # plain: a normal chat answer, checks applied silently (trace in the
                                            # reasoning block); annotated: [S#], labels, summary, source list (debugging)
   strip_source_ids: true                   # plain style: [S#] markers are removed from the final answer; false: the answer
