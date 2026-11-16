@@ -412,6 +412,26 @@ def test_consistency_review_is_off_for_the_9b_heretic_profile_only(tmp_path, mon
         assert v.consistency_prompt.strip()
 
 
+def test_strict_support_is_on_for_the_9b_heretic_profile_only(tmp_path, monkeypatch):
+    def switches(path):
+        v = load_config(path).verifier
+        assert not (v.judge_all_sources or v.research_values_first or v.computation_needs_arithmetic
+                    or v.claims_in_tables)  # the other fixes of the track stay off everywhere
+        return v.support_quotes, v.claims_any_script, v.judge_batch
+
+    assert switches(write(tmp_path / "base")) == (False, False, 0)
+    for profile in PROFILES:
+        root = tmp_path / profile.stem
+        path = write(root)
+        write_profile(root, profile.stem, yaml.safe_load(profile.read_text(encoding="utf-8")))
+        monkeypatch.setenv(PROFILE_ENV, profile.stem)
+        on = profile.stem == "qwen3.5-9b-heretic-v2"
+        assert switches(path) == ((True, True, 5) if on else (False, False, 0)), profile.stem
+    monkeypatch.setenv(PROFILE_ENV, "qwen3.5-9b-heretic-v2")
+    monkeypatch.setenv("JUDGE_BATCH", "3")  # an arm of an A/B still sets its own
+    assert switches(tmp_path / "qwen3.5-9b-heretic-v2" / "config" / "config.yaml")[2] == 3
+
+
 def test_consistency_settings(tmp_path):
     v = load_config(write(tmp_path)).verifier
     assert v.consistency_check is True and v.consistency_prompt.strip()
