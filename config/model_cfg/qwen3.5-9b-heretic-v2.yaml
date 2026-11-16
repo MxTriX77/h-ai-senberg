@@ -15,3 +15,14 @@ llama_server:
 verifier:
   consistency_check: false                 # off for this model (D-049, D-055): on 184 recorded answers the review
                                            # applied 7 fixes, 5 of them wrong, for 17 to 19 % of the answer time
+  support_quotes: true                     # on for this model (D-064): a "supported" mark needs words that code finds
+                                           # in the passage. On 184 recorded answers the judge as shipped marked 292
+                                           # claims supported, 230 of them falsely; with this and claims_any_script on
+                                           # it marks 75, 22 of them falsely (true ones: 59 → 53). No answer text
+                                           # changed. The judge takes 17 s per how-to answer, as before, and 5.4 s per
+                                           # general one (3.8 s before). Weak side: with the literature store about
+                                           # half of the true supports of how-to answers are lost (11 of 21 kept on
+                                           # unseen answers, where the false ones fall from 91 to 12)
+  claims_any_script: true                  # on with support_quotes (D-064): a Russian sentence can be a claim (42
+                                           # recorded Russian answers: 2.9 → 11.0 claims per answer, 5 supports, 3 true)
+  judge_batch: "${JUDGE_BATCH:-5}"         # claims per judge call: the value both switches were measured with
